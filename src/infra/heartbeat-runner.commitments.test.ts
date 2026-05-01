@@ -406,6 +406,65 @@ describe("runHeartbeatOnce commitments", () => {
     });
   });
 
+  it("runs the scheduler commitment pass for the default session after the normal tick", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath }) => {
+      vi.stubEnv("OPENCLAW_STATE_DIR", tmpDir);
+      const sessionKey = "agent:main:main";
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            workspace: tmpDir,
+            heartbeat: {
+              every: "5m",
+              target: "last",
+            },
+          },
+        },
+        session: { store: storePath },
+        commitments: { enabled: true },
+      };
+      await saveCommitmentStore(undefined, {
+        version: 1,
+        commitments: [buildCommitment({ id: "cm_default", sessionKey, to: "1" })],
+      });
+      const runOnce = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+      const runner = startHeartbeatRunner({
+        cfg,
+        runOnce,
+        stableSchedulerSeed: "commitment-default-session",
+      });
+
+      requestHeartbeatNow({ reason: "manual", coalesceMs: 0 });
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => {
+        expect(runOnce).toHaveBeenCalledTimes(2);
+      });
+      runner.stop();
+
+      expect(runOnce).toHaveBeenCalledTimes(2);
+      expect(runOnce).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          agentId: "main",
+          heartbeat: expect.objectContaining({ target: "last" }),
+          reason: "manual",
+        }),
+      );
+      expect(runOnce).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          agentId: "main",
+          commitmentOnly: true,
+          reason: "commitment",
+          sessionKey,
+        }),
+      );
+    });
+  });
+
   it("delivers due commitments to the original scope when heartbeat target is last", async () => {
     const { result, sendTelegram, store } = await setupCommitmentCase();
 
