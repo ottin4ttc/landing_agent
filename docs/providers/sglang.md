@@ -6,7 +6,11 @@ read_when:
 title: "SGLang"
 ---
 
-SGLang serves open-weight models via an OpenAI-compatible HTTP API. OpenClaw connects to SGLang using the `openai-completions` provider family with auto-discovery of available models.
+SGLang serves open-weight models via an OpenAI-compatible HTTP API. OpenClaw
+connects to SGLang using the `openai-completions` provider family with
+auto-discovery of available models. Use `agents.defaults.models["sglang/*"]`
+when you want discovery from a configured SGLang endpoint instead of manually
+listing every model.
 
 | Property                  | Value                                                        |
 | ------------------------- | ------------------------------------------------------------ |
@@ -20,7 +24,8 @@ SGLang serves open-weight models via an OpenAI-compatible HTTP API. OpenClaw con
 | Streaming usage           | Yes (`supportsStreamingUsage: true`)                         |
 | Pricing                   | Marked external-free (`modelPricing.external: false`)        |
 
-OpenClaw also **auto-discovers** available models from SGLang when you opt in with `SGLANG_API_KEY` and you do not define an explicit `models.providers.sglang` entry — see [Model discovery (implicit provider)](#model-discovery-implicit-provider) below.
+OpenClaw also **auto-discovers** available models from SGLang when you opt in
+with `SGLANG_API_KEY`; see [Model discovery](#model-discovery) below.
 
 ## Getting started
 
@@ -61,7 +66,7 @@ OpenClaw also **auto-discovers** available models from SGLang when you opt in wi
   </Step>
 </Steps>
 
-## Model discovery (implicit provider)
+## Model discovery
 
 When `SGLANG_API_KEY` is set (or an auth profile exists) and you **do not**
 define `models.providers.sglang`, OpenClaw will query:
@@ -71,8 +76,10 @@ define `models.providers.sglang`, OpenClaw will query:
 and convert the returned IDs into model entries.
 
 <Note>
-If you set `models.providers.sglang` explicitly, auto-discovery is skipped and
-you must define models manually.
+If you set `models.providers.sglang` explicitly, OpenClaw treats that provider
+as manual by default. Add `agents.defaults.models["sglang/*"]` when the explicit
+entry is only transport config, such as a custom `baseUrl`, and you still want
+model discovery from that endpoint.
 </Note>
 
 ## Explicit configuration (manual models)
@@ -82,6 +89,31 @@ Use explicit config when:
 - SGLang runs on a different host/port.
 - You want to pin `contextWindow`/`maxTokens` values.
 - Your server requires a real API key (or you want to control headers).
+
+To keep dynamic discovery with an explicit endpoint, configure the provider
+transport and add the provider wildcard to the agent model allowlist:
+
+```json5
+{
+  agents: {
+    defaults: {
+      models: {
+        "sglang/*": {},
+      },
+    },
+  },
+  models: {
+    providers: {
+      sglang: {
+        baseUrl: "http://sglang-router.example/v1",
+        apiKey: "${SGLANG_API_KEY}",
+        api: "openai-completions",
+        models: [],
+      },
+    },
+  },
+}
+```
 
 ```json5
 {

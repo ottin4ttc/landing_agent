@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   configureOpenAICompatibleSelfHostedProviderNonInteractive,
   discoverOpenAICompatibleLocalModels,
+  discoverOpenAICompatibleSelfHostedProvider,
 } from "./provider-self-hosted-setup.js";
-import type { ProviderAuthMethodNonInteractiveContext } from "./types.js";
+import type { ProviderAuthMethodNonInteractiveContext, ProviderDiscoveryContext } from "./types.js";
 
 const { fetchWithSsrFGuardMock, upsertAuthProfileWithLock } = vi.hoisted(() => ({
   fetchWithSsrFGuardMock: vi.fn(),
@@ -67,6 +68,29 @@ function createContext(params: {
 function readPrimaryModel(config: Awaited<ReturnType<typeof configureSelfHostedTestProvider>>) {
   const model = config?.agents?.defaults?.model;
   return model && typeof model === "object" ? model.primary : undefined;
+}
+
+function createDiscoveryContext(params: {
+  config: ProviderDiscoveryContext["config"];
+  apiKey?: string;
+  discoveryApiKey?: string;
+}): ProviderDiscoveryContext {
+  const apiKey = params.apiKey ?? "SELF_HOSTED_API_KEY";
+  const discoveryApiKey = params.discoveryApiKey ?? "self-hosted-test-key";
+  return {
+    config: params.config,
+    env: {},
+    resolveProviderApiKey: vi.fn(() => ({
+      apiKey,
+      discoveryApiKey,
+    })),
+    resolveProviderAuth: vi.fn(() => ({
+      apiKey,
+      discoveryApiKey,
+      mode: "api_key" as const,
+      source: "env" as const,
+    })),
+  };
 }
 
 async function configureSelfHostedTestProvider(params: {
@@ -393,6 +417,143 @@ describe("discoverOpenAICompatibleLocalModels", () => {
       timeoutMs: 5000,
     });
     expect(release).toHaveBeenCalledOnce();
+  });
+});
+
+describe("discoverOpenAICompatibleSelfHostedProvider", () => {
+  it("keeps explicit provider config manual when no provider wildcard is allowed", async () => {
+    const buildProvider = vi.fn(async () => ({ models: [{ id: "dynamic-model" }] }));
+    const ctx = createDiscoveryContext({
+      config: {
+        models: {
+          providers: {
+            vllm: {
+              baseUrl: "http://router.example/v1",
+              api: "openai-completions",
+              models: [],
+            },
+          },
+        },
+        agents: {
+          defaults: {
+            models: {
+              "vllm/manual-model": {},
+            },
+          },
+        },
+      },
+    });
+
+    await expect(
+      discoverOpenAICompatibleSelfHostedProvider({
+        ctx,
+        providerId: "vllm",
+        buildProvider,
+      }),
+    ).resolves.toBeNull();
+    expect(buildProvider).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { providerId: "vllm", apiKey: "VLLM_API_KEY", discoveryApiKey: "vllm-test-key" },
+    { providerId: "sglang", apiKey: "SGLANG_API_KEY", discoveryApiKey: "sglang-test-key" },
+  ])(
+    "discovers from an explicit $providerId endpoint when the provider wildcard is allowed",
+    async ({ providerId, apiKey, discoveryApiKey }) => {
+      const buildProvider = vi.fn(
+        async ({ apiKey, baseUrl }: { apiKey?: string; baseUrl?: string }) => ({
+          baseUrl,
+          api: "openai-completions",
+          models: [{ id: "dynamic-model" }],
+          discoveryApiKey: apiKey,
+        }),
+      );
+      const explicitBaseUrl = `http://${providerId}-router.example/v1`;
+      const ctx = createDiscoveryContext({
+        config: {
+          models: {
+            providers: {
+              [providerId]: {
+                baseUrl: explicitBaseUrl,
+                api: "openai-completions",
+                models: [],
+              },
+            },
+          },
+          agents: {
+            defaults: {
+              models: {
+                [`${providerId}/*`]: {},
+              },
+            },
+          },
+        },
+        apiKey,
+        discoveryApiKey,
+      });
+
+      await expect(
+        discoverOpenAICompatibleSelfHostedProvider({
+          ctx,
+          providerId,
+          buildProvider,
+        }),
+      ).resolves.toEqual({
+        provider: {
+          baseUrl: explicitBaseUrl,
+          api: "openai-completions",
+          models: [{ id: "dynamic-model" }],
+          discoveryApiKey,
+          apiKey,
+        },
+      });
+      expect(buildProvider).toHaveBeenCalledWith({
+        apiKey: discoveryApiKey,
+        baseUrl: explicitBaseUrl,
+      });
+    },
+  );
+
+  it("uses provider defaults when the wildcard has no explicit endpoint", async () => {
+    const buildProvider = vi.fn(
+      async ({ apiKey, baseUrl }: { apiKey?: string; baseUrl?: string }) => ({
+        baseUrl: baseUrl ?? "http://127.0.0.1:8000/v1",
+        api: "openai-completions",
+        models: [{ id: "dynamic-model" }],
+        discoveryApiKey: apiKey,
+      }),
+    );
+    const ctx = createDiscoveryContext({
+      config: {
+        agents: {
+          defaults: {
+            models: {
+              "vllm/*": {},
+            },
+          },
+        },
+      },
+    });
+
+    await expect(
+      discoverOpenAICompatibleSelfHostedProvider({
+        ctx,
+        providerId: "vllm",
+        buildProvider,
+      }),
+    ).resolves.toEqual({
+      provider: {
+        baseUrl: "http://127.0.0.1:8000/v1",
+        api: "openai-completions",
+        models: [{ id: "dynamic-model" }],
+        discoveryApiKey: "self-hosted-test-key",
+        apiKey: "SELF_HOSTED_API_KEY",
+      },
+    });
+    expect(buildProvider).toHaveBeenCalledWith({
+      apiKey: "self-hosted-test-key",
+      baseUrl: undefined,
+    });
   });
 });
 

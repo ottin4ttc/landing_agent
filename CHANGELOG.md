@@ -8,6 +8,7 @@ Docs: https://docs.openclaw.ai
 
 - Limit hook CLI tool authority [AI]. (#81065) Thanks @pgondhi987.
 - Require admin scope for node device token management [AI]. (#81067) Thanks @pgondhi987.
+- vLLM/SGLang: keep provider wildcard discovery dynamic for explicit self-hosted endpoints, so `agents.defaults.models["provider/*"]` can query a configured `models.providers.<provider>.baseUrl` instead of forcing manual model lists. Fixes #81218.
 - Restrict chat sender allowlist matching [AI]. (#80898) Thanks @pgondhi987.
 - Sessions: redact persisted tool result detail metadata before writing transcripts so diagnostic secrets do not survive tool output redaction. (#80444) Thanks @nimbleenigma.
 - Codex migration: make Enter activate the highlighted checkbox row before continuing, so `Skip for now` and bulk-selection rows work even when planned items start preselected.

@@ -1,5 +1,6 @@
 import type { ApiKeyCredential, AuthProfileCredential } from "../agents/auth-profiles/types.js";
 import { upsertAuthProfileWithLock } from "../agents/auth-profiles/upsert-with-lock.js";
+import { normalizeProviderId } from "../agents/provider-id.js";
 import {
   SELF_HOSTED_DEFAULT_CONTEXT_WINDOW,
   SELF_HOSTED_DEFAULT_COST,
@@ -395,9 +396,10 @@ export async function discoverOpenAICompatibleSelfHostedProvider<
 >(params: {
   ctx: ProviderDiscoveryContext;
   providerId: string;
-  buildProvider: (params: { apiKey?: string }) => Promise<T>;
+  buildProvider: (params: { apiKey?: string; baseUrl?: string }) => Promise<T>;
 }): Promise<{ provider: T & { apiKey: string } } | null> {
-  if (params.ctx.config.models?.providers?.[params.providerId]) {
+  const configuredProvider = params.ctx.config.models?.providers?.[params.providerId];
+  if (configuredProvider && !hasProviderWildcardModel(params.ctx.config, params.providerId)) {
     return null;
   }
   const { apiKey, discoveryApiKey } = params.ctx.resolveProviderApiKey(params.providerId);
@@ -406,10 +408,32 @@ export async function discoverOpenAICompatibleSelfHostedProvider<
   }
   return {
     provider: {
-      ...(await params.buildProvider({ apiKey: discoveryApiKey })),
+      ...(await params.buildProvider({
+        apiKey: discoveryApiKey,
+        baseUrl:
+          typeof configuredProvider?.baseUrl === "string" ? configuredProvider.baseUrl : undefined,
+      })),
       apiKey,
     },
   };
+}
+
+function hasProviderWildcardModel(config: OpenClawConfig, providerId: string): boolean {
+  const models = config.agents?.defaults?.models;
+  if (!models) {
+    return false;
+  }
+  const normalizedProvider = normalizeProviderId(providerId);
+  return Object.keys(models).some((key) => {
+    const slash = key.indexOf("/");
+    if (slash <= 0) {
+      return false;
+    }
+    return (
+      normalizeProviderId(key.slice(0, slash)) === normalizedProvider &&
+      key.slice(slash + 1) === "*"
+    );
+  });
 }
 
 function buildMissingNonInteractiveModelIdMessage(params: {

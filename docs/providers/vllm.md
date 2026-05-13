@@ -8,7 +8,10 @@ title: "vLLM"
 
 vLLM can serve open-source (and some custom) models via an **OpenAI-compatible** HTTP API. OpenClaw connects to vLLM using the `openai-completions` API.
 
-OpenClaw can also **auto-discover** available models from vLLM when you opt in with `VLLM_API_KEY` (any value works if your server does not enforce auth) and you do not define an explicit `models.providers.vllm` entry.
+OpenClaw can also **auto-discover** available models from vLLM when you opt in
+with `VLLM_API_KEY` (any value works if your server does not enforce auth). Use
+`agents.defaults.models["vllm/*"]` when you want discovery from a configured
+vLLM endpoint instead of manually listing every model.
 
 OpenClaw treats `vllm` as a local OpenAI-compatible provider that supports
 streamed usage accounting, so status/context token counts can update from
@@ -61,9 +64,10 @@ streamed usage accounting, so status/context token counts can update from
   </Step>
 </Steps>
 
-## Model discovery (implicit provider)
+## Model discovery
 
-When `VLLM_API_KEY` is set (or an auth profile exists) and you **do not** define `models.providers.vllm`, OpenClaw queries:
+When `VLLM_API_KEY` is set (or an auth profile exists) and you **do not** define
+`models.providers.vllm`, OpenClaw queries:
 
 ```
 GET http://127.0.0.1:8000/v1/models
@@ -72,7 +76,10 @@ GET http://127.0.0.1:8000/v1/models
 and converts the returned IDs into model entries.
 
 <Note>
-If you set `models.providers.vllm` explicitly, auto-discovery is skipped and you must define models manually.
+If you set `models.providers.vllm` explicitly, OpenClaw treats that provider as
+manual by default. Add `agents.defaults.models["vllm/*"]` when the explicit entry
+is only transport config, such as a custom `baseUrl`, and you still want model
+discovery from that endpoint.
 </Note>
 
 ## Explicit configuration (manual models)
@@ -83,6 +90,31 @@ Use explicit config when:
 - You want to pin `contextWindow` or `maxTokens` values
 - Your server requires a real API key (or you want to control headers)
 - You connect to a trusted loopback, LAN, or Tailscale vLLM endpoint
+
+To keep dynamic discovery with an explicit endpoint, configure the provider
+transport and add the provider wildcard to the agent model allowlist:
+
+```json5
+{
+  agents: {
+    defaults: {
+      models: {
+        "vllm/*": {},
+      },
+    },
+  },
+  models: {
+    providers: {
+      vllm: {
+        baseUrl: "http://vllm-router.example/v1",
+        apiKey: "${VLLM_API_KEY}",
+        api: "openai-completions",
+        models: [],
+      },
+    },
+  },
+}
+```
 
 ```json5
 {
@@ -331,7 +363,10 @@ Use explicit config when:
   </Accordion>
 
   <Accordion title="No models discovered">
-    Auto-discovery requires `VLLM_API_KEY` to be set **and** no explicit `models.providers.vllm` config entry. If you have defined the provider manually, OpenClaw skips discovery and uses only your declared models.
+    Auto-discovery requires `VLLM_API_KEY` to be set. If you have defined
+    `models.providers.vllm` manually, OpenClaw uses only your declared models
+    unless `agents.defaults.models` contains `"vllm/*"` to keep that provider
+    dynamic.
   </Accordion>
 
   <Accordion title="Tools render as raw text">

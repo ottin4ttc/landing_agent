@@ -160,6 +160,9 @@ With that policy, `/model`, `/models`, and model pickers show the discovered
 catalog for those providers only. New models from the selected providers can
 appear without editing the allowlist. Exact `provider/model` entries can be mixed
 with `provider/*` entries when you need one specific model from another provider.
+For self-hosted providers such as vLLM and SGLang, `provider/*` also keeps
+discovery dynamic when `models.providers.<provider>` is present only to set
+transport details such as `baseUrl`.
 
 Example allowlist config:
 
