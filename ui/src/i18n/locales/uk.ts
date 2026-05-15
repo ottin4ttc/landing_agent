@@ -238,6 +238,12 @@ export const uk: TranslationMap = {
     noSummary: "Підсумок не зафіксовано.",
     branchFromCheckpoint: "Створити гілку з контрольної точки",
     restoreCheckpoint: "Відновити контрольну точку",
+    checkpointPanelEyebrow: "Історія стиснення",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "No agents",

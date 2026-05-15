@@ -235,6 +235,12 @@ export const zh_TW: TranslationMap = {
     noSummary: "未擷取摘要。",
     branchFromCheckpoint: "從檢查點建立分支",
     restoreCheckpoint: "還原檢查點",
+    checkpointPanelEyebrow: "壓縮記錄",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "No agents",

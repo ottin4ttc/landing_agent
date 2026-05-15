@@ -236,6 +236,12 @@ export const ar: TranslationMap = {
     noSummary: "لم يتم التقاط أي ملخص.",
     branchFromCheckpoint: "إنشاء فرع من نقطة التحقق",
     restoreCheckpoint: "استعادة نقطة التحقق",
+    checkpointPanelEyebrow: "سجل الضغط",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "لا توجد وكلاء",

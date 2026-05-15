@@ -236,6 +236,12 @@ export const ko: TranslationMap = {
     noSummary: "캡처된 요약이 없습니다.",
     branchFromCheckpoint: "체크포인트에서 브랜치 생성",
     restoreCheckpoint: "체크포인트 복원",
+    checkpointPanelEyebrow: "압축 기록",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "No agents",

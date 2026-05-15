@@ -240,6 +240,12 @@ export const ja_JP: TranslationMap = {
     noSummary: "要約は取得されていません。",
     branchFromCheckpoint: "チェックポイントからブランチ",
     restoreCheckpoint: "チェックポイントを復元",
+    checkpointPanelEyebrow: "圧縮履歴",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "No agents",

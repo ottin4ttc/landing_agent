@@ -237,6 +237,12 @@ export const it: TranslationMap = {
     noSummary: "Nessun riepilogo acquisito.",
     branchFromCheckpoint: "Crea ramo dal checkpoint",
     restoreCheckpoint: "Ripristina checkpoint",
+    checkpointPanelEyebrow: "Cronologia della compattazione",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "Nessun agente",

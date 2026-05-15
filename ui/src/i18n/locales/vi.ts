@@ -237,6 +237,12 @@ export const vi: TranslationMap = {
     noSummary: "Chưa ghi nhận bản tóm tắt.",
     branchFromCheckpoint: "Tạo nhánh từ điểm kiểm tra",
     restoreCheckpoint: "Khôi phục điểm kiểm tra",
+    checkpointPanelEyebrow: "Lịch sử nén",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "Không có agent",

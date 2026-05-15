@@ -237,6 +237,12 @@ export const id: TranslationMap = {
     noSummary: "Tidak ada ringkasan yang direkam.",
     branchFromCheckpoint: "Buat cabang dari checkpoint",
     restoreCheckpoint: "Pulihkan checkpoint",
+    checkpointPanelEyebrow: "Riwayat pemadatan",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "No agents",

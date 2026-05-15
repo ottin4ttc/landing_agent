@@ -72,33 +72,24 @@ function buildProps(result: SessionsListResult): SessionsProps {
   };
 }
 
-function readSessionDetailStats(container: ParentNode): Map<string, string> {
-  return new Map(
-    Array.from(container.querySelectorAll(".session-detail-stat")).map((stat) => [
-      stat.querySelector(".session-detail-stat__label")?.textContent?.trim() ?? "",
-      stat.querySelector(".session-detail-stat__value")?.textContent?.trim() ?? "",
-    ]),
-  );
-}
-
 function sessionTableHeaders(container: HTMLElement): Array<string | undefined> {
   return Array.from(container.querySelectorAll("thead th")).map((cell) => cell.textContent?.trim());
 }
 
 const SESSION_TABLE_HEADERS = [
   "",
-  "Key",
+  "Session",
   "Label",
-  "Kind",
+  "Type",
   "Status",
   "Runtime",
-  "Updated",
+  "Last updated",
   "Tokens",
   "Compaction",
-  "Thinking",
-  "Fast",
+  "Thinking mode",
+  "Fast mode",
   "Verbose",
-  "Reasoning",
+  "Reasoning mode",
 ];
 
 describe("sessions view", () => {
@@ -588,7 +579,7 @@ describe("sessions view", () => {
     const tokenCell = container.querySelector(".session-token-cell");
     expect(tokenCell?.textContent?.trim()).toBe("123456 / 200000");
     const checkpointToggle = container.querySelector(".session-checkpoint-toggle");
-    expect(checkpointToggle?.textContent).toContain("1 checkpoint");
+    expect(checkpointToggle?.textContent).toContain("1 Checkpoint");
   });
 
   it("renders polished checkpoint details with a timeline and explicit actions", async () => {
@@ -635,8 +626,11 @@ describe("sessions view", () => {
     expect(container.querySelector(".session-checkpoint-panel__title")?.textContent).toContain(
       "Saved checkpoints for this session",
     );
+    expect(
+      container.querySelector(".session-checkpoint-panel__stats")?.getAttribute("aria-label"),
+    ).toBe("Session checkpoint summary");
     expect(container.querySelector(".session-checkpoint-card__delta")?.textContent).toContain(
-      "88,104 → 41,206 tokens",
+      "88,104 to 41,206 tokens",
     );
     expect(container.querySelector(".session-checkpoint-card__summary")?.textContent).toContain(
       "current UI design thread",
@@ -669,13 +663,9 @@ describe("sessions view", () => {
     );
     await Promise.resolve();
 
-    const trigger = container.querySelector<HTMLButtonElement>(".session-compaction-trigger");
-    expect(trigger?.querySelector(".session-compaction-count")?.textContent?.trim()).toBe(
-      "1 Checkpoint",
-    );
+    const trigger = container.querySelector<HTMLButtonElement>(".session-checkpoint-toggle");
     expect(trigger?.textContent?.trim()).toBe("1 Checkpoint");
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
-    expect(container.querySelector(".session-checkpoint-toggle")).toBeNull();
 
     expect(trigger).toBeInstanceOf(HTMLButtonElement);
     trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -727,34 +717,16 @@ describe("sessions view", () => {
     );
     await Promise.resolve();
 
-    const details = container.querySelector(".session-details-panel");
-    expect(details?.querySelector(".session-details-panel__eyebrow")?.textContent?.trim()).toBe(
-      "Session details",
-    );
-    expect(details?.querySelector(".session-details-panel__title")?.textContent?.trim()).toBe(
-      "agent:main:main",
-    );
-    expect(
-      Array.from(details?.querySelectorAll(".session-details-panel__badges > *") ?? []).map(
-        (badge) => badge.textContent?.trim(),
-      ),
-    ).toEqual(["Live", "direct"]);
+    expect(container.querySelector(".session-status-badge")?.textContent?.trim()).toBe("Live");
+    expect(container.querySelector(".session-runtime-cell")?.textContent?.trim()).toBe("pi");
 
-    const stats = readSessionDetailStats(details ?? container);
-    expect(stats.get("Status")).toBe("running");
-    expect(stats.get("Model")).toBe("gpt-5.5");
-    expect(stats.get("Provider")).toBe("openai");
-    expect(stats.get("Runtime")).toBe("2m 5s");
-    expect(stats.get("Tokens")).toBe("123456 / 200000");
-    expect(stats.get("Compaction")).toBe("1 Checkpoint");
-
-    const compactionSection = details?.querySelector(".session-details-section");
+    const compactionSection = container.querySelector(".session-checkpoint-panel");
     expect(
-      compactionSection?.querySelector(".session-details-panel__eyebrow")?.textContent?.trim(),
+      compactionSection?.querySelector(".session-checkpoint-panel__eyebrow")?.textContent?.trim(),
     ).toBe("Compaction history");
     expect(
-      compactionSection?.querySelector(".session-details-section__title")?.textContent?.trim(),
-    ).toBe("1 Checkpoint");
+      compactionSection?.querySelector(".session-checkpoint-panel__title")?.textContent?.trim(),
+    ).toBe("Saved checkpoints for this session");
     expect(
       compactionSection?.querySelector(".session-checkpoint-card__delta")?.textContent?.trim(),
     ).toBe("123,456 to 38,920 tokens");

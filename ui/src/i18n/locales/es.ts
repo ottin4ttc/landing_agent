@@ -237,6 +237,12 @@ export const es: TranslationMap = {
     noSummary: "No se capturó ningún resumen.",
     branchFromCheckpoint: "Crear rama desde el punto de control",
     restoreCheckpoint: "Restaurar punto de control",
+    checkpointPanelEyebrow: "Historial de compactación",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "No agents",

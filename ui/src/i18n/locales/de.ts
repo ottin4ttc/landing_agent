@@ -240,6 +240,12 @@ export const de: TranslationMap = {
     noSummary: "Keine Zusammenfassung erfasst.",
     branchFromCheckpoint: "Von Checkpoint verzweigen",
     restoreCheckpoint: "Checkpoint wiederherstellen",
+    checkpointPanelEyebrow: "Komprimierungsverlauf",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "No agents",

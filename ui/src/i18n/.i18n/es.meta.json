@@ -1,11 +1,16 @@
 {
-  "fallbackKeys": [],
-  "generatedAt": "2026-05-15T06:54:28.519Z",
+  "fallbackKeys": [
+    "sessionsView.checkpointPanelStatsLabel",
+    "sessionsView.checkpointPanelSub",
+    "sessionsView.checkpointPanelTitle",
+    "sessionsView.checkpointPanelTokensUnit"
+  ],
+  "generatedAt": "2026-05-15T12:23:10.908Z",
   "locale": "es",
   "model": "claude-opus-4-6",
   "provider": "anthropic",
-  "sourceHash": "aa10028509a638096a0e2c1d178279d31c1b53df551d0b9aa44d185577311fd2",
-  "totalKeys": 1113,
-  "translatedKeys": 1113,
+  "sourceHash": "25f2ace429cfb9821fbafb3aeaa2c05e6bd5e811d399284cdd343019d3d21660",
+  "totalKeys": 1118,
+  "translatedKeys": 1114,
   "workflow": 1
 }

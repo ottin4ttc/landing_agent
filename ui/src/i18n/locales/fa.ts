@@ -238,6 +238,12 @@ export const fa: TranslationMap = {
     noSummary: "هیچ خلاصه‌ای ثبت نشده است.",
     branchFromCheckpoint: "انشعاب از نقطهٔ وارسی",
     restoreCheckpoint: "بازیابی نقطهٔ وارسی",
+    checkpointPanelEyebrow: "تاریخچه فشرده‌سازی",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "هیچ عاملی وجود ندارد",

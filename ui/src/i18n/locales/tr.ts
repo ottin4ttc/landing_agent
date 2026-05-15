@@ -239,6 +239,12 @@ export const tr: TranslationMap = {
     noSummary: "Özet yakalanmadı.",
     branchFromCheckpoint: "Kontrol noktasından dal oluştur",
     restoreCheckpoint: "Kontrol noktasını geri yükle",
+    checkpointPanelEyebrow: "Sıkıştırma geçmişi",
+    checkpointPanelTitle: "Saved checkpoints for this session",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
+    checkpointPanelTokensUnit: "tokens",
   },
   agents: {
     noAgents: "No agents",

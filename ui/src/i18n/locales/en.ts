@@ -237,7 +237,9 @@ export const en: TranslationMap = {
     restoreCheckpoint: "Restore checkpoint",
     checkpointPanelEyebrow: "Compaction history",
     checkpointPanelTitle: "Saved checkpoints for this session",
-    checkpointPanelSub: "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelSub:
+      "Branch or restore an earlier pre-compaction view without losing the current session.",
+    checkpointPanelStatsLabel: "Session checkpoint summary",
     checkpointPanelTokensUnit: "tokens",
   },
   agents: {
