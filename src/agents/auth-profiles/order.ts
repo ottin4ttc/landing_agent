@@ -388,7 +388,15 @@ function mergeAliasOrderWithNativeProfiles(params: {
   aliasOrder: string[];
   nativeProfiles: string[];
 }): string[] {
-  return dedupeProfileIds([...params.aliasOrder, ...params.nativeProfiles]);
+  const nativeProfileIds = new Set(params.nativeProfiles);
+  const aliasHasNativeProfile = params.aliasOrder.some((profileId) =>
+    nativeProfileIds.has(profileId),
+  );
+  return dedupeProfileIds(
+    aliasHasNativeProfile
+      ? [...params.aliasOrder, ...params.nativeProfiles]
+      : [...params.nativeProfiles, ...params.aliasOrder],
+  );
 }
 
 function orderProfilesByMode(order: string[], store: AuthProfileStore): string[] {

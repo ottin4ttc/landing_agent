@@ -331,12 +331,12 @@ describe("resolveAuthProfileOrder", () => {
     });
     expect(order).toEqual(["openai-codex:user@example.com"]);
   });
-  it("keeps explicit OpenAI alias order ahead of native Codex profiles", () => {
+  it("keeps explicit Codex profile ids in OpenAI alias order ahead of API-key fallbacks", () => {
     const order = resolveAuthProfileOrder({
       cfg: {
         auth: {
           order: {
-            openai: ["openai:api-key"],
+            openai: ["openai-codex:user@example.com", "openai:api-key"],
           },
         },
       },
@@ -360,7 +360,7 @@ describe("resolveAuthProfileOrder", () => {
       provider: "openai-codex",
     });
 
-    expect(order).toEqual(["openai:api-key", "openai-codex:user@example.com"]);
+    expect(order).toEqual(["openai-codex:user@example.com", "openai:api-key"]);
   });
   it("does not bypass explicit ids when the configured profile exists but is invalid", () => {
     const order = resolveAuthProfileOrder({
