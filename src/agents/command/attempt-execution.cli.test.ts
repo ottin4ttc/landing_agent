@@ -1619,7 +1619,7 @@ describe("embedded attempt harness pinning", () => {
     });
   });
 
-  it("routes explicit OpenAI PI runs with Codex OAuth through the legacy Codex auth transport", async () => {
+  it("routes explicit OpenAI PI runs with Codex OAuth through PI and the legacy Codex auth transport", async () => {
     const sessionEntry: SessionEntry = {
       sessionId: "explicit-pi-codex-oauth-session",
       updatedAt: Date.now(),
@@ -1671,7 +1671,8 @@ describe("embedded attempt harness pinning", () => {
     expectMockArgFields(runEmbeddedPiAgentMock, {
       provider: "openai-codex",
       model: "gpt-5.4",
-      agentHarnessId: undefined,
+      agentHarnessId: "pi",
+      agentHarnessRuntimeOverride: "pi",
       authProfileId: "openai-codex:work",
       authProfileIdSource: "user",
     });
