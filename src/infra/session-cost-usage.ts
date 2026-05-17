@@ -267,9 +267,9 @@ function resolveUsageCostManifestPlugins(
     config,
     env: process.env,
     allowWorkspaceScopedSnapshot: true,
-  })?.plugins.map((plugin) => ({
-    ...(plugin.modelIdNormalization ? { modelIdNormalization: plugin.modelIdNormalization } : {}),
-  }));
+  })?.plugins.map((plugin) =>
+    plugin.modelIdNormalization ? { modelIdNormalization: plugin.modelIdNormalization } : {},
+  );
 }
 
 function resolveUsageCostPricingFingerprint(
