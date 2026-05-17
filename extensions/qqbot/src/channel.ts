@@ -363,7 +363,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
           ["channels", "qqbot", "accounts", accountId, "clientSecret"],
           ["channels", "qqbot", "accounts", accountId, "clientSecretFile"],
         ];
-        if (accountId !== DEFAULT_ACCOUNT_ID && !qqbot?.accounts?.[accountId]) {
+        if (!qqbot?.accounts?.[accountId]) {
           explicitSetPaths.push(["channels", "qqbot", "accounts", accountId]);
         }
         await writeOpenClawConfigThroughRuntime(getQQBotRuntime(), nextCfg as OpenClawConfig, {

@@ -2,7 +2,7 @@ import { createRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveQQBotAccount } from "./bridge/config.js";
+import { DEFAULT_ACCOUNT_ID, resolveQQBotAccount } from "./bridge/config.js";
 import { setQQBotRuntime } from "./bridge/runtime.js";
 import { qqbotPlugin } from "./channel.js";
 
@@ -63,6 +63,47 @@ describe("qqbotPlugin gateway.logoutAccount", () => {
         explicitSetPaths: expect.arrayContaining([
           ["channels", "qqbot", "accounts", "work"],
           ["channels", "qqbot", "accounts", "work", "clientSecret"],
+        ]),
+      },
+      afterWrite: { mode: "auto" },
+    });
+  });
+
+  it("marks removed credential-only default account blocks as explicit logout writes", async () => {
+    const cfg = {
+      channels: {
+        qqbot: {
+          accounts: {
+            default: {
+              clientSecret: "secret",
+            },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    const { runtime, replaceConfigFile } = createRuntime();
+    setQQBotRuntime(runtime);
+
+    const result = await qqbotPlugin.gateway?.logoutAccount?.({
+      accountId: DEFAULT_ACCOUNT_ID,
+      cfg,
+      account: resolveQQBotAccount(cfg, DEFAULT_ACCOUNT_ID),
+      runtime: createRuntimeEnv(),
+    });
+
+    expect(result).toMatchObject({ ok: true, cleared: true, loggedOut: true });
+    expect(replaceConfigFile).toHaveBeenCalledWith({
+      nextConfig: {
+        channels: {
+          qqbot: {
+            accounts: {},
+          },
+        },
+      },
+      writeOptions: {
+        explicitSetPaths: expect.arrayContaining([
+          ["channels", "qqbot", "accounts", DEFAULT_ACCOUNT_ID],
+          ["channels", "qqbot", "accounts", DEFAULT_ACCOUNT_ID, "clientSecret"],
         ]),
       },
       afterWrite: { mode: "auto" },
