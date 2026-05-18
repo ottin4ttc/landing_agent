@@ -177,7 +177,7 @@ describe("Slack live QA runtime helpers", () => {
     }
   });
 
-  it("stops every scenario gateway when RTT debug artifacts are preserved", async () => {
+  it("stops every scenario gateway with distinct RTT debug artifact dirs", async () => {
     const stops: unknown[] = [];
     const gatewayDebugDirPath = path.join(tmpdir(), "openclaw-slack-debug");
     let preservedGatewayDebugArtifacts = false;
@@ -191,7 +191,7 @@ describe("Slack live QA runtime helpers", () => {
 
     const first = await testing.stopSlackQaScenarioGateway({
       cleanupIssues,
-      gatewayDebugDirPath,
+      gatewayDebugArtifactDirPath: path.join(gatewayDebugDirPath, "slack-canary-attempt-1"),
       gatewayHarness: createGatewayHarness("first"),
       issueLabel: "gateway debug preservation failed",
       preserveDebugArtifacts: true,
@@ -199,7 +199,7 @@ describe("Slack live QA runtime helpers", () => {
     preservedGatewayDebugArtifacts ||= first.preservedDebugArtifacts;
     const second = await testing.stopSlackQaScenarioGateway({
       cleanupIssues,
-      gatewayDebugDirPath,
+      gatewayDebugArtifactDirPath: path.join(gatewayDebugDirPath, "slack-canary-attempt-2"),
       gatewayHarness: createGatewayHarness("second"),
       issueLabel: "gateway debug preservation failed",
       preserveDebugArtifacts: true,
@@ -212,11 +212,11 @@ describe("Slack live QA runtime helpers", () => {
     expect(stops).toEqual([
       {
         label: "first",
-        options: { preserveToDir: gatewayDebugDirPath },
+        options: { preserveToDir: path.join(gatewayDebugDirPath, "slack-canary-attempt-1") },
       },
       {
         label: "second",
-        options: { preserveToDir: gatewayDebugDirPath },
+        options: { preserveToDir: path.join(gatewayDebugDirPath, "slack-canary-attempt-2") },
       },
     ]);
   });

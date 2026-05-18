@@ -634,14 +634,16 @@ async function captureSlackGatewayHeapSnapshotCheckpoint(params: {
 
 async function stopSlackQaScenarioGateway(params: {
   cleanupIssues: string[];
-  gatewayDebugDirPath: string;
+  gatewayDebugArtifactDirPath: string;
   gatewayHarness: Awaited<ReturnType<typeof startQaLiveLaneGateway>>;
   issueLabel: string;
   preserveDebugArtifacts: boolean;
 }): Promise<{ preservedDebugArtifacts: boolean; stopped: boolean }> {
   try {
     await params.gatewayHarness.stop(
-      params.preserveDebugArtifacts ? { preserveToDir: params.gatewayDebugDirPath } : undefined,
+      params.preserveDebugArtifacts
+        ? { preserveToDir: params.gatewayDebugArtifactDirPath }
+        : undefined,
     );
     return {
       preservedDebugArtifacts: params.preserveDebugArtifacts,
@@ -1456,7 +1458,10 @@ export async function runSlackQaLive(params: {
           if (gatewayHarness) {
             const stopResult = await stopSlackQaScenarioGateway({
               cleanupIssues,
-              gatewayDebugDirPath,
+              gatewayDebugArtifactDirPath: path.join(
+                gatewayDebugDirPath,
+                `${scenario.id}-attempt-${scenarioAttempt}`,
+              ),
               gatewayHarness,
               issueLabel: preserveGatewayDebugOnStop
                 ? "gateway debug preservation failed"
