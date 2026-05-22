@@ -714,6 +714,38 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     }
   });
 
+  it("requires explicit approval for security audit suppression edits even when policy allows the command", async () => {
+    const tmp = createFixtureDir("openclaw-system-run-allowed-suppression-edit-");
+    setRuntimeConfigSnapshot({
+      tools: {
+        exec: {
+          security: "full",
+          ask: "on-miss",
+        },
+      },
+    });
+    try {
+      const runCommand = vi.fn(async () => createLocalRunResult("should-not-run"));
+      const invoke = await runSystemInvoke({
+        preferMacAppExecHost: false,
+        command: ["openclaw", "config", "set", "security.audit.suppressions", "[]"],
+        cwd: tmp,
+        runCommand,
+        resolveExecSecurity: resolveProductionExecSecurity,
+        resolveExecAsk: resolveProductionExecAsk,
+      });
+
+      expect(runCommand).not.toHaveBeenCalled();
+      expectInvokeErrorMessage(invoke.sendInvokeResult, {
+        message:
+          "SYSTEM_RUN_DENIED: approval required (security audit suppression changes require explicit approval unless exec is running in yolo mode)",
+        exact: true,
+      });
+    } finally {
+      clearRuntimeConfigSnapshot();
+    }
+  });
+
   it.runIf(process.platform !== "win32")(
     "requires explicit approval when system.run auto mode cannot parse the shell command",
     async () => {

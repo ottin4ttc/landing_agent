@@ -542,9 +542,13 @@ async function evaluateSystemRunPolicyPhase(
       env: parsed.env,
       segments,
     }) && !(security === "full" && ask === "off");
-  if (securityAuditSuppressionRequiresApproval && !policy.approvedByAsk && !policy.allowed) {
-    autoReviewDeferredMessage =
-      "SYSTEM_RUN_DENIED: approval required (security audit suppression changes require explicit approval unless exec is running in yolo mode)";
+  if (securityAuditSuppressionRequiresApproval && !policy.approvedByAsk) {
+    await sendSystemRunDenied(opts, parsed.execution, {
+      reason: "approval-required",
+      message:
+        "SYSTEM_RUN_DENIED: approval required (security audit suppression changes require explicit approval unless exec is running in yolo mode)",
+    });
+    return null;
   }
 
   if (!policy.allowed) {
