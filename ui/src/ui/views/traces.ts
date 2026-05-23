@@ -190,12 +190,6 @@ function contentPartText(part: unknown): string | null {
   if (typeof part.content === "string") {
     return part.content;
   }
-  if (part.type === "input_text" && typeof part.text === "string") {
-    return part.text;
-  }
-  if (part.type === "output_text" && typeof part.text === "string") {
-    return part.text;
-  }
   return null;
 }
 
@@ -356,8 +350,7 @@ function toolRecord(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) {
     return null;
   }
-  const nested = isRecord(value.function) ? value.function : value;
-  return nested;
+  return isRecord(value.function) ? value.function : value;
 }
 
 function toolName(value: unknown, index: number): string {
