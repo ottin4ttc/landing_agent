@@ -573,6 +573,11 @@ async function runBoundTurnWithMissingThreadRecovery(params: {
     }
     const agentLookup = buildAgentLookup({ agentDir: params.data.agentDir, config: params.config });
     const binding = await readCodexAppServerBinding(params.data.sessionFile, agentLookup);
+    const execPolicy = resolveConversationExecPolicy({
+      config: params.config,
+      sessionKey: params.sessionKey,
+    });
+    const useCurrentRuntimePolicy = execPolicy?.touched === true;
     await startCodexConversationThread({
       pluginConfig: params.pluginConfig,
       sessionFile: params.data.sessionFile,
@@ -581,8 +586,8 @@ async function runBoundTurnWithMissingThreadRecovery(params: {
       model: binding?.model,
       modelProvider: binding?.modelProvider,
       authProfileId: binding?.authProfileId,
-      approvalPolicy: binding?.approvalPolicy,
-      sandbox: binding?.sandbox,
+      approvalPolicy: useCurrentRuntimePolicy ? undefined : binding?.approvalPolicy,
+      sandbox: useCurrentRuntimePolicy ? undefined : binding?.sandbox,
       serviceTier: binding?.serviceTier,
       config: params.config,
       sessionKey: params.sessionKey,

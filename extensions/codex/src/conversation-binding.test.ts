@@ -645,6 +645,106 @@ describe("codex conversation binding", () => {
     expect(savedBinding).not.toHaveProperty("modelProvider");
   });
 
+  it("uses current exec policy instead of stale binding policy during missing thread recovery", async () => {
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    await fs.writeFile(
+      `${sessionFile}.codex-app-server.json`,
+      JSON.stringify({
+        schemaVersion: 1,
+        threadId: "thread-old",
+        cwd: tempDir,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      }),
+    );
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const notificationHandlers: Array<(notification: Record<string, unknown>) => void> = [];
+    sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
+      request: vi.fn(async (method: string, requestParams: Record<string, unknown>) => {
+        requests.push({ method, params: requestParams });
+        if (method === "turn/start" && requestParams.threadId === "thread-old") {
+          throw new Error("thread not found: thread-old");
+        }
+        if (method === "thread/start") {
+          return {
+            thread: { id: "thread-new", sessionId: "session-1", cwd: tempDir },
+            model: "gpt-5.4-mini",
+          };
+        }
+        if (method === "turn/start" && requestParams.threadId === "thread-new") {
+          setImmediate(() => {
+            for (const handler of notificationHandlers) {
+              handler({
+                method: "turn/completed",
+                params: {
+                  threadId: "thread-new",
+                  turn: {
+                    id: "turn-new",
+                    status: "completed",
+                    items: [{ id: "assistant-1", type: "agentMessage", text: "Recovered" }],
+                  },
+                },
+              });
+            }
+          });
+          return { turn: { id: "turn-new" } };
+        }
+        throw new Error(`unexpected method: ${method}`);
+      }),
+      addNotificationHandler: vi.fn((handler) => {
+        notificationHandlers.push(handler);
+        return () => undefined;
+      }),
+      addRequestHandler: vi.fn(() => () => undefined),
+    });
+
+    const result = await handleCodexConversationInboundClaim(
+      {
+        content: "hi again",
+        bodyForAgent: "hi again",
+        channel: "telegram",
+        isGroup: false,
+        commandAuthorized: true,
+      },
+      {
+        channelId: "telegram",
+        pluginBinding: {
+          bindingId: "binding-1",
+          pluginId: "codex",
+          pluginRoot: tempDir,
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "5185575566",
+          boundAt: Date.now(),
+          data: {
+            kind: "codex-app-server-session",
+            version: 1,
+            sessionFile,
+            workspaceDir: tempDir,
+          },
+        },
+      },
+      {
+        timeoutMs: 500,
+        config: {
+          tools: {
+            exec: {
+              mode: "auto",
+            },
+          },
+        } as never,
+      },
+    );
+
+    expect(result).toEqual({ handled: true, reply: { text: "Recovered" } });
+    expect(requests[1]?.method).toBe("thread/start");
+    expect(requests[1]?.params.approvalPolicy).toBe("on-request");
+    expect(requests[1]?.params.approvalsReviewer).toBe("auto_review");
+    expect(requests[1]?.params.sandbox).toBe("workspace-write");
+    expect(requests[2]?.method).toBe("turn/start");
+    expect(requests[2]?.params.approvalPolicy).toBe("on-request");
+  });
+
   it("returns a clean failure reply when app-server turn start rejects", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const agentDir = path.join(tempDir, "agents", "bot-b", "agent");
