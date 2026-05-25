@@ -42,7 +42,7 @@ vi.mock("../process/supervisor/index.js", () => {
             });
           };
           if (input.timeoutMs !== undefined) {
-            setTimeout(() => settle("overall-timeout", true), 12);
+            setTimeout(() => settle("overall-timeout", true), input.timeoutMs);
           }
         });
         return {
@@ -84,7 +84,7 @@ const BACKGROUND_HOLD_CMD =
 const ABORT_SETTLE_MS = process.platform === "win32" ? 200 : 0;
 const POLL_INTERVAL_MS = process.platform === "win32" ? 15 : 5;
 const FINISHED_WAIT_TIMEOUT_MS = process.platform === "win32" ? 8_000 : 1_000;
-const BACKGROUND_TIMEOUT_SEC = process.platform === "win32" ? 0.2 : 0.02;
+const BACKGROUND_TIMEOUT_SEC = 0.2;
 const TEST_EXEC_DEFAULTS = {
   host: "gateway" as const,
   security: "full" as const,
