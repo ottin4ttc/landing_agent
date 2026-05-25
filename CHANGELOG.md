@@ -8,6 +8,8 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
+- Gateway: avoid sending duplicate tool-event frames to Control UI connections that are subscribed by both run and session.
+- Gateway: stop sending duplicate message-phase `sessions.changed` websocket events after displayable `session.message` transcript updates. (#84834)
 - Discord: suppress a bot's previous reply body and referenced media from prompt context when a user replies to that bot message, while keeping reply metadata for routing. (#86238) Thanks @fuller-stack-dev.
 - Diagnostics: reclaim wedged session lanes when stale active-run bookkeeping blocks queued work despite no forward progress. Fixes #85639. Thanks @openperf.
 - Agents: release embedded-attempt session locks from outer teardown so post-prompt exceptions cannot wedge later requests behind `SessionWriteLockTimeoutError`. Fixes #86014. Thanks @openperf.
@@ -151,7 +153,6 @@ Docs: https://docs.openclaw.ai
 - WebChat: scope the visible attachment button to its own composer file input so clicking Upload reliably opens the file picker. (#83952, fixes #47983) Thanks @jason-allen-oneal.
 - Gateway: preserve deferred lifecycle-error cleanup across later non-terminal events so provider timeouts can persist failed session state instead of leaving sessions stuck running. (#85256, fixes #63819) Thanks @samzong.
 - Gateway/update: stop treating inherited macOS `XPC_SERVICE_NAME` values as launchd supervision during update respawn, so GUI-spawned gateways use detached respawn instead of exiting for a missing LaunchAgent. Fixes #85224. Thanks @richardmqq.
-- Gateway: stop sending duplicate message-phase `sessions.changed` websocket events after displayable `session.message` transcript updates. (#84834)
 - Agents/subagents: report tool-only child progress during timeout summaries instead of showing no visible output.
 - Telegram/ACP: preserve explicit `:topic:` conversation suffixes when inbound ACP targets do not carry a separate thread id.
 - Browser/proxy: bypass the managed proxy for the exact local managed Chrome CDP readiness and DevTools WebSocket endpoints, so `openclaw browser start` works when the operator proxy blocks loopback egress. (#83255) Thanks @lightcap.
