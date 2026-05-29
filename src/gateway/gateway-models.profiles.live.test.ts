@@ -1214,10 +1214,10 @@ describe("getHighSignalLiveModelPriorityIndex", () => {
   it("prefers curated Google replacements over big-pickle", () => {
     expect(
       getHighSignalLiveModelPriorityIndex({ provider: "google", id: "gemini-3.1-pro-preview" }),
-    ).toBe(2);
+    ).toBe(3);
     expect(
       getHighSignalLiveModelPriorityIndex({ provider: "google", id: "gemini-3-flash-preview" }),
-    ).toBe(3);
+    ).toBe(4);
     expect(getHighSignalLiveModelPriorityIndex({ provider: "opencode", id: "big-pickle" })).toBe(
       null,
     );
@@ -1955,6 +1955,51 @@ function createStaticLiveModelRegistry(models: Array<Model>): LiveModelRegistry 
       return models;
     },
   };
+}
+
+async function loadAuthBackedLiveModelRegistry(params: {
+  agentDir: string;
+  cfg: OpenClawConfig;
+  providerList: string[] | undefined;
+}): Promise<{
+  authProfileStore: AuthProfileStore;
+  modelRegistry: LiveModelRegistry;
+  all: Array<Model>;
+}> {
+  const authProfileStore = await withGatewayLiveSetupTimeout(
+    Promise.resolve().then(() =>
+      params.providerList
+        ? ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
+            allowKeychainPrompt: false,
+          })
+        : ensureAuthProfileStore(params.agentDir, {
+            allowKeychainPrompt: false,
+          }),
+    ),
+    "[all-models] load auth profiles",
+  );
+  const authStorage = await withGatewayLiveSetupTimeout(
+    Promise.resolve().then(() =>
+      discoverAuthStorage(params.agentDir, {
+        config: params.cfg,
+        env: process.env,
+        ...(params.providerList
+          ? {
+              skipExternalAuthProfiles: true,
+              syntheticAuthProviderRefs: [],
+            }
+          : {}),
+      }),
+    ),
+    "[all-models] load auth storage",
+  );
+  logProgress("[all-models] loading model registry");
+  const modelRegistry = discoverModels(authStorage, params.agentDir);
+  const all = await withGatewayLiveSetupTimeout(
+    Promise.resolve().then(() => modelRegistry.getAll()),
+    "[all-models] load model registry",
+  );
+  return { authProfileStore, modelRegistry, all };
 }
 
 function toLiveModelConfig(model: Model): NonNullable<ModelProviderConfig["models"]>[number] {
@@ -3075,42 +3120,25 @@ describeLive("gateway live (dev agent, profile keys)", () => {
             loadProviderScopedModels({ agentDir, providerList: providerScopedModelProviders }),
             "[all-models] load provider-scoped model refs",
           );
-          modelRegistry = createStaticLiveModelRegistry(all);
+          if (all.length > 0) {
+            modelRegistry = createStaticLiveModelRegistry(all);
+          } else {
+            logProgress("[all-models] provider-scoped model refs empty; loading auth profiles");
+            const authBacked = await loadAuthBackedLiveModelRegistry({
+              agentDir,
+              cfg,
+              providerList: providerScopedModelProviders,
+            });
+            authProfileStore = authBacked.authProfileStore;
+            modelRegistry = authBacked.modelRegistry;
+            all = authBacked.all;
+          }
         } else {
           logProgress("[all-models] loading auth profiles");
-          authProfileStore = await withGatewayLiveSetupTimeout(
-            Promise.resolve().then(() =>
-              providerList
-                ? ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
-                    allowKeychainPrompt: false,
-                  })
-                : ensureAuthProfileStore(agentDir, {
-                    allowKeychainPrompt: false,
-                  }),
-            ),
-            "[all-models] load auth profiles",
-          );
-          const authStorage = await withGatewayLiveSetupTimeout(
-            Promise.resolve().then(() =>
-              discoverAuthStorage(agentDir, {
-                config: cfg,
-                env: process.env,
-                ...(providerList
-                  ? {
-                      skipExternalAuthProfiles: true,
-                      syntheticAuthProviderRefs: [],
-                    }
-                  : {}),
-              }),
-            ),
-            "[all-models] load auth storage",
-          );
-          logProgress("[all-models] loading model registry");
-          modelRegistry = discoverModels(authStorage, agentDir);
-          all = await withGatewayLiveSetupTimeout(
-            Promise.resolve().then(() => modelRegistry.getAll()),
-            "[all-models] load model registry",
-          );
+          const authBacked = await loadAuthBackedLiveModelRegistry({ agentDir, cfg, providerList });
+          authProfileStore = authBacked.authProfileStore;
+          modelRegistry = authBacked.modelRegistry;
+          all = authBacked.all;
         }
         const maxModels = GATEWAY_LIVE_MAX_MODELS;
         const targetMatcher = createLiveTargetMatcher({

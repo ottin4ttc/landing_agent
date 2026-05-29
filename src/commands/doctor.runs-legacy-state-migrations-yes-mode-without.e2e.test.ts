@@ -128,7 +128,7 @@ describe("doctor command", () => {
       },
     });
 
-    ensureAuthProfileStore.mockReturnValueOnce({
+    ensureAuthProfileStore.mockReturnValue({
       version: 1,
       profiles: {
         "anthropic:me@example.com": {

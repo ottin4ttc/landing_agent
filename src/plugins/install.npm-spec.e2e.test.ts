@@ -354,7 +354,15 @@ describe("installPluginFromNpmSpec e2e", () => {
       expect(result.npmResolution?.resolvedSpec).toBe(`${packageName}@2026.5.26`);
       expect(warnings.join("\n")).toContain(`using newest compatible ${packageName}@2026.5.26`);
       const installedPackageJson = JSON.parse(
-        await fs.readFile(path.join(npmRoot, "node_modules", packageName, "package.json"), "utf8"),
+        await fs.readFile(
+          path.join(
+            pluginNpmProjectRoot(npmRoot, packageName),
+            "node_modules",
+            packageName,
+            "package.json",
+          ),
+          "utf8",
+        ),
       ) as { version?: string };
       expect(installedPackageJson.version).toBe("2026.5.26");
     } finally {
