@@ -1,4 +1,3 @@
-import "./fs-safe-defaults.js";
 export {
   isNotFoundPathError,
   hasNodeErrorCode,
@@ -13,4 +12,4 @@ export {
   safeRealpathSync,
   safeStatSync,
   splitSafeRelativePath,
-} from "@openclaw/fs-safe/path";
+} from "./path-safety.js";
