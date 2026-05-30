@@ -420,13 +420,6 @@ function shouldOmitDeviceIdentityForGatewayCall(params: {
   );
 }
 
-function isBackendGatewayClientCall(opts: CallGatewayBaseOptions): boolean {
-  return (
-    (opts.mode ?? GATEWAY_CLIENT_MODES.BACKEND) === GATEWAY_CLIENT_MODES.BACKEND &&
-    (opts.clientName ?? GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT) === GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT
-  );
-}
-
 function resolveDeviceIdentityForGatewayCall(params: {
   opts: CallGatewayBaseOptions;
   url: string;
@@ -1054,13 +1047,10 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
   const url = connectionDetails.url;
   const tlsFingerprint = await resolveGatewayTlsFingerprint({ opts, context, url });
   const { token, password } = resolvedCredentials;
-  const configuredCredentials =
-    (await resolveConfiguredGatewayCredentialsForExplicitToken(context)) ?? resolvedCredentials;
-  const tokenIsSharedAuth = Boolean(
-    token &&
-    (configuredCredentials.token === token ||
-      (context.explicitAuth.token && isBackendGatewayClientCall(opts))),
-  );
+  const configuredCredentials = context.explicitAuth.token
+    ? await resolveConfiguredGatewayCredentialsForExplicitToken(context)
+    : resolvedCredentials;
+  const tokenIsSharedAuth = Boolean(token && configuredCredentials?.token === token);
   const deviceIdentity =
     opts.deviceIdentity === undefined
       ? resolveDeviceIdentityForGatewayCall({ opts, url, token, tokenIsSharedAuth, password })

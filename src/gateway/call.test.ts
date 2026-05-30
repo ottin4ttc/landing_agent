@@ -500,7 +500,7 @@ describe("callGateway url resolution", () => {
 
     expect(lastClientOptions?.url).toBe("ws://127.0.0.1:18789");
     expect(lastClientOptions?.token).toBe("explicit-token");
-    expect(lastClientOptions?.deviceIdentity).toBeNull();
+    expect(lastClientOptions?.deviceIdentity).toEqual(deviceIdentityState.value);
   });
 
   it("fails before opening a websocket when backend token auth has no shared or paired credential", async () => {
