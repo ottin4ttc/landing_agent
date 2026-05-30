@@ -542,6 +542,8 @@ describe("gateway node pairing authorization", () => {
             `spoofed stable node not quarantined yet: ${JSON.stringify(list.payload)}`,
           );
         });
+        const pairedStableNode = await getPairedNode(stableNodeId);
+        expect(pairedStableNode?.lastConnectedAtMs).toBeUndefined();
       } finally {
         controlWs.close();
         await nodeClient?.stopAndWait();
