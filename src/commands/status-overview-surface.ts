@@ -191,6 +191,8 @@ export function buildStatusOverviewRowsFromSurface(params: {
     suffixRows: params.suffixRows,
     agentsValue: params.agentsValue,
     updateValue: params.updateValue,
+    // Callers may override these when a richer status path already computed a
+    // display-safe warning or fallback; keep the normalized surface unchanged.
     gatewayAuthWarningValue: params.gatewayAuthWarningValue,
     gatewaySelfFallbackValue: params.gatewaySelfFallbackValue,
   });
