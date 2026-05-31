@@ -165,6 +165,15 @@ export function createTypingCallbacks(params: CreateTypingCallbacksParams): Typi
     return false;
   };
 
+  const hasPendingStart = () => {
+    for (const start of pendingStarts) {
+      if (start.pending) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const fireStop = () => {
     if (hasPendingStart()) {
       stopRequestedDuringPendingStart = true;
