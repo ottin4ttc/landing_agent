@@ -1,7 +1,6 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { saveCronStore } from "../cron/store.js";
+import { upsertSessionEntry } from "../config/sessions/store.js";
+import type { SessionEntry } from "../config/sessions/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   createManagedTaskFlow,
@@ -44,6 +43,14 @@ const zeroTaskAuditCounts = {
   stale_queued: 0,
   stale_running: 0,
 };
+
+function seedMainSessionRow(sessionKey: string, entry: SessionEntry): void {
+  upsertSessionEntry({
+    agentId: "main",
+    sessionKey,
+    entry,
+  });
+}
 
 async function withTaskCommandStateDir(
   run: (state: OpenClawTestState) => Promise<void>,
@@ -165,22 +172,10 @@ describe("tasks commands", () => {
       });
       vi.setSystemTime(now);
 
-      const sessionsDir = state.sessionsDir("main");
-      await fs.mkdir(sessionsDir, { recursive: true });
-      await fs.writeFile(
-        path.join(sessionsDir, "sessions.json"),
-        JSON.stringify(
-          {
-            [childSessionKey]: {
-              sessionId: "child-retained",
-              updatedAt: now,
-            },
-          },
-          null,
-          2,
-        ),
-        "utf8",
-      );
+      seedMainSessionRow(childSessionKey, {
+        sessionId: "child-retained",
+        updatedAt: now,
+      });
 
       const runtime = createRuntime();
       await tasksMaintenanceCommand({ json: true, apply: false }, runtime);
@@ -207,7 +202,7 @@ describe("tasks commands", () => {
     });
   });
 
-  it("explains task maintenance decisions before applying session registry pruning", async () => {
+  it("explains task maintenance decisions before any later session registry pruning", async () => {
     await withTaskCommandStateDir(async (state) => {
       const now = Date.now();
       vi.useFakeTimers();
@@ -224,23 +219,10 @@ describe("tasks commands", () => {
       });
       vi.setSystemTime(now);
 
-      const sessionsDir = state.sessionsDir("main");
-      const storePath = path.join(sessionsDir, "sessions.json");
-      await fs.mkdir(sessionsDir, { recursive: true });
-      await fs.writeFile(
-        storePath,
-        JSON.stringify(
-          {
-            [childSessionKey]: {
-              sessionId: "old-run",
-              updatedAt: now - 8 * 24 * 60 * 60_000,
-            },
-          },
-          null,
-          2,
-        ),
-        "utf8",
-      );
+      seedMainSessionRow(childSessionKey, {
+        sessionId: "old-run",
+        updatedAt: now - 8 * 24 * 60 * 60_000,
+      });
 
       const runtime = createRuntime();
       await tasksMaintenanceCommand({ json: true, apply: true }, runtime);
@@ -248,7 +230,6 @@ describe("tasks commands", () => {
       const payload = readFirstJsonLog(runtime) as {
         maintenance: {
           tasks: { reconciled: number };
-          sessions: { pruned: number };
         };
         diagnostics: {
           staleRunningTasks: Array<{
@@ -261,7 +242,6 @@ describe("tasks commands", () => {
       };
 
       expect(payload.maintenance.tasks.reconciled).toBe(0);
-      expect(payload.maintenance.sessions.pruned).toBe(1);
       expect(payload.diagnostics.staleRunningTasks).toContainEqual(
         expect.objectContaining({
           taskId: task.taskId,
@@ -270,9 +250,6 @@ describe("tasks commands", () => {
           childSessionKey,
         }),
       );
-
-      const updated = JSON.parse(await fs.readFile(storePath, "utf8")) as Record<string, unknown>;
-      expect(updated[childSessionKey]).toBeUndefined();
     });
   });
 
@@ -375,105 +352,6 @@ describe("tasks commands", () => {
       expect(payload.auditBefore.taskFlows.byCode.stale_running).toBe(0);
       expect(payload.auditAfter.byCode).toStrictEqual(zeroTaskAuditCounts);
       expect(payload.auditAfter.taskFlows.byCode.stale_running).toBe(0);
-    });
-  });
-
-  it("applies a conservative session registry sweep for stale cron run sessions", async () => {
-    await withTaskCommandStateDir(async (state) => {
-      const now = Date.now();
-      vi.useFakeTimers();
-      vi.setSystemTime(now);
-      const sessionsDir = state.sessionsDir("main");
-      const storePath = path.join(sessionsDir, "sessions.json");
-      const old = now - 8 * 24 * 60 * 60_000;
-      await fs.mkdir(sessionsDir, { recursive: true });
-      await fs.writeFile(
-        storePath,
-        JSON.stringify(
-          {
-            "agent:main:cron:done-job:run:old-run": {
-              sessionId: "done-run",
-              updatedAt: old,
-            },
-            "agent:main:cron:running-job:run:old-run": {
-              sessionId: "running-run",
-              updatedAt: old,
-            },
-            "agent:main:cron:done-job:run:recent-run": {
-              sessionId: "recent-run",
-              updatedAt: now - 60_000,
-            },
-            "agent:main:telegram:dm:old": {
-              sessionId: "ordinary-old-session",
-              updatedAt: old,
-            },
-          },
-          null,
-          2,
-        ),
-        "utf-8",
-      );
-      await saveCronStore(state.statePath("cron", "jobs.json"), {
-        version: 1,
-        jobs: [
-          {
-            id: "running-job",
-            name: "Running job",
-            enabled: true,
-            schedule: { kind: "every", everyMs: 60_000 },
-            sessionTarget: "isolated",
-            sessionKey: "cron:running-job",
-            wakeMode: "now",
-            payload: { kind: "agentTurn", message: "ping" },
-            delivery: { mode: "none" },
-            createdAtMs: now,
-            updatedAtMs: now,
-            state: { runningAtMs: now - 5_000 },
-          },
-          {
-            id: "done-job",
-            name: "Done job",
-            enabled: true,
-            schedule: { kind: "every", everyMs: 60_000 },
-            sessionTarget: "isolated",
-            sessionKey: "cron:done-job",
-            wakeMode: "now",
-            payload: { kind: "agentTurn", message: "ping" },
-            delivery: { mode: "none" },
-            createdAtMs: now,
-            updatedAtMs: now,
-            state: {},
-          },
-        ],
-      });
-      const runtime = createRuntime();
-      await tasksMaintenanceCommand({ json: true, apply: true }, runtime);
-
-      const payload = readFirstJsonLog(runtime) as {
-        maintenance: {
-          sessions: {
-            pruned: number;
-            runningCronJobs: number;
-            stores: Array<{ pruned: number; preservedRunning: number }>;
-          };
-        };
-      };
-      expect(payload.maintenance.sessions.pruned).toBe(1);
-      expect(payload.maintenance.sessions.runningCronJobs).toBe(1);
-      expect(payload.maintenance.sessions.stores[0]?.pruned).toBe(1);
-      expect(payload.maintenance.sessions.stores[0]?.preservedRunning).toBe(1);
-
-      const updated = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
-      expect(updated["agent:main:cron:done-job:run:old-run"]).toBeUndefined();
-      for (const key of [
-        "agent:main:cron:running-job:run:old-run",
-        "agent:main:cron:done-job:run:recent-run",
-        "agent:main:telegram:dm:old",
-      ]) {
-        if (updated[key] === undefined) {
-          throw new Error(`Expected preserved session ${key}`);
-        }
-      }
     });
   });
 });

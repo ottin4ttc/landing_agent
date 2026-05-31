@@ -56,12 +56,12 @@ export type LoadSessionsOverrides = {
   activeMinutes?: number;
   limit?: number;
   offset?: number;
+  append?: boolean;
   search?: string;
   includeGlobal?: boolean;
   includeUnknown?: boolean;
   showArchived?: boolean;
   configuredAgentsOnly?: boolean;
-  append?: boolean;
   publishChatRunStatus?: boolean;
 };
 
@@ -413,37 +413,6 @@ function projectSessionsResultForAvailability(
   return {
     ...result,
     count: sessions.length,
-    sessions,
-  };
-}
-
-function appendSessionsResult(
-  previous: SessionsListResult,
-  page: SessionsListResult,
-): SessionsListResult {
-  const seen = new Set<string>();
-  const sessions: SessionsListResult["sessions"] = [];
-  for (const row of [...previous.sessions, ...page.sessions]) {
-    if (!row.key || seen.has(row.key)) {
-      continue;
-    }
-    seen.add(row.key);
-    sessions.push(row);
-  }
-  const totalCount = page.totalCount ?? previous.totalCount;
-  const hasMore =
-    page.hasMore ??
-    (typeof totalCount === "number" && Number.isFinite(totalCount)
-      ? sessions.length < totalCount
-      : false);
-  const nextOffset =
-    page.nextOffset !== undefined ? page.nextOffset : hasMore ? sessions.length : null;
-  return {
-    ...page,
-    count: sessions.length,
-    totalCount,
-    hasMore,
-    nextOffset,
     sessions,
   };
 }
@@ -947,24 +916,9 @@ async function loadSessionsOnce(
     if (limit > 0) {
       params.limit = limit;
     }
-    const offset =
-      typeof overrides?.offset === "number" && Number.isFinite(overrides.offset)
-        ? Math.max(0, Math.floor(overrides.offset))
-        : 0;
-    if (offset > 0) {
-      params.offset = offset;
-    }
-    const search = overrides?.search?.trim();
-    if (search) {
-      params.search = search;
-    }
     const res = await client.request<SessionsListResult | undefined>("sessions.list", params);
     if (res) {
-      const projected = projectSessionsResultForAvailability(res, { showArchived });
-      state.sessionsResult =
-        overrides?.append === true && offset > 0 && state.sessionsResult
-          ? appendSessionsResult(state.sessionsResult, projected)
-          : projected;
+      state.sessionsResult = projectSessionsResultForAvailability(res, { showArchived });
       state.sessionsResultAgentId = resultAgentId;
       if (hasCurrentChatSession(state)) {
         reconcileChatRunFromCurrentSessionRow(state, {
@@ -1085,7 +1039,7 @@ export async function deleteSessionsAndRefresh(
     return [];
   }
   const confirmed = window.confirm(
-    `Delete ${keys.length} ${keys.length === 1 ? "session" : "sessions"}?\n\nThis will delete the session entries and archive their transcripts.`,
+    `Delete ${keys.length} ${keys.length === 1 ? "session" : "sessions"}?\n\nThis will delete the session entries and their transcript rows.`,
   );
   if (!confirmed) {
     return [];
@@ -1098,7 +1052,6 @@ export async function deleteSessionsAndRefresh(
         await client.request("sessions.delete", {
           key,
           ...(isGlobalSessionKey(key) ? { agentId: resolveSelectedGlobalAgentId(state) } : {}),
-          deleteTranscript: true,
         });
         deleted.push(key);
       } catch (err) {

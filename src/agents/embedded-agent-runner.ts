@@ -2,7 +2,10 @@ export { compactEmbeddedAgentSession } from "./embedded-agent-runner/compact.que
 export { applyExtraParamsToAgent } from "./embedded-agent-runner/extra-params.js";
 
 export { resolveEmbeddedSessionLane } from "./embedded-agent-runner/lanes.js";
-export { runEmbeddedAgent } from "./embedded-agent-runner/run.js";
+export {
+  runEmbeddedAgent,
+  runEmbeddedAgent as runEmbeddedPiAgent,
+} from "./embedded-agent-runner/run.js";
 export {
   abortAndDrainEmbeddedAgentRun,
   abortEmbeddedAgentRun,
@@ -12,7 +15,6 @@ export {
   queueEmbeddedAgentMessageWithOutcome,
   resolveActiveEmbeddedRunSessionId,
   resolveActiveEmbeddedRunSessionId as resolveActiveEmbeddedAgentRunSessionId,
-  resolveActiveEmbeddedRunSessionIdBySessionFile,
   waitForEmbeddedAgentRunEnd,
 } from "./embedded-agent-runner/runs.js";
 export { buildEmbeddedSandboxInfo } from "./embedded-agent-runner/sandbox-info.js";
@@ -22,4 +24,7 @@ export type {
   EmbeddedAgentCompactResult,
   EmbeddedAgentRunMeta,
   EmbeddedAgentRunResult,
+  EmbeddedPiCompactResult,
+  EmbeddedPiMeta,
+  EmbeddedPiRunResult,
 } from "./embedded-agent-runner/types.js";

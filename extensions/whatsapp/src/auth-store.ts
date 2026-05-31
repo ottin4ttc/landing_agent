@@ -5,11 +5,12 @@ import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/routing";
 import { info, success } from "openclaw/plugin-sdk/runtime-env";
 import { getChildLogger } from "openclaw/plugin-sdk/runtime-env";
 import { defaultRuntime, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
+import { replaceFileAtomic } from "openclaw/plugin-sdk/security-runtime";
 import { resolveOAuthDir } from "./auth-store.runtime.js";
 import {
   assertWebCredsPathRegularFileOrMissing,
   hasWebCredsSync,
-  readWebCredsJsonRaw,
+  readWebCredsJsonRaw as readWebCredsJsonRawAsync,
   readWebCredsJsonRawSync,
   resolveWebCredsBackupPath,
   resolveWebCredsPath,
@@ -17,7 +18,6 @@ import {
 } from "./creds-files.js";
 import {
   waitForCredsSaveQueueWithTimeout,
-  writeWebCredsRawAtomically,
   type CredsQueueWaitResult,
 } from "./creds-persistence.js";
 import { resolveComparableIdentity, type WhatsAppSelfIdentity } from "./identity.js";
@@ -71,11 +71,6 @@ export async function restoreCredsFromBackupIfNeeded(authDir: string): Promise<b
   try {
     const credsPath = resolveWebCredsPath(authDir);
     const backupPath = resolveWebCredsBackupPath(authDir);
-    try {
-      await assertWebCredsPathRegularFileOrMissing(credsPath);
-    } catch {
-      return false;
-    }
     const raw = readCredsJsonRaw(credsPath);
     if (raw) {
       // Validate that creds.json is parseable.
@@ -87,12 +82,19 @@ export async function restoreCredsFromBackupIfNeeded(authDir: string): Promise<b
     if (!backupRaw) {
       return false;
     }
+    const backupStats = await fs.lstat(backupPath).catch(() => null);
+    if (!backupStats?.isFile()) {
+      return false;
+    }
 
     // Ensure backup is parseable before restoring.
     JSON.parse(backupRaw);
-    await writeWebCredsRawAtomically({
+    await assertWebCredsPathRegularFileOrMissing(credsPath);
+    await replaceFileAtomic({
       filePath: credsPath,
       content: backupRaw,
+      dirMode: 0o700,
+      mode: 0o600,
       tempPrefix: ".creds.restore",
     });
     logger.warn({ credsPath }, "restored corrupted WhatsApp creds.json from backup");
@@ -106,11 +108,16 @@ export async function restoreCredsFromBackupIfNeeded(authDir: string): Promise<b
 export async function webAuthExists(authDir: string = resolveDefaultWebAuthDir()) {
   const resolvedAuthDir = resolveUserPath(authDir);
   const credsPath = resolveWebCredsPath(resolvedAuthDir);
-  const raw = await readWebCredsJsonRaw(credsPath);
-  if (!raw) {
+  try {
+    await fs.access(resolvedAuthDir);
+  } catch {
     return false;
   }
   try {
+    const raw = await readWebCredsJsonRawAsync(credsPath);
+    if (!raw) {
+      return false;
+    }
     JSON.parse(raw);
     return true;
   } catch {
@@ -398,28 +405,28 @@ export async function readWebSelfIdentity(
   fallback?: { id?: string | null; lid?: string | null } | null,
 ): Promise<WhatsAppSelfIdentity> {
   const resolvedAuthDir = resolveUserPath(authDir);
-  const raw = await readWebCredsJsonRaw(resolveWebCredsPath(resolvedAuthDir));
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as { me?: { id?: string; lid?: string } } | undefined;
-      return resolveComparableIdentity(
-        {
-          jid: parsed?.me?.id ?? null,
-          lid: parsed?.me?.lid ?? null,
-        },
-        resolvedAuthDir,
-      );
-    } catch {
-      // Fall through to the live message identity below when cached creds are corrupt.
+  try {
+    const raw = await readWebCredsJsonRawAsync(resolveWebCredsPath(resolvedAuthDir));
+    if (!raw) {
+      throw new Error("WhatsApp creds missing");
     }
+    const parsed = JSON.parse(raw) as { me?: { id?: string; lid?: string } } | undefined;
+    return resolveComparableIdentity(
+      {
+        jid: parsed?.me?.id ?? null,
+        lid: parsed?.me?.lid ?? null,
+      },
+      resolvedAuthDir,
+    );
+  } catch {
+    return resolveComparableIdentity(
+      {
+        jid: fallback?.id ?? null,
+        lid: fallback?.lid ?? null,
+      },
+      resolvedAuthDir,
+    );
   }
-  return resolveComparableIdentity(
-    {
-      jid: fallback?.id ?? null,
-      lid: fallback?.lid ?? null,
-    },
-    resolvedAuthDir,
-  );
 }
 
 export async function readWebSelfIdentityForDecision(
@@ -442,8 +449,15 @@ export async function readWebSelfIdentityForDecision(
  * Helpful for heartbeats/observability to spot stale credentials.
  */
 export function getWebAuthAgeMs(authDir: string = resolveDefaultWebAuthDir()): number | null {
-  const stats = statWebCredsFileSync(resolveWebCredsPath(resolveUserPath(authDir)));
-  return stats ? Math.max(0, Date.now() - stats.mtimeMs) : null;
+  try {
+    const stats = statWebCredsFileSync(resolveWebCredsPath(resolveUserPath(authDir)));
+    if (!stats) {
+      return null;
+    }
+    return Math.max(0, Date.now() - stats.mtimeMs);
+  } catch {
+    return null;
+  }
 }
 
 export function logWebSelfId(

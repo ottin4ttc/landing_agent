@@ -3,9 +3,8 @@ import type { VideoGenerationProviderPlugin } from "../plugins/types.js";
 
 type ProviderRegistryModule = typeof import("./provider-registry.js");
 
-const resolvePluginCapabilityProvidersMock = vi.hoisted(() =>
-  vi.fn<() => VideoGenerationProviderPlugin[]>(() => []),
-);
+const resolvePluginCapabilityProvidersMock = vi.hoisted(() => vi.fn());
+
 vi.mock("../plugins/capability-provider-runtime.js", () => ({
   resolvePluginCapabilityProviders: resolvePluginCapabilityProvidersMock,
 }));

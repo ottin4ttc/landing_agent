@@ -1,10 +1,17 @@
-import fsp from "node:fs/promises";
 import path from "node:path";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { AgentMessage } from "../agents/agent-core-contract.js";
+import { exportSqliteToolArtifacts } from "../agents/filesystem/tool-artifact-store.sqlite.js";
 import { sanitizeDiagnosticPayload } from "../agents/payload-redaction.js";
-import type { AgentMessage } from "../agents/runtime/index.js";
-import type { FileEntry, SessionEntry, SessionHeader } from "../agents/sessions/session-manager.js";
+import type {
+  SessionEntry,
+  SessionHeader,
+  TranscriptEntry,
+} from "../agents/transcript/session-transcript-contract.js";
 import { resolveStateDir } from "../config/paths.js";
+import {
+  loadSqliteSessionTranscriptEvents,
+  resolveSqliteSessionTranscriptScope,
+} from "../config/sessions/transcript-store.sqlite.js";
 import {
   jsonSupportBundleFile,
   jsonlSupportBundleFile,
@@ -18,23 +25,22 @@ import {
   redactSupportString,
   type SupportRedactionContext,
 } from "../logging/diagnostic-support-redaction.js";
+import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { safeJsonStringify } from "../utils/safe-json.js";
-import { TRAJECTORY_RUNTIME_FILE_MAX_BYTES, safeTrajectorySessionFileName } from "./paths.js";
-import { isRegularNonSymlinkFile, resolveTrajectoryRuntimeFile } from "./runtime-file.js";
+import { safeTrajectorySessionFileName } from "./paths.js";
+import { listTrajectoryRuntimeEvents } from "./runtime-store.sqlite.js";
 import type {
   TrajectoryBundleManifest,
-  TrajectoryBundleWarning,
   TrajectoryEvent,
   TrajectoryToolDefinition,
 } from "./types.js";
 
 type BuildTrajectoryBundleParams = {
+  agentId?: string;
   outputDir: string;
-  sessionFile: string;
   sessionId: string;
   sessionKey?: string;
   workspaceDir: string;
-  runtimeFile?: string;
   systemPrompt?: string;
   tools?: TrajectoryToolDefinition[];
   maxTotalEvents?: number;
@@ -50,127 +56,32 @@ type TrajectoryExportRedaction = SupportRedactionContext & {
   workspaceDir: string;
 };
 
-type JsonlParseWarning = Omit<TrajectoryBundleWarning, "count" | "rows"> & {
-  row: number;
-};
-
 const MAX_TRAJECTORY_RUNTIME_EVENTS = 200_000;
 const MAX_TRAJECTORY_TOTAL_EVENTS = 250_000;
-const MAX_TRAJECTORY_SESSION_FILE_BYTES = 50 * 1024 * 1024;
-const MAX_TRAJECTORY_WARNING_ROWS = 20;
 
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isSessionFileEntry(value: unknown): value is FileEntry {
-  if (!isRecord(value) || typeof value.type !== "string") {
-    return false;
-  }
-  if (value.type !== "message") {
-    return true;
-  }
-  const message = value.message;
-  return isRecord(message) && typeof message.role === "string";
-}
-
-function parseSessionEntries(content: string): {
-  entries: FileEntry[];
-  warnings: JsonlParseWarning[];
-  rowByEntry: Map<FileEntry, number>;
-} {
-  const entries: FileEntry[] = [];
-  const warnings: JsonlParseWarning[] = [];
-  const rowByEntry = new Map<FileEntry, number>();
-  const rows = content.split(/\r?\n/u);
-  for (const [index, rawLine] of rows.entries()) {
-    const line = rawLine.trim();
-    if (!line) {
-      continue;
-    }
-    try {
-      const parsed = JSON.parse(line) as unknown;
-      if (!isSessionFileEntry(parsed)) {
-        warnings.push({
-          source: "session",
-          code: "invalid-session-row",
-          row: index + 1,
-          message: "Skipped a session JSONL row that is not a session entry object.",
-        });
-        continue;
-      }
-      entries.push(parsed);
-      rowByEntry.set(parsed, index + 1);
-    } catch {
-      warnings.push({
-        source: "session",
-        code: "invalid-session-json",
-        row: index + 1,
-        message: "Skipped a session JSONL row that is not valid JSON.",
-      });
-    }
-  }
-  return { entries, warnings, rowByEntry };
-}
-
-function migrateLegacySessionEntries(entries: FileEntry[]): void {
-  const header = entries.find((entry): entry is SessionHeader => entry.type === "session");
-  const version = header?.version ?? 1;
-  if (version < 2) {
-    let previousId: string | null = null;
-    let index = 0;
-    for (const entry of entries) {
-      if (entry.type === "session") {
-        entry.version = 2;
-        continue;
-      }
-      const mutable = entry as unknown as Record<string, unknown>;
-      if (typeof mutable.id !== "string") {
-        mutable.id = `legacy-${index++}`;
-      }
-      mutable.parentId = previousId;
-      const entryId = mutable.id;
-      previousId = typeof entryId === "string" ? entryId : null;
-      if (entry.type === "compaction" && typeof mutable.firstKeptEntryIndex === "number") {
-        const target = entries[mutable.firstKeptEntryIndex];
-        if (target && target.type !== "session") {
-          mutable.firstKeptEntryId = (target as unknown as Record<string, unknown>).id;
-        }
-        delete mutable.firstKeptEntryIndex;
-      }
-    }
-  }
-  if (version < 3) {
-    for (const entry of entries) {
-      if (entry.type === "session") {
-        entry.version = 3;
-        continue;
-      }
-      if (entry.type === "message") {
-        const message = (entry as { message?: { role?: string } }).message;
-        if (message?.role === "hookMessage") {
-          message.role = "custom";
-        }
-      }
-    }
-  }
-}
-
-async function readSessionBranch(filePath: string): Promise<{
+function readSessionBranch(params: { agentId?: string; sessionId: string; sessionKey?: string }): {
   header: SessionHeader | null;
   leafId: string | null;
   branchEntries: SessionEntry[];
-  warnings: JsonlParseWarning[];
-}> {
-  const {
-    entries: fileEntries,
-    warnings,
-    rowByEntry,
-  } = parseSessionEntries(await fsp.readFile(filePath, "utf8"));
-  migrateLegacySessionEntries(fileEntries);
+} {
+  const scope = resolveSqliteSessionTranscriptScope({
+    agentId: params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey),
+    sessionId: params.sessionId,
+  }) ?? {
+    agentId: params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey),
+    sessionId: params.sessionId,
+  };
+  const transcriptEntries = loadSqliteSessionTranscriptEvents(scope)
+    .map((entry) => entry.event)
+    .filter((entry): entry is TranscriptEntry => Boolean(entry && typeof entry === "object"));
+  if (transcriptEntries.length === 0) {
+    throw new Error(
+      `Transcript is not in SQLite for agent ${scope.agentId} session ${params.sessionId}. Run "openclaw doctor --fix" to import legacy JSONL transcripts.`,
+    );
+  }
   const header =
-    fileEntries.find((entry): entry is SessionHeader => entry.type === "session") ?? null;
-  const entries = fileEntries.filter(
+    transcriptEntries.find((entry): entry is SessionHeader => entry.type === "session") ?? null;
+  const entries = transcriptEntries.filter(
     (entry): entry is SessionEntry =>
       entry.type !== "session" &&
       typeof (entry as { id?: unknown }).id === "string" &&
@@ -181,112 +92,30 @@ async function readSessionBranch(filePath: string): Promise<{
   const leafId = entries.at(-1)?.id ?? null;
   const branchEntries: SessionEntry[] = [];
   const seen = new Set<string>();
-  let currentId = leafId;
-  while (currentId) {
-    if (seen.has(currentId)) {
-      const cycleEntry = byId.get(currentId);
-      warnings.push({
-        source: "session",
-        code: "cyclic-session-branch",
-        row: cycleEntry ? (rowByEntry.get(cycleEntry) ?? 0) : 0,
-        message: "Stopped trajectory session branch export at a cyclic parent link.",
-      });
+  let current = leafId ? byId.get(leafId) : undefined;
+  while (current) {
+    if (seen.has(current.id)) {
       break;
     }
-    seen.add(currentId);
-    const current = byId.get(currentId);
-    if (!current) {
-      warnings.push({
-        source: "session",
-        code: "incomplete-session-branch",
-        row: 0,
-        message: "Exported the reachable session branch suffix after a missing parent link.",
-      });
-      break;
-    }
+    seen.add(current.id);
     branchEntries.unshift(current);
-    const parentId = typeof current.parentId === "string" ? current.parentId : null;
-    if (parentId && !byId.has(parentId)) {
-      warnings.push({
-        source: "session",
-        code: "incomplete-session-branch",
-        row: rowByEntry.get(current) ?? 0,
-        message: "Exported the reachable session branch suffix after a missing parent link.",
-      });
-      break;
-    }
-    currentId = parentId;
+    current = current.parentId ? byId.get(current.parentId) : undefined;
   }
-  return { header, leafId, branchEntries, warnings };
+  return { header, leafId, branchEntries };
 }
 
-async function parseJsonlFile<T>(
-  filePath: string,
-  params: {
-    maxBytes: number;
-    maxEvents: number;
-    include?: (value: T) => boolean;
-    validate?: (value: unknown) => value is T;
-  },
-): Promise<{ events: T[]; warnings: JsonlParseWarning[] }> {
-  let stat;
-  try {
-    stat = await fsp.stat(filePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { events: [], warnings: [] };
-    }
-    throw error;
-  }
-  if (!stat.isFile()) {
-    return { events: [], warnings: [] };
-  }
-  if (stat.size > params.maxBytes) {
-    throw new Error(
-      `Trajectory runtime file is too large to export (${stat.size} bytes; limit ${params.maxBytes})`,
-    );
-  }
-  const rows = (await fsp.readFile(filePath, "utf8")).split(/\r?\n/u);
-  const parsed: T[] = [];
-  const warnings: JsonlParseWarning[] = [];
-  for (const [index, rawLine] of rows.entries()) {
-    const row = rawLine.trim();
-    if (!row) {
-      continue;
-    }
-    if (parsed.length >= params.maxEvents) {
-      throw new Error(
-        `Trajectory runtime file has too many events to export (limit ${params.maxEvents})`,
-      );
-    }
-    try {
-      const value = JSON.parse(row) as unknown;
-      if (!params.validate || params.validate(value)) {
-        const typedValue = value as T;
-        if (!params.include || params.include(typedValue)) {
-          parsed.push(typedValue);
-        }
-      } else {
-        warnings.push({
-          source: "runtime",
-          code: "invalid-runtime-event",
-          row: index + 1,
-          message: "Skipped a runtime trajectory JSONL row that does not match the session schema.",
-        });
-      }
-    } catch {
-      warnings.push({
-        source: "runtime",
-        code: "invalid-runtime-json",
-        row: index + 1,
-        message: "Skipped a runtime trajectory JSONL row that is not valid JSON.",
-      });
-    }
-  }
-  return { events: parsed, warnings };
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
-function isRuntimeTrajectoryEvent(value: unknown): value is TrajectoryEvent {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRuntimeTrajectoryEventForSession(
+  value: unknown,
+  sessionId: string,
+): value is TrajectoryEvent {
   if (!isRecord(value)) {
     return false;
   }
@@ -298,32 +127,25 @@ function isRuntimeTrajectoryEvent(value: unknown): value is TrajectoryEvent {
     typeof value.ts === "string" &&
     !Number.isNaN(Date.parse(value.ts)) &&
     isFiniteNumber(value.seq) &&
-    typeof value.sessionId === "string" &&
+    value.sessionId === sessionId &&
     (!("data" in value) || value.data === undefined || isRecord(value.data))
   );
 }
 
-function summarizeJsonlWarnings(warnings: JsonlParseWarning[]): TrajectoryBundleWarning[] {
-  const byKey = new Map<string, TrajectoryBundleWarning>();
-  for (const warning of warnings) {
-    const key = `${warning.source}:${warning.code}`;
-    const existing = byKey.get(key);
-    if (existing) {
-      existing.count += 1;
-      if (existing.rows.length < MAX_TRAJECTORY_WARNING_ROWS) {
-        existing.rows.push(warning.row);
-      }
-      continue;
-    }
-    byKey.set(key, {
-      source: warning.source,
-      code: warning.code,
-      count: 1,
-      rows: [warning.row],
-      message: warning.message,
-    });
+function loadSqliteRuntimeTrajectoryEvents(params: {
+  agentId?: string;
+  sessionId: string;
+  sessionKey?: string;
+}): TrajectoryEvent[] {
+  try {
+    return listTrajectoryRuntimeEvents({
+      agentId: params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey),
+      sessionId: params.sessionId,
+      limit: MAX_TRAJECTORY_RUNTIME_EVENTS,
+    }).filter((event) => isRuntimeTrajectoryEventForSession(event, params.sessionId));
+  } catch {
+    return [];
   }
-  return [...byKey.values()];
 }
 
 function normalizeTimestamp(value: unknown): string {
@@ -758,11 +580,12 @@ function buildMetadataCapture(params: {
 function buildArtifactsCapture(params: {
   manifest: TrajectoryBundleManifest;
   runtimeEvents: TrajectoryEvent[];
+  toolArtifacts?: JsonRecord[];
 }): JsonRecord | undefined {
   const runtimeArtifacts = resolveLatestRuntimeEventData(params.runtimeEvents, "trace.artifacts");
   const runtimeCompletion = resolveLatestRuntimeEventData(params.runtimeEvents, "model.completed");
   const runtimeEnd = resolveLatestRuntimeEventData(params.runtimeEvents, "session.ended");
-  if (!runtimeArtifacts && !runtimeCompletion && !runtimeEnd) {
+  if (!runtimeArtifacts && !runtimeCompletion && !runtimeEnd && !params.toolArtifacts?.length) {
     return undefined;
   }
   return {
@@ -801,7 +624,36 @@ function buildArtifactsCapture(params: {
     messagingToolSentMediaUrls: runtimeArtifacts?.messagingToolSentMediaUrls,
     messagingToolSentTargets: runtimeArtifacts?.messagingToolSentTargets,
     lastToolError: runtimeArtifacts?.lastToolError,
+    ...(params.toolArtifacts?.length ? { toolArtifacts: params.toolArtifacts } : {}),
   };
+}
+
+function loadTrajectoryRunArtifacts(params: {
+  agentId?: string;
+  sessionKey?: string;
+  runtimeEvents: TrajectoryEvent[];
+}): JsonRecord[] {
+  const runIds = Array.from(
+    new Set(
+      params.runtimeEvents
+        .map((event) => event.runId?.trim())
+        .filter((runId): runId is string => Boolean(runId)),
+    ),
+  );
+  if (runIds.length === 0) {
+    return [];
+  }
+  const agentId = params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey);
+  return runIds.flatMap((runId) => {
+    try {
+      return exportSqliteToolArtifacts({ agentId, runId }).map((artifact) => {
+        const { blobBase64: _blobBase64, ...metadataOnly } = artifact;
+        return metadataOnly;
+      });
+    } catch {
+      return [];
+    }
+  });
 }
 
 function buildPromptsCapture(params: {
@@ -861,12 +713,12 @@ export function resolveDefaultTrajectoryExportDir(params: {
   now?: Date;
 }): string {
   const timestamp = (params.now ?? new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const sessionFileName = safeTrajectorySessionFileName(params.sessionId);
+  const safeSessionName = safeTrajectorySessionFileName(params.sessionId);
   return path.join(
     params.workspaceDir,
     ".openclaw",
     "trajectory-exports",
-    `openclaw-trajectory-${sessionFileName.slice(0, 8)}-${timestamp}`,
+    `openclaw-trajectory-${safeSessionName.slice(0, 8)}-${timestamp}`,
   );
 }
 
@@ -875,38 +727,22 @@ export async function exportTrajectoryBundle(params: BuildTrajectoryBundleParams
   outputDir: string;
   events: TrajectoryEvent[];
   header: SessionHeader | null;
-  runtimeFile?: string;
   supplementalFiles: string[];
 }> {
   const redaction = buildTrajectoryExportRedaction({
     workspaceDir: params.workspaceDir,
   });
-  const sessionStat = await fsp.stat(params.sessionFile);
-  if (sessionStat.size > MAX_TRAJECTORY_SESSION_FILE_BYTES) {
-    throw new Error(
-      `Trajectory session file is too large to export (${sessionStat.size} bytes; limit ${MAX_TRAJECTORY_SESSION_FILE_BYTES})`,
-    );
-  }
-  const {
-    header,
-    leafId,
-    branchEntries,
-    warnings: sessionWarnings,
-  } = await readSessionBranch(params.sessionFile);
-  const runtimeFile = await resolveTrajectoryRuntimeFile({
-    runtimeFile: params.runtimeFile,
-    sessionFile: params.sessionFile,
+  const { header, leafId, branchEntries } = readSessionBranch({
+    agentId: params.agentId,
     sessionId: params.sessionId,
+    sessionKey: params.sessionKey,
   });
-  const runtimeParse = runtimeFile
-    ? await parseJsonlFile<TrajectoryEvent>(runtimeFile, {
-        maxBytes: TRAJECTORY_RUNTIME_FILE_MAX_BYTES,
-        maxEvents: MAX_TRAJECTORY_RUNTIME_EVENTS,
-        include: (value) => value.sessionId === params.sessionId,
-        validate: isRuntimeTrajectoryEvent,
-      })
-    : { events: [], warnings: [] };
-  const runtimeEvents = runtimeParse.events;
+  const sqliteRuntimeEvents = loadSqliteRuntimeTrajectoryEvents({
+    agentId: params.agentId,
+    sessionId: params.sessionId,
+    sessionKey: params.sessionKey,
+  });
+  const runtimeEvents = sqliteRuntimeEvents;
   const transcriptEvents = buildTranscriptEvents({
     entries: branchEntries,
     sessionId: params.sessionId,
@@ -923,6 +759,7 @@ export async function exportTrajectoryBundle(params: BuildTrajectoryBundleParams
   }
   const rawEvents = sortTrajectoryEvents([...runtimeEvents, ...transcriptEvents]);
   const events = rawEvents.map((event) => redactEventForExport(event, redaction));
+  const agentId = params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey);
   const manifest: TrajectoryBundleManifest = {
     traceSchema: "openclaw-trajectory",
     schemaVersion: 1,
@@ -935,18 +772,24 @@ export async function exportTrajectoryBundle(params: BuildTrajectoryBundleParams
     eventCount: events.length,
     runtimeEventCount: runtimeEvents.length,
     transcriptEventCount: transcriptEvents.length,
-    sourceFiles: {
-      session: maybeRedactPathString(params.sessionFile, redaction),
+    sourceDatabases: {
+      session: {
+        role: "agent",
+        agentId,
+        table: "transcript_events",
+        sessionId: params.sessionId,
+      },
       runtime:
-        runtimeFile && (await isRegularNonSymlinkFile(runtimeFile))
-          ? maybeRedactPathString(runtimeFile, redaction)
+        sqliteRuntimeEvents.length > 0
+          ? {
+              role: "agent",
+              agentId,
+              table: "trajectory_runtime_events",
+              sessionId: params.sessionId,
+            }
           : undefined,
     },
   };
-  const warnings = summarizeJsonlWarnings([...sessionWarnings, ...runtimeParse.warnings]);
-  if (warnings.length > 0) {
-    manifest.warnings = warnings;
-  }
 
   const bundleRuntimeContext = resolveRuntimeContext(runtimeEvents);
   const files: DiagnosticSupportBundleFile[] = [];
@@ -956,9 +799,15 @@ export async function exportTrajectoryBundle(params: BuildTrajectoryBundleParams
     runtimeEvents,
     events: rawEvents,
   });
+  const toolArtifacts = loadTrajectoryRunArtifacts({
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    runtimeEvents,
+  });
   const artifactsCapture = buildArtifactsCapture({
     manifest,
     runtimeEvents,
+    toolArtifacts,
   });
   const promptsCapture = buildPromptsCapture({
     manifest,
@@ -1031,8 +880,6 @@ export async function exportTrajectoryBundle(params: BuildTrajectoryBundleParams
     outputDir: params.outputDir,
     events,
     header,
-    runtimeFile:
-      runtimeFile && (await isRegularNonSymlinkFile(runtimeFile)) ? runtimeFile : undefined,
     supplementalFiles,
   };
 }

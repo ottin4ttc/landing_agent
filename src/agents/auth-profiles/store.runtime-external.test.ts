@@ -4,8 +4,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProviderExternalAuthProfile } from "../../plugins/types.js";
 import { testing as externalAuthTesting } from "./external-auth.js";
-import { resolveAuthStorePath } from "./paths.js";
+import { authProfileStoreKey } from "./persisted.js";
 import { getRuntimeAuthProfileStoreSnapshot } from "./runtime-snapshots.js";
+import {
+  readAuthProfileStatePayloadResult,
+  readAuthProfileStorePayloadResult,
+} from "./sqlite-storage.js";
+import { authProfileStateKey } from "./state.js";
 import {
   clearRuntimeAuthProfileStoreSnapshots,
   replaceRuntimeAuthProfileStoreSnapshots,
@@ -87,11 +92,20 @@ describe("auth profile store runtime external snapshots", () => {
 
     saveAuthProfileStore(runtimeStore, agentDir);
 
-    const persisted = JSON.parse(
-      await fs.readFile(resolveAuthStorePath(agentDir), "utf8"),
-    ) as AuthProfileStore;
+    const persistedStore = readAuthProfileStorePayloadResult(authProfileStoreKey(agentDir));
+    expect(persistedStore.exists).toBe(true);
+    const persisted = persistedStore.exists
+      ? (persistedStore.value as unknown as AuthProfileStore)
+      : undefined;
+    if (!persisted) {
+      throw new Error("expected persisted auth profile store");
+    }
     expect(persisted.profiles[externalProfileId]).toBeUndefined();
-    expect(persisted.order?.["claude-cli"]).toBeUndefined();
+    const persistedState = readAuthProfileStatePayloadResult(authProfileStateKey(agentDir));
+    const state = persistedState.exists
+      ? (persistedState.value as { order?: Record<string, string[]> } | undefined)
+      : undefined;
+    expect(state?.order?.["claude-cli"]).toBeUndefined();
 
     const snapshot = getRuntimeAuthProfileStoreSnapshot(agentDir);
     expect(snapshot?.profiles[externalProfileId]).toEqual(externalCredential);

@@ -27,7 +27,7 @@ import type {
   PluginHookModelCallEndedEvent,
   PluginHookModelCallStartedEvent,
 } from "../../../plugins/hook-types.js";
-import type { StreamFn } from "../../runtime/index.js";
+import type { StreamFn } from "../../agent-core-contract.js";
 
 export { diagnosticErrorCategory };
 

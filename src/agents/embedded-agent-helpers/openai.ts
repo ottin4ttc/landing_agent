@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentMessage } from "../runtime/index.js";
+import type { AgentMessage } from "../agent-core-contract.js";
 
 type OpenAIThinkingBlock = {
   type?: unknown;

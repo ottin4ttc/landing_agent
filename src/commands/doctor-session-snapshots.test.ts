@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { saveSessionStore } from "../config/sessions/store.js";
+import {
+  ensureSessionStorePromptBlobsForPersistence,
+  projectSessionStoreForPersistence,
+} from "../config/sessions/skill-prompt-blobs.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 
@@ -229,7 +232,7 @@ describe("doctor session snapshot stale runtime metadata", () => {
       "doctor",
       "SKILL.md",
     );
-    const storePath = path.join(root, "state", "agents", "main", "sessions", "sessions.json");
+    const storePath = path.join(root, "legacy-sessions.json");
     await writeSessionStore(storePath, {
       "agent:main": sessionEntry({
         skillsSnapshot: {
@@ -261,7 +264,7 @@ describe("doctor session snapshot stale runtime metadata", () => {
       "doctor",
       "SKILL.md",
     );
-    const storePath = path.join(root, "state", "agents", "main", "sessions", "sessions.json");
+    const storePath = path.join(root, "legacy-blobbed-sessions.json");
     await writeSessionStore(storePath, {
       "agent:main": sessionEntry({
         skillsSnapshot: {
@@ -307,11 +310,11 @@ describe("doctor session snapshot stale runtime metadata", () => {
       "doctor",
       "SKILL.md",
     );
-    const storePath = path.join(root, "state", "agents", "main", "sessions", "sessions.json");
+    const storePath = path.join(root, "legacy-blobbed-sessions.json");
     const prompt = `${skillPrompt(stalePath)}\n${"padding\n".repeat(200)}`;
-    await saveSessionStore(
+    const projected = projectSessionStoreForPersistence({
       storePath,
-      {
+      store: {
         "agent:main": sessionEntry({
           skillsSnapshot: {
             prompt,
@@ -319,8 +322,12 @@ describe("doctor session snapshot stale runtime metadata", () => {
           },
         }),
       },
-      { skipMaintenance: true },
-    );
+    });
+    await ensureSessionStorePromptBlobsForPersistence({
+      storePath,
+      promptBlobs: projected.promptBlobs.values(),
+    });
+    await writeSessionStore(storePath, projected.store);
     const raw = await fs.readFile(storePath, "utf-8");
     expect(raw).not.toContain(stalePath);
     expect(raw).toContain("promptRef");

@@ -130,21 +130,179 @@ function normalizeLegacyOpenAIProviderForValidation(raw: unknown): unknown {
   };
 }
 
+function cloneMemorySearchWithoutLegacyStorePath(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const store = isRecord(value.store) ? value.store : null;
+  if (!store || !Object.hasOwn(store, "path")) {
+    return null;
+  }
+  const nextStore = { ...store };
+  delete nextStore.path;
+  return {
+    ...value,
+    store: nextStore,
+  };
+}
+
+function stripLegacyMemorySearchStorePaths(
+  current: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  let next: Record<string, unknown> | undefined;
+  const root = () => {
+    next ??= { ...current };
+    return next;
+  };
+
+  const topLevelMemorySearch = cloneMemorySearchWithoutLegacyStorePath(current.memorySearch);
+  if (topLevelMemorySearch) {
+    root().memorySearch = topLevelMemorySearch;
+  }
+
+  const currentAgents = isRecord((next ?? current).agents)
+    ? ((next ?? current).agents as Record<string, unknown>)
+    : null;
+  const defaults = isRecord(currentAgents?.defaults) ? currentAgents.defaults : null;
+  const defaultsMemorySearch = cloneMemorySearchWithoutLegacyStorePath(
+    isRecord(defaults) ? defaults.memorySearch : undefined,
+  );
+  if (currentAgents && defaults && defaultsMemorySearch) {
+    root().agents = {
+      ...currentAgents,
+      defaults: {
+        ...defaults,
+        memorySearch: defaultsMemorySearch,
+      },
+    };
+  }
+
+  const agents = isRecord((next ?? current).agents)
+    ? ((next ?? current).agents as Record<string, unknown>)
+    : null;
+  const agentList = agents?.list;
+  if (Array.isArray(agentList)) {
+    let nextList: unknown[] | undefined;
+    agentList.forEach((agent, index) => {
+      if (!isRecord(agent)) {
+        return;
+      }
+      const memorySearch = cloneMemorySearchWithoutLegacyStorePath(agent.memorySearch);
+      if (!memorySearch) {
+        return;
+      }
+      nextList ??= [...agentList];
+      nextList[index] = {
+        ...agent,
+        memorySearch,
+      };
+    });
+    if (nextList) {
+      root().agents = {
+        ...agents,
+        list: nextList,
+      };
+    }
+  }
+
+  return next;
+}
+
+function cloneSessionWithoutDeprecatedValidationKeys(
+  session: unknown,
+): Record<string, unknown> | null {
+  if (!isRecord(session)) {
+    return null;
+  }
+  let next: Record<string, unknown> | undefined;
+  const root = () => {
+    next ??= { ...session };
+    return next;
+  };
+
+  for (const key of ["store", "maintenance", "writeLock"] as const) {
+    if (Object.hasOwn(session, key)) {
+      delete root()[key];
+    }
+  }
+
+  if (Object.hasOwn(session, "idleMinutes")) {
+    const idleMinutes = session.idleMinutes;
+    delete root().idleMinutes;
+    if (typeof idleMinutes === "number" && Number.isFinite(idleMinutes)) {
+      const currentSession = root();
+      const reset: Record<string, unknown> = isRecord(currentSession.reset)
+        ? { ...currentSession.reset }
+        : { mode: "idle" };
+      if (!Object.hasOwn(reset, "idleMinutes")) {
+        reset.idleMinutes = Math.floor(idleMinutes);
+      }
+      currentSession.reset = reset;
+    }
+  }
+
+  if (isRecord(session.resetByType) && Object.hasOwn(session.resetByType, "dm")) {
+    const resetByType = { ...session.resetByType };
+    const dm = resetByType.dm;
+    delete resetByType.dm;
+    if (!Object.hasOwn(resetByType, "direct") && isRecord(dm)) {
+      resetByType.direct = dm;
+    }
+    root().resetByType = resetByType;
+  }
+
+  return next ?? null;
+}
+
+function cloneDiagnosticsWithoutDeprecatedValidationKeys(
+  diagnostics: unknown,
+): Record<string, unknown> | null {
+  if (
+    !isRecord(diagnostics) ||
+    !isRecord(diagnostics.cacheTrace) ||
+    !Object.hasOwn(diagnostics.cacheTrace, "filePath")
+  ) {
+    return null;
+  }
+  const cacheTrace = { ...diagnostics.cacheTrace };
+  delete cacheTrace.filePath;
+  return {
+    ...diagnostics,
+    cacheTrace,
+  };
+}
+
 function stripDeprecatedValidationKeys(raw: unknown): unknown {
   const normalizedRaw = normalizeLegacyOpenAIProviderForValidation(raw);
-  if (
-    !isRecord(normalizedRaw) ||
-    !isRecord(normalizedRaw.commands) ||
-    !Object.hasOwn(normalizedRaw.commands, "modelsWrite")
-  ) {
+  if (!isRecord(normalizedRaw)) {
     return normalizedRaw;
   }
-  const commands = { ...normalizedRaw.commands };
-  delete commands.modelsWrite;
-  return {
-    ...normalizedRaw,
-    commands,
-  };
+  let next: Record<string, unknown> | undefined;
+  if (isRecord(normalizedRaw.commands) && Object.hasOwn(normalizedRaw.commands, "modelsWrite")) {
+    const commands = { ...normalizedRaw.commands };
+    delete commands.modelsWrite;
+    next = { ...(next ?? normalizedRaw), commands };
+  }
+  if (
+    isRecord(normalizedRaw.cron) &&
+    (Object.hasOwn(normalizedRaw.cron, "store") ||
+      Object.hasOwn(normalizedRaw.cron, "sessionRetention"))
+  ) {
+    const cron = { ...normalizedRaw.cron };
+    delete cron.store;
+    delete cron.sessionRetention;
+    next = { ...(next ?? normalizedRaw), cron };
+  }
+  const session = cloneSessionWithoutDeprecatedValidationKeys(normalizedRaw.session);
+  if (session) {
+    next = { ...(next ?? normalizedRaw), session };
+  }
+  const diagnostics = cloneDiagnosticsWithoutDeprecatedValidationKeys(normalizedRaw.diagnostics);
+  if (diagnostics) {
+    next = { ...(next ?? normalizedRaw), diagnostics };
+  }
+  next = stripLegacyMemorySearchStorePaths(next ?? normalizedRaw) ?? next;
+  return next ?? normalizedRaw;
 }
 
 function materializeBundledModelProviderOverlays(config: OpenClawConfig): OpenClawConfig {
@@ -1161,7 +1319,13 @@ function validateConfigObjectWithPluginsBase(
       }
       const pluginLabel = diag.pluginId ? `plugin ${diag.pluginId}` : "plugin";
       const message = `${pluginLabel}: ${diag.message}`;
-      if (diag.level === "error" && (explicitPath || !diag.pluginId)) {
+      const missingConfiguredPluginPath =
+        path === "plugins.load.paths" && diag.message.startsWith("plugin path not found:");
+      if (
+        diag.level === "error" &&
+        (explicitPath || !diag.pluginId) &&
+        !missingConfiguredPluginPath
+      ) {
         issues.push({ path, message });
       } else {
         warnings.push({ path, message });

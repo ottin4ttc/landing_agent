@@ -1,5 +1,4 @@
 import { runAgentLoop, type AgentEvent, type StreamFn } from "openclaw/plugin-sdk/agent-core";
-import { createAssistantMessageEventStream, validateToolArguments } from "openclaw/plugin-sdk/llm";
 import { Type, type TSchema } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { wrapToolWithBeforeToolCallHook } from "./agent-tools.before-tool-call.js";
@@ -9,6 +8,7 @@ import {
   normalizeToolParameters,
 } from "./agent-tools.schema.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
+import { createAssistantMessageEventStream, validateToolArguments } from "./pi-ai-contract.js";
 
 const TEST_USAGE = {
   input: 0,

@@ -400,7 +400,6 @@ export default defineToolPlugin({
 `;
   const testSource = `import { describe, expect, it } from "vitest";
 import entry from "./index.js";
-import { getToolPluginMetadata } from "openclaw/plugin-sdk/tool-plugin";
 
 describe(${idLiteral}, () => {
   it("declares tool metadata", () => {

@@ -44,7 +44,7 @@ import {
   getRuntimeConfig,
   waitForEmbeddedAgentRunEnd,
 } from "./subagent-announce.runtime.js";
-import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
+import { getSubagentDepthFromSessionEntries } from "./subagent-depth.js";
 import { deleteSubagentSessionForCleanup } from "./subagent-session-cleanup.js";
 import type { SpawnSubagentMode } from "./subagent-spawn.types.js";
 import { isAnnounceSkip } from "./tools/sessions-send-tokens.js";
@@ -302,7 +302,7 @@ export async function runSubagentAnnounceFlow(params: {
     if (failedTerminalOutcome) {
       reply = undefined;
     }
-    let requesterDepth = getSubagentDepthFromSessionStore(targetRequesterSessionKey);
+    let requesterDepth = getSubagentDepthFromSessionEntries(targetRequesterSessionKey);
     const requesterIsInternalSession = () =>
       requesterDepth >= 1 || isCronSessionKey(targetRequesterSessionKey);
 
@@ -497,7 +497,7 @@ export async function runSubagentAnnounceFlow(params: {
           targetRequesterSessionKey = fallback.requesterSessionKey;
           targetRequesterOrigin =
             normalizeDeliveryContext(fallback.requesterOrigin) ?? targetRequesterOrigin;
-          requesterDepth = getSubagentDepthFromSessionStore(targetRequesterSessionKey);
+          requesterDepth = getSubagentDepthFromSessionEntries(targetRequesterSessionKey);
           requesterIsSubagent = requesterIsInternalSession();
         }
       }

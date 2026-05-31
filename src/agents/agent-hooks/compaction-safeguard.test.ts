@@ -2,16 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
-import type { ExtensionAPI, ExtensionContext } from "openclaw/plugin-sdk/agent-sessions";
-import type { Api, Model } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   clearCompactionProviders,
   registerCompactionProvider,
 } from "../../plugins/compaction-provider.js";
+import type { ExtensionAPI, ExtensionContext } from "../agent-extension-contract.js";
 import * as compactionModule from "../compaction.js";
 import { buildEmbeddedExtensionFactories } from "../embedded-agent-runner/extensions.js";
+import type { Api, Model } from "../pi-ai-contract.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
 import {
   consumeCompactionSafeguardCancelReason,
@@ -72,7 +72,8 @@ function stubSessionManager(): ExtensionContext["sessionManager"] {
     getCwd: () => "/stub",
     getSessionDir: () => "/stub",
     getSessionId: () => "stub-id",
-    getSessionFile: () => undefined,
+    getSessionRef: () => "transcript:main:stub-id",
+    getTranscriptScope: () => ({ agentId: "main", sessionId: "stub-id" }),
     getLeafId: () => null,
     getLeafEntry: () => undefined,
     getEntry: () => undefined,

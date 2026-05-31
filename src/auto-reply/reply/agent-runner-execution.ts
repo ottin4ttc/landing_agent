@@ -51,9 +51,10 @@ import {
 import { resolveOpenAIRuntimeProvider } from "../../agents/openai-routing.js";
 import { buildAgentRuntimeOutcomePlan } from "../../agents/runtime-plan/build.js";
 import {
+  getSessionEntry,
   resolveGroupSessionKey,
   type SessionEntry,
-  updateSessionStore,
+  upsertSessionEntry,
 } from "../../config/sessions.js";
 import { resolveSilentReplyPolicy } from "../../config/silent-reply.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -65,6 +66,7 @@ import { logSessionTurnCreated } from "../../logging/diagnostic.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { defaultRuntime } from "../../runtime.js";
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
 import {
@@ -154,9 +156,6 @@ function createAgentTurnTimingTracker(options: { profilerEnabled?: boolean } = {
   }) => void;
 } {
   if (!options.profilerEnabled) {
-    // This tracker wraps the agent-turn hot path. Without an explicit profiler
-    // flag, keep every wrapper pass-through so normal turns avoid Date.now and
-    // span-array work entirely.
     return {
       async measure(_name, run) {
         return await run();
@@ -237,9 +236,6 @@ function createAgentTurnTimingTracker(options: { profilerEnabled?: boolean } = {
       );
     },
     logMilestoneIfSlow(params) {
-      if (!options.profilerEnabled) {
-        return;
-      }
       const summary = snapshot();
       if (!shouldLog(summary)) {
         return;
@@ -528,13 +524,6 @@ function buildRateLimitCooldownMessage(err: unknown): string {
   if (codexUsageLimitMessage) {
     return codexUsageLimitMessage;
   }
-  if (isFallbackSummaryError(err) && hasBillingAttemptSummary(err)) {
-    return BILLING_ERROR_USER_MESSAGE;
-  }
-  const message = formatErrorMessage(err);
-  if (isBillingErrorMessage(message)) {
-    return BILLING_ERROR_USER_MESSAGE;
-  }
   if (!isFallbackSummaryError(err)) {
     return "⚠️ All models are temporarily rate-limited. Please try again in a few minutes.";
   }
@@ -603,7 +592,7 @@ function isPureTransientRateLimitSummary(err: unknown): boolean {
   );
 }
 
-function hasBillingAttemptSummary(err: unknown): boolean {
+function hasBillingSummaryAttempt(err: unknown): boolean {
   return (
     isFallbackSummaryError(err) &&
     err.attempts.length > 0 &&
@@ -676,21 +665,6 @@ const CLI_BACKEND_NO_OUTPUT_STALL_RE =
 const CLI_BACKEND_OVERALL_TIMEOUT_RE =
   /\bCLI exceeded timeout\s*\(\s*(\d+)\s*s\s*\)\s+and was terminated\b/iu;
 const CLI_BACKEND_ROUTING_REF_BEFORE_ERROR_RE = /\b([\w.-]+\/[A-Za-z][\w.-]*)\s*:\s*CLI\b/iu;
-const CODEX_APP_SERVER_CLIENT_CLOSED_BEFORE_REPLY_RE =
-  /\bcodex app-server client closed before turn completed\b/iu;
-const CODEX_APP_SERVER_TURN_COMPLETION_IDLE_TIMEOUT_RE =
-  /\bcodex app-server turn idle timed out waiting for turn\/completed\b/iu;
-
-function buildCodexAppServerFailureText(message: string): string | null {
-  const normalizedMessage = collapseRepeatedFailureDetail(message);
-  if (CODEX_APP_SERVER_CLIENT_CLOSED_BEFORE_REPLY_RE.test(normalizedMessage)) {
-    return "⚠️ Codex app-server connection closed before this turn finished. OpenClaw retried once when the stdio turn was still replay-safe; please try again if this keeps happening.";
-  }
-  if (CODEX_APP_SERVER_TURN_COMPLETION_IDLE_TIMEOUT_RE.test(normalizedMessage)) {
-    return "⚠️ Codex app-server stopped before confirming turn completion. OpenClaw did not replay the turn automatically because it may still be active; try again, or use /new if the session stays stuck.";
-  }
-  return null;
-}
 
 function buildCliBackendTimeoutFailureText(message: string): string | null {
   const normalizedMessage = collapseRepeatedFailureDetail(message);
@@ -708,6 +682,19 @@ function buildCliBackendTimeoutFailureText(message: string): string | null {
     `⚠️ CLI subprocess${routingSuffix}: timed out after ${seconds}s (${modeLabel}). The gateway may still be healthy. Try \`/new\`, a lighter model, or raise ` +
     "`agents.defaults.timeoutSeconds` and the watchdog `noOutputTimeoutMs` entries under `cliBackends.<your-runtime>`."
   );
+}
+
+function buildCodexAppServerBridgeFailureText(message: string): string | null {
+  const normalizedMessage = collapseRepeatedFailureDetail(message);
+  if (/codex app-server client closed before turn completed/iu.test(normalizedMessage)) {
+    return "⚠️ Codex app-server connection closed before the turn completed. The gateway did not replay the turn automatically; please try again.";
+  }
+  if (
+    /codex app-server turn idle timed out waiting for turn\/completed/iu.test(normalizedMessage)
+  ) {
+    return "⚠️ Codex app-server turn did not complete before the idle timeout. The gateway did not replay the turn automatically; please try again.";
+  }
+  return null;
 }
 
 function buildMissingApiKeyFailureText(message: string): string | null {
@@ -782,9 +769,9 @@ function buildExternalRunFailureReply(
   if (cliBackendTimeoutFailure) {
     return { text: cliBackendTimeoutFailure, isGenericRunnerFailure: false };
   }
-  const codexAppServerFailure = buildCodexAppServerFailureText(normalizedMessage);
-  if (codexAppServerFailure) {
-    return { text: codexAppServerFailure, isGenericRunnerFailure: false };
+  const codexAppServerBridgeFailure = buildCodexAppServerBridgeFailureText(normalizedMessage);
+  if (codexAppServerBridgeFailure) {
+    return { text: codexAppServerBridgeFailure, isGenericRunnerFailure: false };
   }
   return {
     text: options?.includeDetails
@@ -807,7 +794,7 @@ export function buildKnownAgentRunFailureReplyPayload(params: {
   const message = formatErrorMessage(params.err);
   const isFallbackSummary = isFallbackSummaryError(params.err);
   const isBilling = isFallbackSummary
-    ? hasBillingAttemptSummary(params.err)
+    ? hasBillingSummaryAttempt(params.err)
     : isBillingErrorMessage(message);
   if (isBilling) {
     return markAgentRunFailureReplyPayload({
@@ -1100,15 +1087,26 @@ function resolveHeartbeatBleedHint(params: {
 
   const runtimeWindow = resolveContextWindowForHint({
     cfg: params.cfg,
-    agentId: params.agentId,
     ref: runtimeRef,
     activeSessionEntry: params.activeSessionEntry,
   });
-  const primaryWindow = resolveContextWindowForHint({
+  const primaryWindowRaw = resolveContextTokensForModel({
     cfg: params.cfg,
-    agentId: params.agentId,
-    ref: primaryRef,
+    provider: primaryRef.provider,
+    model: primaryRef.model,
+    allowAsyncLoad: false,
   });
+  const agentContextTokensRaw = params.cfg.agents?.defaults?.contextTokens;
+  const agentContextTokens =
+    typeof agentContextTokensRaw === "number" &&
+    Number.isFinite(agentContextTokensRaw) &&
+    agentContextTokensRaw > 0
+      ? Math.floor(agentContextTokensRaw)
+      : undefined;
+  const primaryWindow =
+    typeof primaryWindowRaw === "number" && typeof agentContextTokens === "number"
+      ? Math.min(primaryWindowRaw, agentContextTokens)
+      : (agentContextTokens ?? primaryWindowRaw);
   if (
     typeof runtimeWindow === "number" &&
     typeof primaryWindow === "number" &&
@@ -1404,17 +1402,21 @@ export async function runAgentTurnWithFallback(params: {
   shouldEmitToolOutput: () => boolean;
   pendingToolTasks: Set<Promise<void>>;
   resetSessionAfterRoleOrderingConflict: (reason: string) => Promise<boolean>;
+  resetSessionAfterCompactionFailure?: (reason: string) => Promise<boolean>;
   isHeartbeat: boolean;
   sessionKey?: string;
   runtimePolicySessionKey?: string;
   getActiveSessionEntry: () => SessionEntry | undefined;
   activeSessionStore?: Record<string, SessionEntry>;
-  storePath?: string;
   resolvedVerboseLevel: VerboseLevel;
   toolProgressDetail?: "explain" | "raw";
   replyMediaContext?: ReplyMediaContext;
 }): Promise<AgentRunLoopResult> {
   const TRANSIENT_HTTP_RETRY_DELAY_MS = 2_500;
+  const sessionAgentId =
+    params.followupRun.run.agentId ??
+    resolveAgentIdFromSessionKey(params.sessionKey ?? "") ??
+    "main";
   let didLogHeartbeatStrip = false;
   let autoCompactionCount = 0;
   // Track payloads sent directly (not via pipeline) during tool flush to avoid duplicates.
@@ -1631,17 +1633,25 @@ export async function runAgentTurnWithFallback(params: {
     model: string,
     candidateRun: FollowupRun["run"],
   ): Promise<(() => Promise<void>) | undefined> => {
+    // Image-bearing turns can route through imageModel just for this prompt.
+    // Do not turn that media-specific fallback into the session's text model.
+    const isCurrentTurnImageFallback =
+      (currentTurnImages.images?.length ?? 0) > 0 &&
+      candidateRun.hasSessionModelOverride !== true &&
+      candidateRun.modelOverrideSource === undefined;
     if (
       !params.sessionKey ||
       !params.activeSessionStore ||
       preserveUserFacingSessionState ||
+      isCurrentTurnImageFallback ||
       (provider === effectiveRun.provider && model === effectiveRun.model)
     ) {
       return undefined;
     }
+    const sessionKey = params.sessionKey;
 
     const activeSessionEntry =
-      params.activeSessionStore[params.sessionKey] ?? params.getActiveSessionEntry();
+      params.activeSessionStore[sessionKey] ?? params.getActiveSessionEntry();
     if (!activeSessionEntry) {
       return undefined;
     }
@@ -1700,22 +1710,24 @@ export async function runAgentTurnWithFallback(params: {
     if (!applied.updated || !nextState) {
       return undefined;
     }
-    params.activeSessionStore[params.sessionKey] = activeSessionEntry;
+    params.activeSessionStore[sessionKey] = activeSessionEntry;
 
     try {
-      if (params.storePath) {
-        await updateSessionStore(params.storePath, (store) => {
-          const persistedEntry = store[params.sessionKey!];
-          if (!persistedEntry) {
-            return;
-          }
-          applyFallbackSelectionState(persistedEntry, nextState);
-          store[params.sessionKey!] = persistedEntry;
+      const persistedEntry = getSessionEntry({
+        agentId: sessionAgentId,
+        sessionKey,
+      });
+      if (persistedEntry) {
+        applyFallbackSelectionState(persistedEntry, nextState);
+        upsertSessionEntry({
+          agentId: sessionAgentId,
+          sessionKey,
+          entry: persistedEntry,
         });
       }
     } catch (error) {
       rollbackFallbackSelectionStateIfUnchanged(activeSessionEntry, nextState, previousState);
-      params.activeSessionStore[params.sessionKey] = activeSessionEntry;
+      params.activeSessionStore[sessionKey] = activeSessionEntry;
       throw error;
     }
 
@@ -1726,20 +1738,21 @@ export async function runAgentTurnWithFallback(params: {
         previousState,
       );
       if (rolledBackInMemory) {
-        params.activeSessionStore![params.sessionKey!] = activeSessionEntry;
+        params.activeSessionStore![sessionKey] = activeSessionEntry;
       }
-      if (!params.storePath) {
-        return;
-      }
-      await updateSessionStore(params.storePath, (store) => {
-        const persistedEntry = store[params.sessionKey!];
-        if (!persistedEntry) {
-          return;
-        }
-        if (rollbackFallbackSelectionStateIfUnchanged(persistedEntry, nextState, previousState)) {
-          store[params.sessionKey!] = persistedEntry;
-        }
+      const persistedEntry = getSessionEntry({
+        agentId: sessionAgentId,
+        sessionKey,
       });
+      if (persistedEntry) {
+        if (rollbackFallbackSelectionStateIfUnchanged(persistedEntry, nextState, previousState)) {
+          upsertSessionEntry({
+            agentId: sessionAgentId,
+            sessionKey,
+            entry: persistedEntry,
+          });
+        }
+      }
     };
   };
   const clearRecoveredAutoFallbackPrimaryProbe = async (paramsForClear: {
@@ -1769,19 +1782,19 @@ export async function runAgentTurnWithFallback(params: {
     }
     clearAutoFallbackPrimaryProbeSelection(activeSessionEntry);
     params.activeSessionStore[params.sessionKey] = activeSessionEntry;
-    if (!params.storePath) {
+    const persistedEntry = getSessionEntry({
+      agentId: sessionAgentId,
+      sessionKey: params.sessionKey,
+    });
+    if (!persistedEntry || !entryMatchesAutoFallbackPrimaryProbe(persistedEntry, probe)) {
       return;
     }
-    await updateSessionStore(params.storePath, (store) => {
-      const persistedEntry = store[params.sessionKey!];
-      if (!persistedEntry) {
-        return;
-      }
-      if (!entryMatchesAutoFallbackPrimaryProbe(persistedEntry, probe)) {
-        return;
-      }
-      clearAutoFallbackPrimaryProbeSelection(persistedEntry);
-      store[params.sessionKey!] = persistedEntry;
+    const nextPersistedEntry = { ...persistedEntry };
+    clearAutoFallbackPrimaryProbeSelection(nextPersistedEntry);
+    upsertSessionEntry({
+      agentId: sessionAgentId,
+      sessionKey: params.sessionKey,
+      entry: nextPersistedEntry,
     });
   };
 
@@ -2084,7 +2097,6 @@ export async function runAgentTurnWithFallback(params: {
                     sessionKey: params.sessionKey,
                     agentId: params.followupRun.run.agentId,
                     trigger: params.isHeartbeat ? "heartbeat" : "user",
-                    sessionFile: params.followupRun.run.sessionFile,
                     workspaceDir: params.followupRun.run.workspaceDir,
                     cwd: params.followupRun.run.cwd,
                     config: runtimeConfig,
@@ -2140,7 +2152,6 @@ export async function runAgentTurnWithFallback(params: {
                   provider: cliExecutionProvider,
                   sessionKey: params.sessionKey,
                   sessionStore: params.activeSessionStore,
-                  storePath: params.storePath,
                   activeSessionEntry: params.getActiveSessionEntry(),
                 });
               }
@@ -2656,7 +2667,7 @@ export async function runAgentTurnWithFallback(params: {
         if (liveModelSwitchRetries > MAX_LIVE_SWITCH_RETRIES) {
           // Prevent infinite loop when persisted session selection keeps
           // conflicting with fallback model choices (e.g. overloaded primary
-          // triggers fallback, but session store keeps pulling back to the
+          // triggers fallback, but the persisted session row keeps pulling back to the
           // overloaded model). Surface the last error to the user instead.
           // See: https://github.com/openclaw/openclaw/issues/58348
           defaultRuntime.error(
@@ -2704,7 +2715,7 @@ export async function runAgentTurnWithFallback(params: {
         error: message,
       });
       const isBilling = isFallbackSummaryError(err)
-        ? hasBillingAttemptSummary(err)
+        ? hasBillingSummaryAttempt(err)
         : isBillingErrorMessage(message);
       const isContextOverflow = !isBilling && isLikelyContextOverflowError(message);
       const isCompactionFailure = !isBilling && isCompactionFailureError(message);

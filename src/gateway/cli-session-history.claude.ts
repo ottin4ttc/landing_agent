@@ -10,7 +10,7 @@ import {
   type ToolContentBlock,
 } from "../chat/tool-content.js";
 import type { SessionEntry } from "../config/sessions.js";
-import { attachOpenClawTranscriptMeta } from "./session-utils.fs.js";
+import { attachOpenClawTranscriptMeta } from "./session-transcript-readers.js";
 
 export const CLAUDE_CLI_PROVIDER = "claude-cli";
 const CLAUDE_PROJECTS_RELATIVE_DIR = path.join(".claude", "projects");
@@ -50,18 +50,7 @@ function resolveClaudeProjectsDir(homeDir?: string): string {
 export function resolveClaudeCliBindingSessionId(
   entry: SessionEntry | undefined,
 ): string | undefined {
-  const bindingSessionId = normalizeOptionalString(
-    entry?.cliSessionBindings?.[CLAUDE_CLI_PROVIDER]?.sessionId,
-  );
-  if (bindingSessionId) {
-    return bindingSessionId;
-  }
-  const legacyMapSessionId = normalizeOptionalString(entry?.cliSessionIds?.[CLAUDE_CLI_PROVIDER]);
-  if (legacyMapSessionId) {
-    return legacyMapSessionId;
-  }
-  const legacyClaudeSessionId = normalizeOptionalString(entry?.claudeCliSessionId);
-  return legacyClaudeSessionId || undefined;
+  return normalizeOptionalString(entry?.cliSessionBindings?.[CLAUDE_CLI_PROVIDER]?.sessionId);
 }
 
 function resolveTimestampMs(value: unknown): number | undefined {
@@ -272,7 +261,7 @@ function parseClaudeCliHistoryEntry(
   ) as TranscriptLikeMessage;
 }
 
-export function resolveClaudeCliSessionFilePath(params: {
+export function resolveClaudeCliHistoryJsonlPath(params: {
   cliSessionId: string;
   homeDir?: string;
 }): string | undefined {
@@ -316,7 +305,7 @@ export function readClaudeCliSessionMessages(params: {
   cliSessionId: string;
   homeDir?: string;
 }): TranscriptLikeMessage[] {
-  const filePath = resolveClaudeCliSessionFilePath(params);
+  const filePath = resolveClaudeCliHistoryJsonlPath(params);
   if (!filePath) {
     return [];
   }
@@ -395,7 +384,7 @@ export function readClaudeCliFallbackSeed(params: {
   cliSessionId: string;
   homeDir?: string;
 }): ClaudeCliFallbackSeed | undefined {
-  const filePath = resolveClaudeCliSessionFilePath(params);
+  const filePath = resolveClaudeCliHistoryJsonlPath(params);
   if (!filePath) {
     return undefined;
   }

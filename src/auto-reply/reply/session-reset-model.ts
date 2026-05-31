@@ -6,7 +6,13 @@ import {
   isModelKeyAllowedBySet,
 } from "../../agents/model-selection-shared.js";
 import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
-import type { SessionEntry } from "../../config/sessions.js";
+import {
+  getSessionEntry,
+  mergeSessionEntry,
+  resolveAgentIdFromSessionKey,
+  type SessionEntry,
+  upsertSessionEntry,
+} from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { applyModelOverrideToSessionEntry } from "../../sessions/model-overrides.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
@@ -109,9 +115,9 @@ function applySelectionToSession(params: {
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
-  storePath?: string;
+  agentId?: string;
 }) {
-  const { selection, sessionEntry, sessionStore, sessionKey, storePath } = params;
+  const { selection, sessionEntry, sessionStore, sessionKey } = params;
   if (!sessionEntry || !sessionStore || !sessionKey) {
     return;
   }
@@ -123,16 +129,19 @@ function applySelectionToSession(params: {
     return;
   }
   sessionStore[sessionKey] = sessionEntry;
-  if (storePath) {
-    void import("../../config/sessions.js")
-      .then(({ updateSessionStore }) =>
-        updateSessionStore(storePath, (store) => {
-          store[sessionKey] = sessionEntry;
+  try {
+    const agentId = params.agentId ?? resolveAgentIdFromSessionKey(sessionKey);
+    if (agentId) {
+      upsertSessionEntry({
+        agentId,
+        sessionKey,
+        entry: mergeSessionEntry(getSessionEntry({ agentId, sessionKey }), {
+          ...sessionEntry,
         }),
-      )
-      .catch(() => {
-        // Ignore persistence errors; session still proceeds.
       });
+    }
+  } catch {
+    // Ignore persistence errors; session still proceeds.
   }
 }
 
@@ -146,7 +155,6 @@ export async function applyResetModelOverride(params: {
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
-  storePath?: string;
   defaultProvider: string;
   defaultModel: string;
   aliasIndex: ModelAliasIndex;
@@ -247,7 +255,7 @@ export async function applyResetModelOverride(params: {
     sessionEntry: params.sessionEntry,
     sessionStore: params.sessionStore,
     sessionKey: params.sessionKey,
-    storePath: params.storePath,
+    agentId: params.agentId,
   });
 
   return { selection, cleanedBody };

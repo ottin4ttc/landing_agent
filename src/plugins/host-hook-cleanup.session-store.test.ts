@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clearSessionStoreCacheForTest, saveSessionStore } from "../config/sessions/store.js";
+import { clearSessionStoreCacheForTest, upsertSessionEntry } from "../config/sessions/store.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import * as jsonFiles from "../infra/json-files.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
@@ -32,21 +32,18 @@ describe("plugin host cleanup session stores", () => {
     );
     previousStateDir = process.env.OPENCLAW_STATE_DIR;
     process.env.OPENCLAW_STATE_DIR = stateDir;
-    const storePath = path.join(stateDir, "sessions.json");
-    await saveSessionStore(
-      storePath,
-      {
-        "agent:main:main": {
-          sessionId: "session-id",
-          updatedAt: Date.now(),
-        } satisfies SessionEntry,
-      },
-      { skipMaintenance: true },
-    );
+    upsertSessionEntry({
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      entry: {
+        sessionId: "session-id",
+        updatedAt: Date.now(),
+      } satisfies SessionEntry,
+    });
     const writeSpy = vi.spyOn(jsonFiles, "writeTextAtomic");
 
     const result = await runPluginHostCleanup({
-      cfg: { session: { store: storePath } },
+      cfg: {},
       registry: createEmptyPluginRegistry(),
       pluginId: "noop-plugin",
       reason: "disable",

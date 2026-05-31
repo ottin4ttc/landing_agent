@@ -7,10 +7,9 @@ import type { EmbeddedAgentQueueMessageOutcome } from "./embedded-agent-runner/r
 type DeliveryRuntimeMockOptions = {
   callGateway: (request: unknown) => Promise<unknown>;
   getRuntimeConfig: () => OpenClawConfig;
-  loadSessionStore: (storePath: string) => unknown;
+  getSessionEntry: (params: { agentId: string; sessionKey: string }) => unknown;
   resolveAgentIdFromSessionKey: (sessionKey: string) => string;
   resolveMainSessionKey: (cfg: unknown) => string;
-  resolveStorePath: (store: unknown, options: unknown) => string;
   isEmbeddedAgentRunActive: (sessionId: string) => boolean;
   queueEmbeddedAgentMessageWithOutcome: (
     sessionId: string,
@@ -67,10 +66,9 @@ export function createSubagentAnnounceDeliveryRuntimeMock(options: DeliveryRunti
         timeoutMs: callOptions?.timeoutMs,
       })) as T) as typeof dispatchGatewayMethodInProcess,
     getRuntimeConfig: options.getRuntimeConfig,
-    loadSessionStore: options.loadSessionStore,
+    getSessionEntry: options.getSessionEntry,
     resolveAgentIdFromSessionKey: options.resolveAgentIdFromSessionKey,
     resolveMainSessionKey: options.resolveMainSessionKey,
-    resolveStorePath: options.resolveStorePath,
     isEmbeddedAgentRunActive: options.isEmbeddedAgentRunActive,
     queueEmbeddedAgentMessageWithOutcome: options.queueEmbeddedAgentMessageWithOutcome,
     formatEmbeddedAgentQueueFailureSummary: (outcome: { reason?: string; sessionId?: string }) =>

@@ -36,6 +36,7 @@ vi.mock("../plugins/plugin-registry.js", () => ({
 
 vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
   loadPluginMetadataSnapshot: pluginRegistryMocks.loadPluginMetadataSnapshot,
+  resolvePluginMetadataSnapshot: pluginRegistryMocks.loadPluginMetadataSnapshot,
 }));
 
 import {
@@ -79,6 +80,12 @@ describe("provider auth aliases", () => {
 
   it("maps retired persisted OpenAI auth provider ids to canonical OpenAI", () => {
     expect(resolveProviderIdForAuth(["openai", "codex"].join("-"))).toBe("openai");
+  });
+
+  it("keeps unknown providers when plugin metadata is unavailable", () => {
+    pluginRegistryMocks.loadPluginMetadataSnapshot.mockImplementationOnce(() => undefined as never);
+
+    expect(resolveProviderIdForAuth("fixture-provider")).toBe("fixture-provider");
   });
 
   it("does not reuse aliases across env-resolved plugin roots", () => {

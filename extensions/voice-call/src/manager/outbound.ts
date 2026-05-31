@@ -29,14 +29,14 @@ type InitiateContext = Pick<
   | "providerCallIdMap"
   | "provider"
   | "config"
-  | "storePath"
+  | "callStore"
   | "webhookUrl"
   | "streamSessionIssuer"
 >;
 
 type SpeakContext = Pick<
   CallManagerContext,
-  "activeCalls" | "providerCallIdMap" | "provider" | "config" | "storePath"
+  "activeCalls" | "providerCallIdMap" | "provider" | "config" | "callStore"
 >;
 
 type ConversationContext = Pick<
@@ -45,7 +45,7 @@ type ConversationContext = Pick<
   | "providerCallIdMap"
   | "provider"
   | "config"
-  | "storePath"
+  | "callStore"
   | "activeTurnCalls"
   | "transcriptWaiters"
   | "maxDurationTimers"
@@ -57,7 +57,7 @@ type EndCallContext = Pick<
   | "activeCalls"
   | "providerCallIdMap"
   | "provider"
-  | "storePath"
+  | "callStore"
   | "transcriptWaiters"
   | "maxDurationTimers"
 >;
@@ -191,7 +191,7 @@ export async function initiateCall(
   };
 
   ctx.activeCalls.set(callId, callRecord);
-  persistCallRecord(ctx.storePath, callRecord);
+  persistCallRecord(ctx.callStore, callRecord);
 
   try {
     // For notify mode with a message, use inline TwiML with <Say>.
@@ -233,7 +233,7 @@ export async function initiateCall(
 
     callRecord.providerCallId = result.providerCallId;
     ctx.providerCallIdMap.set(result.providerCallId, callId);
-    persistCallRecord(ctx.storePath, callRecord);
+    persistCallRecord(ctx.callStore, callRecord);
     console.log(
       `[voice-call] Outbound call initiated: callId=${callId} providerCallId=${result.providerCallId} mode=${mode} preConnectDtmf=${preConnectTwiml ? "yes" : "no"} initialMessage=${initialMessage ? "yes" : "no"}`,
     );
@@ -267,7 +267,7 @@ export async function speak(
 
   try {
     transitionState(call, "speaking");
-    persistCallRecord(ctx.storePath, call);
+    persistCallRecord(ctx.callStore, call);
 
     const numberRouteKey =
       typeof call.metadata?.numberRouteKey === "string" ? call.metadata.numberRouteKey : call.to;
@@ -282,13 +282,13 @@ export async function speak(
     });
 
     addTranscriptEntry(call, "bot", text);
-    persistCallRecord(ctx.storePath, call);
+    persistCallRecord(ctx.callStore, call);
 
     return { success: true };
   } catch (err) {
     // A failed playback should not leave the call stuck in speaking state.
     transitionState(call, "listening");
-    persistCallRecord(ctx.storePath, call);
+    persistCallRecord(ctx.callStore, call);
     return { success: false, error: formatErrorMessage(err) };
   }
 }
@@ -376,7 +376,7 @@ export async function speakInitialMessage(
     // Clear only after successful playback so transient provider failures can retry.
     if (call.metadata) {
       delete call.metadata.initialMessage;
-      persistCallRecord(ctx.storePath, call);
+      persistCallRecord(ctx.callStore, call);
     }
 
     if (mode === "notify") {
@@ -396,7 +396,7 @@ export async function speakInitialMessage(
       shouldStartListeningAfterInitialMessage(ctx)
     ) {
       transitionState(call, "listening");
-      persistCallRecord(ctx.storePath, call);
+      persistCallRecord(ctx.callStore, call);
       await ctx.provider.startListening({
         callId: call.callId,
         providerCallId,
@@ -430,7 +430,7 @@ export async function continueCall(
     await speak(ctx, callId, prompt);
 
     transitionState(call, "listening");
-    persistCallRecord(ctx.storePath, call);
+    persistCallRecord(ctx.callStore, call);
 
     const listenStartedAt = Date.now();
     await provider.startListening({ callId, providerCallId, turnToken });
@@ -455,7 +455,7 @@ export async function continueCall(
       lastTurnListenWaitMs,
       lastTurnCompletedAt: transcriptReceivedAt,
     };
-    persistCallRecord(ctx.storePath, call);
+    persistCallRecord(ctx.callStore, call);
 
     console.log(
       "[voice-call] continueCall latency call=" +

@@ -235,8 +235,8 @@ export function normalizeStoredCronJobs(
   jobs: Array<Record<string, unknown>>,
 ): NormalizeCronStoreJobsResult {
   const issues: CronStoreIssues = {};
-  let mutated = false;
   const keptJobs: Array<Record<string, unknown>> = [];
+  let mutated = false;
 
   for (const raw of jobs) {
     const jobIssues = new Set<CronStoreIssueKey>();

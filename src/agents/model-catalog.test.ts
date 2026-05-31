@@ -1,4 +1,3 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { resetLogger, setLoggerOverride } from "../logging/logger.js";
@@ -14,10 +13,12 @@ let loadModelCatalog: typeof import("./model-catalog.js").loadModelCatalog;
 let modelSupportsInput: typeof import("./model-catalog.js").modelSupportsInput;
 let resetModelCatalogCacheForTest: typeof import("./model-catalog.js").resetModelCatalogCacheForTest;
 let augmentCatalogMock: ReturnType<typeof vi.fn>;
-let ensureOpenClawModelsJsonMock: ReturnType<typeof vi.fn>;
-let currentPluginMetadataSnapshotMock: ReturnType<typeof vi.fn<(...args: unknown[]) => unknown>>;
-let loadPluginMetadataSnapshotMock: ReturnType<typeof vi.fn<(...args: unknown[]) => unknown>>;
+let ensureOpenClawModelCatalogMock: ReturnType<typeof vi.fn>;
+let currentPluginMetadataSnapshotMock: ReturnType<typeof vi.fn>;
+let loadPluginMetadataSnapshotMock: ReturnType<typeof vi.fn>;
 let readFileMock: ReturnType<typeof vi.fn>;
+let storedModelsConfigRaw: string | undefined;
+let storedPluginModelCatalogRows: Array<{ relativePath: string; raw: string; updatedAt: number }>;
 
 vi.mock("./model-suppression.runtime.js", () => ({
   shouldSuppressBuiltInModel: (params: { provider?: string; id?: string }) =>
@@ -235,9 +236,14 @@ describe("loadModelCatalog", () => {
       ...(await importOriginal<typeof import("node:fs/promises")>()),
       readFile: readFileMock,
     }));
-    ensureOpenClawModelsJsonMock = vi.fn().mockResolvedValue({ agentDir: "/tmp", wrote: false });
+    ensureOpenClawModelCatalogMock = vi.fn().mockResolvedValue({ agentDir: "/tmp", wrote: false });
     vi.doMock("./models-config.js", () => ({
-      ensureOpenClawModelsJson: ensureOpenClawModelsJsonMock,
+      ensureOpenClawModelCatalog: ensureOpenClawModelCatalogMock,
+    }));
+    vi.doMock("./models-config-store.js", () => ({
+      readStoredModelsConfigRaw: () =>
+        storedModelsConfigRaw ? { raw: storedModelsConfigRaw, updatedAt: 1 } : undefined,
+      listStoredPluginModelCatalogs: () => storedPluginModelCatalogRows,
     }));
     vi.doMock("./agent-scope.js", () => ({
       resolveAgentWorkspaceDir: (cfg: OpenClawConfig, agentId: string) => {
@@ -259,7 +265,8 @@ describe("loadModelCatalog", () => {
     vi.doMock("../plugins/plugin-metadata-snapshot.js", () => ({
       loadPluginMetadataSnapshot: loadPluginMetadataSnapshotMock,
       resolvePluginMetadataSnapshot: (...args: unknown[]) =>
-        currentPluginMetadataSnapshotMock(...args) ?? loadPluginMetadataSnapshotMock(...args),
+        (currentPluginMetadataSnapshotMock as (...callArgs: unknown[]) => unknown)(...args) ??
+        (loadPluginMetadataSnapshotMock as (...callArgs: unknown[]) => unknown)(...args),
     }));
     vi.doMock("../plugins/manifest-contract-eligibility.js", () => ({
       isManifestPluginAvailableForControlPlane: ({
@@ -278,7 +285,8 @@ describe("loadModelCatalog", () => {
           ),
         ),
       loadManifestMetadataSnapshot: (...args: unknown[]) =>
-        currentPluginMetadataSnapshotMock(...args) ?? loadPluginMetadataSnapshotMock(...args),
+        (currentPluginMetadataSnapshotMock as (...callArgs: unknown[]) => unknown)(...args) ??
+        (loadPluginMetadataSnapshotMock as (...callArgs: unknown[]) => unknown)(...args),
     }));
 
     ({
@@ -298,9 +306,11 @@ describe("loadModelCatalog", () => {
     resetModelCatalogCacheForTest();
     readFileMock.mockReset();
     readFileMock.mockRejectedValue(
-      Object.assign(new Error("models.json missing"), { code: "ENOENT" }),
+      Object.assign(new Error("stored model catalog missing"), { code: "ENOENT" }),
     );
-    ensureOpenClawModelsJsonMock.mockClear();
+    storedModelsConfigRaw = undefined;
+    storedPluginModelCatalogRows = [];
+    ensureOpenClawModelCatalogMock.mockClear();
     augmentCatalogMock.mockClear();
     currentPluginMetadataSnapshotMock.mockReset();
     currentPluginMetadataSnapshotMock.mockReturnValue(undefined);
@@ -317,6 +327,7 @@ describe("loadModelCatalog", () => {
   afterAll(() => {
     vi.doUnmock("node:fs/promises");
     vi.doUnmock("./models-config.js");
+    vi.doUnmock("./models-config-store.js");
     vi.doUnmock("./agent-scope.js");
     vi.doUnmock("../plugins/provider-runtime.runtime.js");
     vi.doUnmock("../plugins/current-plugin-metadata-snapshot.js");
@@ -467,7 +478,7 @@ describe("loadModelCatalog", () => {
     }
   });
 
-  it("does not prepare models.json or import provider discovery when loading fallback catalog in read-only mode", async () => {
+  it("does not prepare the stored model catalog or import provider discovery when loading fallback catalog in read-only mode", async () => {
     const importAgentDiscoveryModule = vi.fn(async () => {
       throw new Error("provider discovery should not load");
     });
@@ -505,36 +516,42 @@ describe("loadModelCatalog", () => {
 
     const entry = requireCatalogEntry(result, "openai", "gpt-test");
     expect(entry.name).toBe("GPT Test");
-    expect(ensureOpenClawModelsJsonMock).not.toHaveBeenCalled();
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
     expect(importAgentDiscoveryModule).not.toHaveBeenCalled();
     expect(loadPluginMetadataSnapshotMock).not.toHaveBeenCalled();
   });
 
   it("filters suppressed built-ins from persisted read-only catalog rows", async () => {
-    readFileMock.mockResolvedValueOnce(
-      JSON.stringify({
-        providers: {
-          openai: {
-            models: [
-              {
-                id: "gpt-5.3-codex-spark",
-                name: "GPT-5.3 Codex Spark",
-                reasoning: true,
-                contextWindow: 128000,
-                input: ["text"],
-              },
-              {
-                id: "gpt-5.4",
-                name: "GPT-5.4",
-                reasoning: true,
-                contextWindow: 272000,
-                input: ["text", "image"],
-              },
-            ],
-          },
+    storedModelsConfigRaw = JSON.stringify({
+      providers: {
+        "openai-codex": {
+          models: [
+            {
+              id: "gpt-5.3-codex-spark",
+              name: "GPT-5.3 Codex Spark",
+              reasoning: true,
+              contextWindow: 128000,
+              input: ["text"],
+            },
+            {
+              id: "gpt-5.4",
+              name: "GPT-5.4",
+              reasoning: true,
+              contextWindow: 272000,
+              input: ["text", "image"],
+            },
+          ],
         },
-      }),
-    );
+        openai: {
+          models: [
+            {
+              id: "gpt-5.3-codex-spark",
+              name: "GPT-5.3 Codex Spark",
+            },
+          ],
+        },
+      },
+    });
 
     const result = await loadModelCatalog({ config: {} as OpenClawConfig, readOnly: true });
 
@@ -549,97 +566,87 @@ describe("loadModelCatalog", () => {
         compat: undefined,
       },
     ]);
-    expect(ensureOpenClawModelsJsonMock).not.toHaveBeenCalled();
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
     expect(augmentCatalogMock).not.toHaveBeenCalled();
   });
 
   it("loads generated plugin catalog rows in read-only mode", async () => {
-    const catalogPath = "/tmp/openclaw/plugins/read-only-shard/catalog.json";
-    mkdirSync("/tmp/openclaw/plugins/read-only-shard", { recursive: true });
-    writeFileSync(catalogPath, "{}");
-    try {
-      readFileMock.mockImplementation(async (pathname: string) => {
-        if (pathname.endsWith("models.json")) {
-          return JSON.stringify({ providers: {} });
-        }
-        if (pathname === catalogPath) {
-          return JSON.stringify({
-            generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
-            providers: {
-              zai: {
-                models: [
-                  {
-                    id: "glm-5.1",
-                    name: "GLM 5.1",
-                    reasoning: true,
-                    contextWindow: 131072,
-                    input: ["text"],
-                  },
-                ],
-              },
+    storedModelsConfigRaw = JSON.stringify({ providers: {} });
+    storedPluginModelCatalogRows = [
+      {
+        relativePath: "plugins/read-only-shard/catalog.json",
+        updatedAt: 1,
+        raw: JSON.stringify({
+          generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
+          providers: {
+            zai: {
+              models: [
+                {
+                  id: "glm-5.1",
+                  name: "GLM 5.1",
+                  reasoning: true,
+                  contextWindow: 131072,
+                  input: ["text"],
+                },
+              ],
             },
-          });
-        }
-        throw Object.assign(new Error("not found"), { code: "ENOENT" });
-      });
-      loadPluginMetadataSnapshotMock.mockReturnValueOnce({
-        ...emptyPluginMetadataSnapshot(),
-        index: {
-          policyHash: "test-policy",
-          plugins: [{ pluginId: "read-only-shard", enabled: true }],
-        },
-        normalizePluginId: (id: string) => id,
-        owners: {
-          providers: new Map([["zai", ["read-only-shard"]]]),
-          modelCatalogProviders: new Map([["zai", ["read-only-shard"]]]),
-          setupProviders: new Map(),
-        },
-      });
-
-      const result = await loadModelCatalog({
-        config: {
-          agents: {
-            list: [{ id: "workspace-agent", default: true, workspace: "/tmp/read-only-workspace" }],
           },
-        } as OpenClawConfig,
-        readOnly: true,
-      });
-
-      expect(requireCatalogEntry(result, "zai", "glm-5.1")).toMatchObject({
-        provider: "zai",
-        id: "glm-5.1",
-        name: "GLM 5.1",
-        reasoning: true,
-        contextWindow: 131072,
-      });
-      expect(
-        loadPluginMetadataSnapshotMock.mock.calls.some(([call]) => {
-          return (
-            typeof call === "object" &&
-            call !== null &&
-            (call as { workspaceDir?: string }).workspaceDir === "/tmp/read-only-workspace"
-          );
         }),
-      ).toBe(true);
-    } finally {
-      rmSync("/tmp/openclaw/plugins/read-only-shard", { recursive: true, force: true });
-    }
+      },
+    ];
+    loadPluginMetadataSnapshotMock.mockReturnValueOnce({
+      ...emptyPluginMetadataSnapshot(),
+      index: {
+        policyHash: "test-policy",
+        plugins: [{ pluginId: "read-only-shard", enabled: true }],
+      },
+      normalizePluginId: (id: string) => id,
+      owners: {
+        providers: new Map([["zai", ["read-only-shard"]]]),
+        modelCatalogProviders: new Map([["zai", ["read-only-shard"]]]),
+        setupProviders: new Map(),
+      },
+    });
+
+    const result = await loadModelCatalog({
+      config: {
+        agents: {
+          list: [{ id: "workspace-agent", default: true, workspace: "/tmp/read-only-workspace" }],
+        },
+      } as OpenClawConfig,
+      readOnly: true,
+    });
+
+    expect(requireCatalogEntry(result, "zai", "glm-5.1")).toMatchObject({
+      provider: "zai",
+      id: "glm-5.1",
+      name: "GLM 5.1",
+      reasoning: true,
+      contextWindow: 131072,
+    });
+    expect(
+      loadPluginMetadataSnapshotMock.mock.calls.some(([call]) => {
+        return (
+          typeof call === "object" &&
+          call !== null &&
+          (call as { workspaceDir?: string }).workspaceDir === "/tmp/read-only-workspace"
+        );
+      }),
+    ).toBe(true);
   });
 
   it("falls back to manifest catalog rows when persisted read-only catalog has no model rows", async () => {
-    readFileMock.mockResolvedValueOnce(
-      JSON.stringify({
-        providers: {
-          openai: {
-            modelOverrides: {
-              "gpt-4.1": {
-                contextWindow: 128000,
-              },
+    storedModelsConfigRaw = JSON.stringify({
+      providers: {
+        openai: {
+          modelOverrides: {
+            "gpt-4.1": {
+              contextWindow: 128000,
             },
           },
         },
-      }),
-    );
+      },
+    });
     currentPluginMetadataSnapshotMock.mockReturnValueOnce({
       policyHash: "policy",
       index: {
@@ -684,20 +691,18 @@ describe("loadModelCatalog", () => {
         reasoning: false,
       },
     ]);
-    expect(ensureOpenClawModelsJsonMock).not.toHaveBeenCalled();
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
     expect(importAgentDiscoveryModule).not.toHaveBeenCalled();
   });
 
   it("preserves registry defaults for minimal persisted read-only catalog rows", async () => {
-    readFileMock.mockResolvedValueOnce(
-      JSON.stringify({
-        providers: {
-          custom: {
-            models: [{ id: "local-tiny" }],
-          },
+    storedModelsConfigRaw = JSON.stringify({
+      providers: {
+        custom: {
+          models: [{ id: "local-tiny" }],
         },
-      }),
-    );
+      },
+    });
 
     const result = await loadModelCatalog({ config: {} as OpenClawConfig, readOnly: true });
 
@@ -712,25 +717,23 @@ describe("loadModelCatalog", () => {
         compat: undefined,
       },
     ]);
-    expect(ensureOpenClawModelsJsonMock).not.toHaveBeenCalled();
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
     expect(augmentCatalogMock).not.toHaveBeenCalled();
   });
 
   it("normalizes persisted read-only catalog rows with manifest model id policies", async () => {
     currentPluginMetadataSnapshotMock.mockReturnValue(modelIdNormalizationSnapshot());
-    readFileMock.mockResolvedValueOnce(
-      JSON.stringify({
-        providers: {
-          custom: {
-            models: [
-              { id: "latest", name: "Latest Alias" },
-              { id: "legacy/trimmed" },
-              { id: "vendor/already-prefixed" },
-            ],
-          },
+    storedModelsConfigRaw = JSON.stringify({
+      providers: {
+        custom: {
+          models: [
+            { id: "latest", name: "Latest Alias" },
+            { id: "legacy/trimmed" },
+            { id: "vendor/already-prefixed" },
+          ],
         },
-      }),
-    );
+      },
+    });
 
     const result = await loadModelCatalog({ config: {} as OpenClawConfig, readOnly: true });
 
@@ -744,15 +747,13 @@ describe("loadModelCatalog", () => {
 
   it("reuses injected metadata for persisted read-only catalog normalization", async () => {
     currentPluginMetadataSnapshotMock.mockReturnValue(undefined);
-    readFileMock.mockResolvedValueOnce(
-      JSON.stringify({
-        providers: {
-          custom: {
-            models: [{ id: "latest", name: "Latest Alias" }],
-          },
+    storedModelsConfigRaw = JSON.stringify({
+      providers: {
+        custom: {
+          models: [{ id: "latest", name: "Latest Alias" }],
         },
-      }),
-    );
+      },
+    });
 
     const result = await loadModelCatalog({
       config: {} as OpenClawConfig,
@@ -818,15 +819,13 @@ describe("loadModelCatalog", () => {
   it("loads manifest model id policies once for persisted read-only catalog rows", async () => {
     currentPluginMetadataSnapshotMock.mockReturnValue(undefined);
     loadPluginMetadataSnapshotMock.mockReturnValue(modelIdNormalizationSnapshot());
-    readFileMock.mockResolvedValueOnce(
-      JSON.stringify({
-        providers: {
-          custom: {
-            models: [{ id: "model-a" }, { id: "model-b" }, { id: "model-c" }, { id: "model-d" }],
-          },
+    storedModelsConfigRaw = JSON.stringify({
+      providers: {
+        custom: {
+          models: [{ id: "model-a" }, { id: "model-b" }, { id: "model-c" }, { id: "model-d" }],
         },
-      }),
-    );
+      },
+    });
 
     const result = await loadModelCatalog({ config: {} as OpenClawConfig, readOnly: true });
 
@@ -882,19 +881,17 @@ describe("loadModelCatalog", () => {
   });
 
   it("preserves provider context defaults for persisted read-only catalog rows", async () => {
-    readFileMock.mockResolvedValueOnce(
-      JSON.stringify({
-        providers: {
-          custom: {
-            contextWindow: 262144,
-            models: [
-              { id: "inherits-provider-context" },
-              { id: "overrides-context", contextWindow: 65536 },
-            ],
-          },
+    storedModelsConfigRaw = JSON.stringify({
+      providers: {
+        custom: {
+          contextWindow: 262144,
+          models: [
+            { id: "inherits-provider-context" },
+            { id: "overrides-context", contextWindow: 65536 },
+          ],
         },
-      }),
-    );
+      },
+    });
 
     const result = await loadModelCatalog({ config: {} as OpenClawConfig, readOnly: true });
 
@@ -918,7 +915,7 @@ describe("loadModelCatalog", () => {
         compat: undefined,
       },
     ]);
-    expect(ensureOpenClawModelsJsonMock).not.toHaveBeenCalled();
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
     expect(augmentCatalogMock).not.toHaveBeenCalled();
   });
 
@@ -1286,22 +1283,20 @@ describe("loadModelCatalog", () => {
   });
 
   it("overlays configured model compat onto persisted read-only catalog rows", async () => {
-    readFileMock.mockResolvedValue(
-      JSON.stringify({
-        providers: {
-          vllm: {
-            models: [
-              {
-                id: "Qwen/Qwen3-8B",
-                name: "Qwen3 8B",
-                reasoning: false,
-                compat: { supportsStrictMode: false },
-              },
-            ],
-          },
+    storedModelsConfigRaw = JSON.stringify({
+      providers: {
+        vllm: {
+          models: [
+            {
+              id: "Qwen/Qwen3-8B",
+              name: "Qwen3 8B",
+              reasoning: false,
+              compat: { supportsStrictMode: false },
+            },
+          ],
         },
-      }),
-    );
+      },
+    });
 
     const result = await loadModelCatalog({
       config: {

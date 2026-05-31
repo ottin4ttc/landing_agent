@@ -4,7 +4,7 @@ const facadeRuntimeMocks = vi.hoisted(() => ({
   loadBundledPluginPublicSurfaceModuleSync: vi.fn(),
 }));
 
-vi.mock("../plugin-sdk/facade-runtime.js", () => ({
+vi.mock("../plugin-sdk/facade-loader.js", () => ({
   loadBundledPluginPublicSurfaceModuleSync:
     facadeRuntimeMocks.loadBundledPluginPublicSurfaceModuleSync,
 }));

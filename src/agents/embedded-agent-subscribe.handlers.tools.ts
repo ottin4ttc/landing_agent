@@ -284,11 +284,6 @@ function readToolResultDetailsRecord(result: unknown): Record<string, unknown> |
   return readRecordField(asOptionalObjectRecord(result)?.details);
 }
 
-function isAsyncStartedToolResult(result: unknown): boolean {
-  const details = readToolResultDetailsRecord(result);
-  return details?.async === true && details.status === "started";
-}
-
 function readExecToolDetails(result: unknown): ExecToolDetails | null {
   const details = readToolResultDetailsRecord(result);
   if (!details || typeof details.status !== "string") {
@@ -1151,12 +1146,7 @@ export async function handleToolExecutionEnd(
   const callSummary = ctx.state.toolMetaById.get(toolCallId);
   const completedMutatingAction = !isToolError && Boolean(callSummary?.mutatingAction);
   const meta = callSummary?.meta;
-  const asyncStarted = !isToolError && isAsyncStartedToolResult(sanitizedResult);
-  ctx.state.toolMetas.push({
-    toolName,
-    meta,
-    ...(asyncStarted ? { asyncStarted: true } : {}),
-  });
+  ctx.state.toolMetas.push({ toolName, meta });
   const acceptedSessionSpawn =
     toolName === "sessions_spawn" && !isToolError
       ? normalizeAcceptedSessionSpawnResult(sanitizedResult)
@@ -1197,10 +1187,7 @@ export async function handleToolExecutionEnd(
       ctx.state.lastToolError = undefined;
     }
   }
-  if (asyncStarted) {
-    ctx.state.hadDeterministicSideEffect = true;
-  }
-  if (completedMutatingAction || acceptedSessionSpawn || asyncStarted) {
+  if (completedMutatingAction || acceptedSessionSpawn) {
     ctx.state.replayState = mergeEmbeddedRunReplayState(ctx.state.replayState, {
       replayInvalid: true,
       hadPotentialSideEffects: true,

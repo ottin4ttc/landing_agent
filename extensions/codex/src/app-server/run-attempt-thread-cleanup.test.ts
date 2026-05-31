@@ -5,6 +5,7 @@ import {
   resetAgentEventsForTest,
   type EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { closeOpenClawStateDatabaseForTest } from "openclaw/plugin-sdk/sqlite-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerClientFactory } from "./client-factory.js";
 import type { CodexServerNotification } from "./protocol.js";
@@ -12,6 +13,7 @@ import { runCodexAppServerAttempt } from "./run-attempt.js";
 import { createCodexTestModel } from "./test-support.js";
 
 let tempDir: string;
+let previousStateDir: string | undefined;
 
 function createParams(sessionFile: string, workspaceDir: string): EmbeddedRunAttemptParams {
   return {
@@ -89,12 +91,20 @@ describe("Codex app-server main thread cleanup", () => {
     vi.stubEnv("CODEX_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-run-cleanup-"));
+    previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = tempDir;
   });
 
   afterEach(async () => {
+    closeOpenClawStateDatabaseForTest();
     resetAgentEventsForTest();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 

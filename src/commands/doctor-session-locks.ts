@@ -1,5 +1,5 @@
 import { note } from "../../packages/terminal-core/src/note.js";
-import { resolveAgentSessionDirs } from "../agents/session-dirs.js";
+import { resolveLegacyAgentSessionDirs } from "./doctor/legacy/session-dirs.js";
 import {
   cleanStaleLockFiles,
   resolveSessionWriteLockStaleMs,
@@ -50,7 +50,7 @@ export async function noteSessionLockHealth(params?: {
   const staleMs = params?.staleMs ?? resolveSessionWriteLockStaleMs(params?.config, params?.env);
   let sessionDirs: string[] = [];
   try {
-    sessionDirs = await resolveAgentSessionDirs(resolveStateDir(process.env));
+    sessionDirs = await resolveLegacyAgentSessionDirs(resolveStateDir(process.env));
   } catch (err) {
     note(`- Failed to inspect session lock files: ${String(err)}`, "Session locks");
     return;

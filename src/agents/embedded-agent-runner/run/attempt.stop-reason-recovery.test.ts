@@ -1,10 +1,10 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { describe, expect, it } from "vitest";
 import {
   createAssistantMessageEventStream,
   type Context,
   type Model,
-} from "openclaw/plugin-sdk/llm";
-import { describe, expect, it } from "vitest";
+} from "../../pi-ai-contract.js";
 import { wrapStreamFnHandleSensitiveStopReason } from "./attempt.stop-reason-recovery.js";
 
 const anthropicModel = {

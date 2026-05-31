@@ -1,6 +1,11 @@
 import { parse as partialParse } from "partial-json";
 
 const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+const JSON_INTEGER_TOKEN_PATTERN = /^-?(?:0|[1-9]\d*)$/;
+
+type JsonReviverContext = {
+  source?: string;
+};
 
 function isControlCharacter(char: string): boolean {
   const codePoint = char.codePointAt(0);
@@ -88,13 +93,26 @@ export function repairJson(json: string): string {
   return repaired;
 }
 
+function preserveUnsafeIntegerJsonTokens(
+  _key: string,
+  value: unknown,
+  context?: JsonReviverContext,
+): unknown {
+  if (typeof value !== "number" || !Number.isInteger(value) || Number.isSafeInteger(value)) {
+    return value;
+  }
+  const source = context?.source?.trim();
+  return source && JSON_INTEGER_TOKEN_PATTERN.test(source) ? source : value;
+}
+
+/** Parses JSON while repairing malformed strings and preserving unsafe integer tokens as strings. */
 export function parseJsonWithRepair(json: string): unknown {
   try {
-    return JSON.parse(json) as unknown;
+    return JSON.parse(json, preserveUnsafeIntegerJsonTokens) as unknown;
   } catch (error) {
     const repairedJson = repairJson(json);
     if (repairedJson !== json) {
-      return JSON.parse(repairedJson) as unknown;
+      return JSON.parse(repairedJson, preserveUnsafeIntegerJsonTokens) as unknown;
     }
     throw error;
   }

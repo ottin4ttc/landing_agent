@@ -34,10 +34,7 @@ import {
   isWorkspaceSetupCompleted,
 } from "../../agents/workspace.js";
 import { applyAgentConfig } from "../../commands/agents.config.js";
-import {
-  purgeAgentSessionStoreEntries,
-  resolveSessionTranscriptsDirForAgent,
-} from "../../config/sessions.js";
+import { purgeAgentSessionRows } from "../../config/sessions.js";
 import type { IdentityConfig } from "../../config/types.base.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { root, FsSafeError, type ReadResult } from "../../infra/fs-safe.js";
@@ -524,7 +521,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
     const agentDir = resolveAgentDir(nextConfig, agentId);
     nextConfig = applyAgentConfig(nextConfig, { agentId, agentDir });
 
-    // Ensure workspace & transcripts exist BEFORE writing config so a failure
+    // Ensure workspace exists BEFORE writing config so a failure
     // here does not leave a broken config entry behind.
     const skipBootstrap = Boolean(nextConfig.agents?.defaults?.skipBootstrap);
     await ensureAgentWorkspace({
@@ -532,7 +529,6 @@ export const agentsHandlers: GatewayRequestHandlers = {
       ensureBootstrapFiles: !skipBootstrap,
       skipOptionalBootstrapFiles: nextConfig.agents?.defaults?.skipOptionalBootstrapFiles,
     });
-    await fs.mkdir(resolveSessionTranscriptsDirForAgent(agentId), { recursive: true });
 
     const persistedIdentity = normalizeIdentityForFile(resolveAgentIdentity(nextConfig, agentId));
     if (persistedIdentity) {
@@ -699,6 +695,9 @@ export const agentsHandlers: GatewayRequestHandlers = {
     }
 
     const deleteFiles = typeof params.deleteFiles === "boolean" ? params.deleteFiles : true;
+    const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+    const agentDir = resolveAgentDir(cfg, agentId);
+
     let committed: Awaited<ReturnType<typeof deleteAgentConfigEntry>>;
     try {
       committed = await deleteAgentConfigEntry({ agentId });
@@ -711,12 +710,12 @@ export const agentsHandlers: GatewayRequestHandlers = {
     }
     const deleteResult = committed.result;
     if (!deleteResult) {
-      respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "agent delete did not commit"));
+      respondAgentNotFound(respond, agentId);
       return;
     }
 
-    // Purge session store entries so orphaned sessions cannot be targeted (#65524).
-    await purgeAgentSessionStoreEntries(cfg, agentId);
+    // Purge SQLite session rows so orphaned sessions cannot be targeted (#65524).
+    await purgeAgentSessionRows(cfg, agentId);
 
     if (deleteFiles) {
       const workspaceSharedWith = findOverlappingWorkspaceAgentIds(
@@ -726,9 +725,8 @@ export const agentsHandlers: GatewayRequestHandlers = {
       );
       const deleteWorkspace = workspaceSharedWith.length === 0;
       await Promise.all([
-        ...(deleteWorkspace ? [moveToTrashBestEffort(deleteResult.workspaceDir)] : []),
-        moveToTrashBestEffort(deleteResult.agentDir),
-        moveToTrashBestEffort(deleteResult.sessionsDir),
+        ...(deleteWorkspace ? [moveToTrashBestEffort(workspaceDir)] : []),
+        moveToTrashBestEffort(agentDir),
       ]);
     }
 

@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type {
+  OpenClawConfig,
+  ProviderRuntimeModel,
+  ProviderWrapStreamFnContext,
+} from "openclaw/plugin-sdk/plugin-entry";
+import type {
   AssistantMessage,
   StopReason,
   TextContent,
@@ -9,13 +14,8 @@ import type {
   ToolCall,
   Tool,
   Usage,
-} from "openclaw/plugin-sdk/llm";
-import { createAssistantMessageEventStream, streamSimple } from "openclaw/plugin-sdk/llm";
-import type {
-  OpenClawConfig,
-  ProviderRuntimeModel,
-  ProviderWrapStreamFnContext,
-} from "openclaw/plugin-sdk/plugin-entry";
+} from "openclaw/plugin-sdk/provider-ai";
+import { createAssistantMessageEventStream, streamSimple } from "openclaw/plugin-sdk/provider-ai";
 import { isNonSecretApiKeyMarker } from "openclaw/plugin-sdk/provider-auth";
 import {
   DEFAULT_CONTEXT_TOKENS,

@@ -1,4 +1,4 @@
-import type { AgentToolResult } from "../agents/runtime/index.js";
+import type { AgentToolResult } from "../agents/agent-core-contract.js";
 
 export type OpenClawAgentToolResult<TResult = unknown> = AgentToolResult<TResult>;
 

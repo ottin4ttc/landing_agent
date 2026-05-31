@@ -18,8 +18,6 @@ export const WIKI_VAULT_DIRECTORIES = [
   "_attachments",
   "_views",
   ".openclaw-wiki",
-  ".openclaw-wiki/locks",
-  ".openclaw-wiki/cache",
 ] as const;
 
 type InitializeMemoryWikiVaultResult = {
@@ -49,7 +47,7 @@ function buildAgentsMarkdown(): string {
 - Preserve human notes outside managed markers.
 - Prefer source-backed claims over wiki-to-wiki citation loops.
 - Prefer structured \`claims\` with evidence over burying key beliefs only in prose.
-- Use \`.openclaw-wiki/cache/agent-digest.json\` and \`claims.jsonl\` for machine reads; markdown pages are the human view.
+- Compiled digests live in OpenClaw plugin state; markdown pages are the human view.
 `);
 }
 
@@ -66,7 +64,7 @@ This vault is maintained by the OpenClaw memory-wiki plugin.
 ## Architecture
 - Raw sources remain the evidence layer.
 - Wiki pages are the human-readable synthesis layer.
-- \`.openclaw-wiki/cache/agent-digest.json\` is the agent-facing compiled digest.
+- OpenClaw plugin state stores the agent-facing compiled digest.
 
 ## Notes
 <!-- openclaw:human:start -->
@@ -122,24 +120,6 @@ export async function initializeMemoryWikiVault(
     withTrailingNewline("# Inbox\n\nDrop raw ideas, questions, and source links here.\n"),
     createdFiles,
   );
-  await writeFileIfMissing(
-    rootDir,
-    ".openclaw-wiki/state.json",
-    withTrailingNewline(
-      JSON.stringify(
-        {
-          version: 1,
-          createdAt: resolveMemoryWikiTimestamp(options?.nowMs),
-          renderMode: config.vault.renderMode,
-        },
-        null,
-        2,
-      ),
-    ),
-    createdFiles,
-  );
-  await writeFileIfMissing(rootDir, ".openclaw-wiki/log.jsonl", "", createdFiles);
-
   if (createdDirectories.length > 0 || createdFiles.length > 0) {
     await appendMemoryWikiLog(rootDir, {
       type: "init",

@@ -283,12 +283,16 @@ CREATE INDEX IF NOT EXISTS idx_model_capability_cache_provider_updated
 CREATE TABLE IF NOT EXISTS agent_model_catalogs (
   catalog_key TEXT NOT NULL PRIMARY KEY,
   agent_dir TEXT NOT NULL,
+  relative_path TEXT NOT NULL DEFAULT '',
   raw_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_model_catalogs_agent_dir
   ON agent_model_catalogs(agent_dir, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_agent_model_catalogs_agent_relative_path
+  ON agent_model_catalogs(agent_dir, relative_path);
 
 CREATE TABLE IF NOT EXISTS managed_outgoing_image_records (
   attachment_id TEXT NOT NULL PRIMARY KEY,
@@ -879,6 +883,23 @@ CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled_next_run
 CREATE INDEX IF NOT EXISTS idx_cron_jobs_agent_session
   ON cron_jobs(agent_id, session_key, updated_at DESC, job_id)
   WHERE agent_id IS NOT NULL OR session_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS cron_quarantined_jobs (
+  store_key TEXT NOT NULL,
+  quarantine_key TEXT NOT NULL,
+  source_index INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  job_json TEXT,
+  raw_json TEXT,
+  state_json TEXT,
+  updated_at_ms INTEGER,
+  schedule_identity TEXT,
+  quarantined_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (store_key, quarantine_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cron_quarantined_jobs_store_time
+  ON cron_quarantined_jobs(store_key, quarantined_at_ms DESC, source_index, quarantine_key);
 
 CREATE TABLE IF NOT EXISTS command_log_entries (
   id TEXT NOT NULL PRIMARY KEY,

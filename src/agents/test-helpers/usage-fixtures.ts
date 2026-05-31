@@ -1,4 +1,4 @@
-import type { Usage } from "openclaw/plugin-sdk/llm";
+import type { Usage } from "../pi-ai-contract.js";
 
 export const ZERO_USAGE_FIXTURE: Usage = {
   input: 0,

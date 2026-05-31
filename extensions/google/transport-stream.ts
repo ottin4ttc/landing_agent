@@ -1,4 +1,5 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
 import {
   calculateCost,
   getEnvApiKey,
@@ -6,8 +7,7 @@ import {
   type Model,
   type SimpleStreamOptions,
   type ThinkingLevel,
-} from "openclaw/plugin-sdk/llm";
-import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
+} from "openclaw/plugin-sdk/provider-ai";
 import { createProviderHttpError } from "openclaw/plugin-sdk/provider-http";
 import {
   buildGuardedModelFetch,

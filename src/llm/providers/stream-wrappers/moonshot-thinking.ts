@@ -1,5 +1,5 @@
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
-import type { StreamFn } from "../../../agents/runtime/index.js";
+import type { StreamFn } from "../../../agents/agent-core-contract.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
 import { streamWithPayloadPatch } from "./stream-payload-utils.js";
@@ -7,10 +7,10 @@ import { streamWithPayloadPatch } from "./stream-payload-utils.js";
 type MoonshotThinkingType = "enabled" | "disabled";
 type MoonshotThinkingKeep = "all";
 const MOONSHOT_THINKING_KEEP_MODEL_ID = "kimi-k2.6";
-const llmRuntimeLoader = createLazyImportLoader(() => import("openclaw/plugin-sdk/llm"));
+const piAiRuntimeLoader = createLazyImportLoader(() => import("../../../agents/pi-ai-contract.js"));
 
 async function loadDefaultStreamFn(): Promise<StreamFn> {
-  const runtime = await llmRuntimeLoader.load();
+  const runtime = await piAiRuntimeLoader.load();
   return runtime.streamSimple;
 }
 

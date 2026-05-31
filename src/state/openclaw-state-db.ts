@@ -169,6 +169,7 @@ function ensureAdditiveStateColumns(db: DatabaseSync): void {
   ensureColumn(db, "node_pairing_pending", "client_mode TEXT");
   ensureColumn(db, "node_pairing_paired", "client_id TEXT");
   ensureColumn(db, "node_pairing_paired", "client_mode TEXT");
+  ensureColumn(db, "agent_model_catalogs", "relative_path TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "cron_run_logs", "status TEXT");
   ensureColumn(db, "cron_run_logs", "error TEXT");
   ensureColumn(db, "cron_run_logs", "summary TEXT");

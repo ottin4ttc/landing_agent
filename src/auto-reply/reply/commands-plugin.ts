@@ -44,8 +44,6 @@ export const handlePluginCommand: CommandHandler = async (
     agentId: params.agentId,
     sessionKey: params.sessionKey,
     sessionId: targetSessionEntry?.sessionId,
-    sessionFile: targetSessionEntry?.sessionFile,
-    authProfileId: targetSessionEntry?.authProfileOverride,
     commandBody: command.commandBodyNormalized,
     config: cfg,
     from: command.from,

@@ -553,16 +553,15 @@ export async function runCopilotAttempt(
   ];
 
   // Best-effort dual-write: mirror this attempt's full message snapshot
-  // (user/assistant/toolResult) into the OpenClaw audit transcript at
-  // params.sessionFile, alongside the SDK's own session storage. The
-  // OpenClaw shell (attempt-execution.ts) writes only the user prompt
-  // and terminal assistant text; mirroring here captures intermediate
-  // tool calls/results for full audit/replay parity with the codex
+  // (user/assistant/toolResult) into the OpenClaw audit transcript,
+  // alongside the SDK's own session storage. The OpenClaw shell
+  // (attempt-execution.ts) writes only the user prompt and terminal
+  // assistant text; mirroring here captures intermediate tool
+  // calls/results for full audit/replay parity with the codex
   // extension. Identity-tagged so re-emits dedupe. Errors are
   // swallowed so a mirror failure cannot break the attempt.
-  const sessionFileForMirror = readString(input.sessionFile);
   const sessionIdForScope = sessionIdUsed ?? readString(input.sessionId);
-  if (sessionFileForMirror && messagesSnapshot.length > 0) {
+  if (sessionIdForScope && messagesSnapshot.length > 0) {
     const taggedMessages = messagesSnapshot.map((message, index) => {
       if (
         message.role !== "user" &&
@@ -587,11 +586,11 @@ export async function runCopilotAttempt(
       return attachCopilotMirrorIdentity(message, `${identityScope}:${message.role}:${index}`);
     });
     await dualWriteCopilotTranscriptBestEffort({
-      sessionFile: sessionFileForMirror,
       sessionKey: readString((input as { sessionKey?: unknown }).sessionKey),
       agentId: readString(input.agentId),
+      sessionId: sessionIdForScope,
       messages: taggedMessages,
-      idempotencyScope: sessionIdForScope ? `copilot:${sessionIdForScope}` : undefined,
+      idempotencyScope: `copilot:${sessionIdForScope}`,
       config: (input as { config?: unknown }).config as never,
     }).catch((mirrorError: unknown) => {
       // Defense-in-depth: the best-effort wrapper already swallows
@@ -688,7 +687,6 @@ function createResult(
     promptError,
     promptErrorSource: promptError ? "prompt" : null,
     replayMetadata,
-    sessionFileUsed: readString(params.sessionFile),
     sessionIdUsed: state.sessionIdUsed ?? readString(params.sessionId) ?? "copilot-session",
     timedOut,
     timedOutDuringCompaction: false,

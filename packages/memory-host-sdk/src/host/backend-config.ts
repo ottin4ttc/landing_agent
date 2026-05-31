@@ -287,7 +287,6 @@ function resolveSessionConfig(
     retentionDays,
   };
 }
-
 function resolveCustomPaths(
   rawPaths: MemoryQmdIndexPath[] | undefined,
   workspaceDir: string,
@@ -445,8 +444,8 @@ export function resolveMemoryBackendConfig(params: {
     searchMode: resolveSearchMode(qmdCfg?.searchMode),
     searchTool: resolveSearchTool(qmdCfg?.searchTool),
     collections,
-    includeDefaultMemory,
     sessions: resolveSessionConfig(qmdCfg?.sessions, workspaceDir),
+    includeDefaultMemory,
     update: {
       intervalMs: resolveIntervalMs(qmdCfg?.update?.interval),
       debounceMs: resolveDebounceMs(qmdCfg?.update?.debounceMs),

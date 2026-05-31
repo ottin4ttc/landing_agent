@@ -1,6 +1,3 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -8,10 +5,7 @@ import {
   createReplyOperation,
 } from "../../auto-reply/reply/reply-run-registry.js";
 import { setDiagnosticsEnabledForProcess } from "../../infra/diagnostic-events.js";
-import {
-  getDiagnosticSessionState,
-  resetDiagnosticSessionStateForTest,
-} from "../../logging/diagnostic-session-state.js";
+import { resetDiagnosticSessionStateForTest } from "../../logging/diagnostic-session-state.js";
 import { diagnosticLogger } from "../../logging/diagnostic.js";
 import { MAX_TIMER_TIMEOUT_MS } from "../../shared/number-coercion.js";
 import {
@@ -31,10 +25,8 @@ import {
   queueEmbeddedAgentMessageWithOutcomeAsync,
   requestEmbeddedRunModelSwitch,
   resolveActiveEmbeddedRunHandleSessionId,
-  resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
   setActiveEmbeddedRun,
   updateActiveEmbeddedRunSnapshot,
-  updateActiveEmbeddedRunSessionFile,
   waitForActiveEmbeddedRuns,
   waitForEmbeddedAgentRunEnd,
 } from "./runs.js";
@@ -97,49 +89,6 @@ describe("embedded-agent runner run registry", () => {
     expect(aborted).toBe(true);
     expect(abortA).toHaveBeenCalledTimes(1);
     expect(abortB).toHaveBeenCalledTimes(1);
-  });
-
-  it("resolves active embedded runs by canonical session file", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-run-registry-"));
-    try {
-      const sessionFile = path.join(tempDir, "session.jsonl");
-      const symlinkFile = path.join(tempDir, "session-link.jsonl");
-      await fs.writeFile(sessionFile, '{"type":"session"}\n', "utf8");
-      await fs.symlink(sessionFile, symlinkFile);
-      const handle = createRunHandle();
-
-      setActiveEmbeddedRun("session-file-run", handle, "agent:main:visible", sessionFile);
-
-      expect(resolveActiveEmbeddedRunHandleSessionIdBySessionFile(symlinkFile)).toBe(
-        "session-file-run",
-      );
-
-      clearActiveEmbeddedRun("session-file-run", handle, "agent:main:visible", sessionFile);
-      expect(resolveActiveEmbeddedRunHandleSessionIdBySessionFile(symlinkFile)).toBeUndefined();
-    } finally {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it("records active run session files in diagnostic state for heartbeat recovery", () => {
-    setDiagnosticsEnabledForProcess(true);
-    const sessionFile = "/tmp/openclaw-run-registry-session.jsonl";
-    const handle = createRunHandle();
-
-    setActiveEmbeddedRun("session-file-diagnostics", handle, "agent:main:visible", sessionFile);
-
-    expect(getDiagnosticSessionState({ sessionId: "session-file-diagnostics" }).sessionFile).toBe(
-      sessionFile,
-    );
-
-    updateActiveEmbeddedRunSessionFile(
-      "session-file-diagnostics",
-      "/tmp/openclaw-run-registry-rotated.jsonl",
-    );
-
-    expect(getDiagnosticSessionState({ sessionId: "session-file-diagnostics" }).sessionFile).toBe(
-      "/tmp/openclaw-run-registry-rotated.jsonl",
-    );
   });
 
   it("passes steering options to active embedded runs", () => {
@@ -458,26 +407,22 @@ describe("embedded-agent runner run registry", () => {
     expect(resolveActiveEmbeddedRunHandleSessionId("agent:main:main")).toBeUndefined();
   });
 
-  it("tracks timeout abandonment by session id, key, and file until a new run starts", () => {
-    const sessionFile = "/tmp/openclaw-abandoned-session.jsonl";
+  it("tracks timeout abandonment by session id and key until a new run starts", () => {
     const handle = createRunHandle();
 
     markEmbeddedRunAbandoned({
       sessionId: "session-timeout",
       sessionKey: "agent:main:main",
-      sessionFile,
       reason: "timeout",
     });
 
     expect(isEmbeddedRunAbandoned({ sessionId: "session-timeout" })).toBe(true);
     expect(isEmbeddedRunAbandoned({ sessionKey: "agent:main:main" })).toBe(true);
-    expect(isEmbeddedRunAbandoned({ sessionFile })).toBe(true);
 
-    setActiveEmbeddedRun("session-next", handle, "agent:main:main", sessionFile);
+    setActiveEmbeddedRun("session-next", handle, "agent:main:main");
 
     expect(isEmbeddedRunAbandoned({ sessionId: "session-timeout" })).toBe(false);
     expect(isEmbeddedRunAbandoned({ sessionKey: "agent:main:main" })).toBe(false);
-    expect(isEmbeddedRunAbandoned({ sessionFile })).toBe(false);
 
     markEmbeddedRunAbandoned({
       sessionId: "session-next",

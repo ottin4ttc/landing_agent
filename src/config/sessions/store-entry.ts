@@ -10,6 +10,10 @@ export function normalizeStoreSessionKey(sessionKey: string): string {
   return normalizeSessionKeyPreservingOpaquePeerIds(sessionKey);
 }
 
+export function normalizeSessionRowKey(sessionKey: string): string {
+  return normalizeStoreSessionKey(sessionKey);
+}
+
 export function foldedSessionKeyAliasCandidates(normalizedKey: string): string[] {
   const aliases = new Set<string>();
   const foldedLegacyKey = normalizeLowercaseStringOrEmpty(normalizedKey);
@@ -26,9 +30,6 @@ export function foldedSessionKeyAliasCandidates(normalizedKey: string): string[]
   return [...aliases];
 }
 
-/** The case-sensitive room/peer target an entry actually delivers to. Delivery
- *  metadata preserves the real opaque id even when the session KEY was lowercased
- *  by the bug, so it distinguishes a lowercased artifact from a distinct room. */
 function normalizeEntryTarget(value: unknown): string {
   if (typeof value !== "string") {
     return "";
@@ -70,9 +71,6 @@ function entryThreadId(entry: SessionEntry | undefined): string {
   );
 }
 
-/** Tail-preserved keys like Matrix rooms need delivery-target proof before a
- *  folded key is treated as a legacy alias. Segment-preserved legacy keys
- *  (Signal groups) keep their old permissive lowercase fallback. */
 export function isConfirmedLowercasedLegacyAlias(
   entry: SessionEntry | undefined,
   normalizedKey: string,
@@ -133,9 +131,7 @@ export function resolveSessionStoreEntry(params: {
   ) {
     legacyKeySet.add(trimmedKey);
   }
-  // Matrix folded aliases need proof they still deliver to this room. Otherwise a
-  // genuinely case-distinct sibling that merely folds to the same lowercase could
-  // be deleted or returned as this room's existing session.
+
   let foldedLegacyEntry: SessionEntry | undefined;
   let foldedLegacyUpdatedAt = 0;
   for (const foldedLegacyKey of foldedLegacyKeys) {
@@ -185,9 +181,6 @@ export function resolveSessionStoreEntry(params: {
     if (candidateKey === normalizedKey) {
       continue;
     }
-    // Only collapse TRUE canonical aliases (same opaque-preserving key, e.g. a
-    // structural-token-case variant). Do NOT collapse keys that merely fold to the
-    // same lowercase — those can be case-distinct Matrix rooms that must survive.
     if (normalizeStoreSessionKey(candidateKey) !== normalizedKey) {
       continue;
     }
@@ -205,5 +198,22 @@ export function resolveSessionStoreEntry(params: {
     normalizedKey,
     existing,
     legacyKeys: [...legacyKeySet],
+  };
+}
+
+export function resolveSessionRowEntry(params: {
+  entries: Record<string, SessionEntry>;
+  sessionKey: string;
+}): {
+  normalizedKey: string;
+  existing: SessionEntry | undefined;
+} {
+  const { normalizedKey, existing } = resolveSessionStoreEntry({
+    store: params.entries,
+    sessionKey: params.sessionKey,
+  });
+  return {
+    normalizedKey,
+    existing,
   };
 }

@@ -10,7 +10,7 @@ export type SessionGoalSnapshot = {
 
 type SessionGoalStoreOptions = {
   sessionKey: string;
-  storePath?: string;
+  agentId: string;
   now?: number;
   fallbackEntry?: SessionEntry;
   persist?: boolean;
@@ -176,7 +176,7 @@ export async function getSessionGoal(
   const now = nowMs(options.now);
   if (options.persist === false) {
     const entry =
-      getSessionEntry({ sessionKey: options.sessionKey, storePath: options.storePath }) ??
+      getSessionEntry({ sessionKey: options.sessionKey, agentId: options.agentId }) ??
       options.fallbackEntry;
     const projected = entry
       ? resolveSessionGoalDisplayState(entry, now, { adoptFreshBaseline: false })
@@ -186,7 +186,7 @@ export async function getSessionGoal(
   let goal: SessionGoal | undefined;
   const result = await patchSessionEntry({
     sessionKey: options.sessionKey,
-    storePath: options.storePath,
+    agentId: options.agentId,
     fallbackEntry: options.fallbackEntry,
     update: (entry) => {
       const accounted = accountGoalUsage(entry, now);
@@ -212,7 +212,7 @@ export async function createSessionGoal(options: CreateSessionGoalOptions): Prom
   let created: SessionGoal | undefined;
   const result = await patchSessionEntry({
     sessionKey: options.sessionKey,
-    storePath: options.storePath,
+    agentId: options.agentId,
     fallbackEntry: options.fallbackEntry,
     update: (entry) => {
       if (entry.goal) {
@@ -250,7 +250,7 @@ export async function updateSessionGoalStatus(
   let foundSession = false;
   const result = await patchSessionEntry({
     sessionKey: options.sessionKey,
-    storePath: options.storePath,
+    agentId: options.agentId,
     update: (entry) => {
       foundSession = true;
       const accounted = accountGoalUsage(entry, now);
@@ -304,7 +304,7 @@ export async function clearSessionGoal(options: SessionGoalStoreOptions): Promis
   let removed = false;
   const result = await patchSessionEntry({
     sessionKey: options.sessionKey,
-    storePath: options.storePath,
+    agentId: options.agentId,
     update: (entry) => {
       if (!entry.goal) {
         return null;

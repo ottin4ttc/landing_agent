@@ -1,7 +1,7 @@
 import os from "node:os";
-import { formatSkillsForPrompt as upstreamFormatSkillsForPrompt } from "openclaw/plugin-sdk/agent-sessions";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { formatSkillsForPrompt as upstreamFormatSkillsForPrompt } from "../../agents/pi-coding-agent-contract.js";
 import {
   restoreMockSkillsHomeEnv,
   setMockSkillsHomeEnv,

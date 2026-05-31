@@ -30,8 +30,8 @@ export type RunCliAgentParams = {
   sessionKey?: string;
   sessionEntry?: SessionEntry;
   agentId?: string;
+  sessionFile?: string;
   trigger?: EmbeddedRunTrigger;
-  sessionFile: string;
   workspaceDir: string;
   /** Task working directory for CLI execution. Defaults to workspaceDir. */
   cwd?: string;
@@ -103,6 +103,17 @@ export type RunCliAgentParams = {
    */
   cleanupBundleMcpOnRunEnd?: boolean;
 };
+
+export function resolveCliRunTranscriptPath(params: RunCliAgentParams): string | undefined {
+  return params.sessionFile;
+}
+
+export function resolveCliRunTranscriptPathField(params: RunCliAgentParams): {
+  sessionFile?: string;
+} {
+  const sessionFile = resolveCliRunTranscriptPath(params);
+  return sessionFile ? { sessionFile } : {};
+}
 
 export type CliPreparedBackend = {
   backend: CliBackendConfig;

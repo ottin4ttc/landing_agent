@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import {
+  createPluginStateSyncKeyedStore,
+  type PluginStateSyncKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
-import { getTelegramRuntime } from "./runtime.js";
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 export const TELEGRAM_SENT_MESSAGE_CACHE_NAMESPACE = "telegram.sent-messages";
@@ -21,6 +23,19 @@ type PersistedSentMessage = {
   timestamp: number;
 };
 
+function createPersistedSentMessageStore(
+  env?: NodeJS.ProcessEnv,
+): PluginStateSyncKeyedStore<PersistedSentMessage> {
+  return createPluginStateSyncKeyedStore<PersistedSentMessage>("telegram", {
+    namespace: TELEGRAM_SENT_MESSAGE_CACHE_NAMESPACE,
+    maxEntries: TELEGRAM_SENT_MESSAGE_CACHE_MAX_ENTRIES,
+    defaultTtlMs: TTL_MS,
+    ...(env ? { env } : {}),
+  });
+}
+
+const SENT_MESSAGE_STORE = createPersistedSentMessageStore();
+
 type SentMessageStore = Map<string, Map<string, number>>;
 type SentMessagePersistentStore = PluginStateSyncKeyedStore<PersistedSentMessage>;
 
@@ -33,8 +48,15 @@ type SentMessageState = {
   bucketsByScope: Map<string, SentMessageBucket>;
 };
 
+type SentMessageScopeOptions = {
+  accountId?: string | null;
+};
+
 let sentMessageStoreForTest: SentMessagePersistentStore | undefined;
 
+// Tests inject a store through both the module-local slot and a global symbol so
+// fresh module instances (restart/shared-module specs) observe the same backing
+// store. Without the global, importFreshModule would silently fork persistence.
 function getSentMessageStoreForTest(): SentMessagePersistentStore | undefined {
   const globalStore = globalThis as Record<PropertyKey, unknown>;
   return (
@@ -43,6 +65,17 @@ function getSentMessageStoreForTest(): SentMessagePersistentStore | undefined {
       | SentMessagePersistentStore
       | undefined)
   );
+}
+
+// Production reads/writes route here so an injected test store can stand in for
+// the module-level persistent store while keeping the env-scoped doctor path
+// (importSentMessageCacheEntry) talking to the right state database.
+function openSentMessageStore(env?: NodeJS.ProcessEnv): SentMessagePersistentStore {
+  const injected = getSentMessageStoreForTest();
+  if (injected) {
+    return injected;
+  }
+  return env ? createPersistedSentMessageStore(env) : SENT_MESSAGE_STORE;
 }
 
 function getSentMessageState(): SentMessageState {
@@ -62,13 +95,21 @@ function createSentMessageStore(): SentMessageStore {
   return new Map<string, Map<string, number>>();
 }
 
-function resolveSentMessageStorePath(cfg?: Pick<OpenClawConfig, "session">): string {
-  return `${resolveStorePath(cfg?.session?.store)}.telegram-sent-messages.json`;
+function resolveSentMessageScopeKey(options?: SentMessageScopeOptions): string {
+  const accountId = options?.accountId?.trim();
+  return accountId || "default";
 }
 
-function resolveSentMessageScopeKey(cfg?: Pick<OpenClawConfig, "session">): string {
+// Legacy migration scope is keyed by the session-store path, not by account.
+// Both the current and legacy sidecar plans target the current store path, so
+// migrated rows land in one runtime scope (see state-migrations sent-message specs).
+function resolveLegacySentMessageScopeKey(cfg?: Pick<OpenClawConfig, "session">): string {
   const storePath = resolveStorePath(cfg?.session?.store);
   return createHash("sha256").update(storePath, "utf8").digest("hex").slice(0, 24);
+}
+
+function resolveSentMessageStorePath(cfg?: Pick<OpenClawConfig, "session">): string {
+  return `${resolveStorePath(cfg?.session?.store)}.telegram-sent-messages.json`;
 }
 
 function sentMessageEntryKey(scopeKey: string, chatId: string, messageId: string): string {
@@ -78,13 +119,23 @@ function sentMessageEntryKey(scopeKey: string, chatId: string, messageId: string
     .slice(0, 32);
 }
 
-function openSentMessageStore(): SentMessagePersistentStore {
-  return (
-    getSentMessageStoreForTest() ??
-    getTelegramRuntime().state.openSyncKeyedStore<PersistedSentMessage>({
-      namespace: TELEGRAM_SENT_MESSAGE_CACHE_NAMESPACE,
-      maxEntries: TELEGRAM_SENT_MESSAGE_CACHE_MAX_ENTRIES,
-    })
+export function importSentMessageCacheEntry(
+  chatId: number | string,
+  messageId: number | string,
+  options?: SentMessageScopeOptions & { env?: NodeJS.ProcessEnv },
+): void {
+  const scopeKey = resolveSentMessageScopeKey(options);
+  const chatKey = String(chatId);
+  const idKey = String(messageId);
+  openSentMessageStore(options?.env).register(
+    sentMessageEntryKey(scopeKey, chatKey, idKey),
+    {
+      scopeKey,
+      chatId: chatKey,
+      messageId: idKey,
+      timestamp: Date.now(),
+    },
+    { ttlMs: TTL_MS },
   );
 }
 
@@ -102,6 +153,27 @@ function cleanupExpired(
   if (entry.size === 0) {
     store.delete(scopeKey);
   }
+}
+
+function readPersistedSentMessages(scopeKey: string): SentMessageStore {
+  const now = Date.now();
+  const store = createSentMessageStore();
+  try {
+    for (const entry of openSentMessageStore().entries()) {
+      if (entry.value.scopeKey !== scopeKey || now - entry.value.timestamp > TTL_MS) {
+        continue;
+      }
+      let messages = store.get(entry.value.chatId);
+      if (!messages) {
+        messages = new Map<string, number>();
+        store.set(entry.value.chatId, messages);
+      }
+      messages.set(entry.value.messageId, entry.value.timestamp);
+    }
+  } catch (error) {
+    logVerbose(`telegram: failed to read sent-message cache: ${String(error)}`);
+  }
+  return store;
 }
 
 function readLegacySentMessages(filePath: string): SentMessageStore {
@@ -127,35 +199,14 @@ function readLegacySentMessages(filePath: string): SentMessageStore {
     }
     return store;
   } catch (error) {
-    logVerbose(`telegram: failed to read sent-message cache: ${String(error)}`);
+    logVerbose(`telegram: failed to read legacy sent-message cache: ${String(error)}`);
     return createSentMessageStore();
   }
 }
 
-function readPersistedSentMessages(scopeKey: string): SentMessageStore {
-  const now = Date.now();
-  const store = createSentMessageStore();
-  try {
-    for (const entry of openSentMessageStore().entries()) {
-      if (entry.value.scopeKey !== scopeKey || now - entry.value.timestamp > TTL_MS) {
-        continue;
-      }
-      let messages = store.get(entry.value.chatId);
-      if (!messages) {
-        messages = new Map<string, number>();
-        store.set(entry.value.chatId, messages);
-      }
-      messages.set(entry.value.messageId, entry.value.timestamp);
-    }
-  } catch (error) {
-    logVerbose(`telegram: failed to read sent-message cache: ${String(error)}`);
-  }
-  return store;
-}
-
-function getSentMessageBucket(cfg?: Pick<OpenClawConfig, "session">): SentMessageBucket {
+function getSentMessageBucket(options?: SentMessageScopeOptions): SentMessageBucket {
   const state = getSentMessageState();
-  const scopeKey = resolveSentMessageScopeKey(cfg);
+  const scopeKey = resolveSentMessageScopeKey(options);
   const existing = state.bucketsByScope.get(scopeKey);
   if (existing) {
     return existing;
@@ -168,21 +219,24 @@ function getSentMessageBucket(cfg?: Pick<OpenClawConfig, "session">): SentMessag
   return bucket;
 }
 
-function getSentMessages(cfg?: Pick<OpenClawConfig, "session">): SentMessageStore {
-  return getSentMessageBucket(cfg).store;
+function getSentMessages(options?: SentMessageScopeOptions): SentMessageStore {
+  return getSentMessageBucket(options).store;
 }
 
 function persistSentMessages(bucket: SentMessageBucket): void {
   const { store, scopeKey } = bucket;
   const now = Date.now();
+  const persistentStore = openSentMessageStore();
   for (const [chatId, entry] of store) {
     cleanupExpired(store, chatId, entry, now);
     for (const [messageId, timestamp] of entry) {
+      // Persist with the remaining logical TTL so an aged row does not get its
+      // expiry refreshed every time the bucket is flushed.
       const ttlMs = TTL_MS - Math.max(0, now - timestamp);
       if (ttlMs <= 0) {
         continue;
       }
-      openSentMessageStore().register(
+      persistentStore.register(
         sentMessageEntryKey(scopeKey, chatId, messageId),
         { scopeKey, chatId, messageId, timestamp },
         { ttlMs },
@@ -194,12 +248,12 @@ function persistSentMessages(bucket: SentMessageBucket): void {
 export function recordSentMessage(
   chatId: number | string,
   messageId: number,
-  cfg?: Pick<OpenClawConfig, "session">,
+  options?: SentMessageScopeOptions,
 ): void {
   const scopeKey = String(chatId);
   const idKey = String(messageId);
   const now = Date.now();
-  const bucket = getSentMessageBucket(cfg);
+  const bucket = getSentMessageBucket(options);
   const { store } = bucket;
   let entry = store.get(scopeKey);
   if (!entry) {
@@ -220,11 +274,11 @@ export function recordSentMessage(
 export function wasSentByBot(
   chatId: number | string,
   messageId: number,
-  cfg?: Pick<OpenClawConfig, "session">,
+  options?: SentMessageScopeOptions,
 ): boolean {
   const scopeKey = String(chatId);
   const idKey = String(messageId);
-  const store = getSentMessages(cfg);
+  const store = getSentMessages(options);
   const entry = store.get(scopeKey);
   if (!entry) {
     return false;
@@ -262,7 +316,7 @@ export function listTelegramLegacySentMessageCacheEntries(params: {
   cfg?: Pick<OpenClawConfig, "session">;
   persistedPath?: string;
 }): Array<{ key: string; value: PersistedSentMessage; ttlMs?: number }> {
-  const scopeKey = resolveSentMessageScopeKey(params.cfg);
+  const scopeKey = resolveLegacySentMessageScopeKey(params.cfg);
   const filePath = params.persistedPath ?? resolveSentMessageStorePath(params.cfg);
   const legacy = fs.existsSync(filePath)
     ? readLegacySentMessages(filePath)

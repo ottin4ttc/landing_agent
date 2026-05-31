@@ -7,6 +7,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import * as approvalBridge from "./approval-bridge.js";
 import {
+  codexAppServerTestBindingIdentity,
   createParams,
   createResumeHarness,
   createStartedThreadHarness,
@@ -462,9 +463,10 @@ describe("runCodexAppServerAttempt native hook relay", () => {
 
     await firstHarness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
     await firstRun;
-    expect((await readCodexAppServerBinding(sessionFile))?.nativeHookRelayGeneration).toBe(
-      firstGeneration,
-    );
+    expect(
+      (await readCodexAppServerBinding(codexAppServerTestBindingIdentity()))
+        ?.nativeHookRelayGeneration,
+    ).toBe(firstGeneration);
 
     const secondHarness = createResumeHarness();
     const secondParams = createParams(sessionFile, workspaceDir);
@@ -491,7 +493,7 @@ describe("runCodexAppServerAttempt native hook relay", () => {
   it("accepts a stale first hook generation when resuming a pre-generation binding", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
-    await writeCodexAppServerBinding(sessionFile, {
+    await writeCodexAppServerBinding(codexAppServerTestBindingIdentity(), {
       threadId: "thread-existing",
       cwd: workspaceDir,
       model: "gpt-5.4-codex",
@@ -545,16 +547,17 @@ describe("runCodexAppServerAttempt native hook relay", () => {
 
     await harness.completeTurn({ threadId: "thread-existing", turnId: "turn-1" });
     await run;
-    expect((await readCodexAppServerBinding(sessionFile))?.nativeHookRelayGeneration).toBe(
-      currentGeneration,
-    );
+    expect(
+      (await readCodexAppServerBinding(codexAppServerTestBindingIdentity()))
+        ?.nativeHookRelayGeneration,
+    ).toBe(currentGeneration);
     testing.flushPendingCodexNativeHookRelayUnregistersForTests();
   });
 
   it("rotates native hook relay generations when an existing binding starts a fresh thread", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
-    await writeCodexAppServerBinding(sessionFile, {
+    await writeCodexAppServerBinding(codexAppServerTestBindingIdentity(), {
       threadId: "thread-existing",
       cwd: workspaceDir,
       model: "gpt-5.4-codex",
@@ -594,16 +597,17 @@ describe("runCodexAppServerAttempt native hook relay", () => {
 
     await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
     await run;
-    expect((await readCodexAppServerBinding(sessionFile))?.nativeHookRelayGeneration).toBe(
-      currentGeneration,
-    );
+    expect(
+      (await readCodexAppServerBinding(codexAppServerTestBindingIdentity()))
+        ?.nativeHookRelayGeneration,
+    ).toBe(currentGeneration);
     testing.flushPendingCodexNativeHookRelayUnregistersForTests();
   });
 
   it("rotates native hook relay generations when resume fails over to a fresh thread", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
-    await writeCodexAppServerBinding(sessionFile, {
+    await writeCodexAppServerBinding(codexAppServerTestBindingIdentity(), {
       threadId: "thread-existing",
       cwd: workspaceDir,
       model: "gpt-5.4-codex",
@@ -647,9 +651,10 @@ describe("runCodexAppServerAttempt native hook relay", () => {
 
     await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
     await run;
-    expect((await readCodexAppServerBinding(sessionFile))?.nativeHookRelayGeneration).toBe(
-      currentGeneration,
-    );
+    expect(
+      (await readCodexAppServerBinding(codexAppServerTestBindingIdentity()))
+        ?.nativeHookRelayGeneration,
+    ).toBe(currentGeneration);
     testing.flushPendingCodexNativeHookRelayUnregistersForTests();
   });
 

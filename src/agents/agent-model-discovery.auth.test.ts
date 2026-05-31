@@ -4,12 +4,9 @@ import path from "node:path";
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it, vi } from "vitest";
 import { resolveAgentCredentialMapFromStore } from "./agent-auth-credentials.js";
-import {
-  addEnvBackedAgentCredentials,
-  scrubLegacyStaticAuthJsonEntriesForDiscovery,
-} from "./agent-auth-discovery-core.js";
+import { addEnvBackedAgentCredentials } from "./agent-auth-discovery-core.js";
 import { discoverAuthStorage } from "./agent-model-discovery.js";
-import type { AuthProfileStore } from "./auth-profiles.js";
+import { saveAuthProfileStore, type AuthProfileStore } from "./auth-profiles.js";
 
 vi.mock("./model-auth-env-vars.js", () => ({
   listProviderEnvAuthLookupKeys: () => ["mistral", "workspace-cloud"],
@@ -81,15 +78,8 @@ async function writeLegacyAuthJson(
   await fs.writeFile(path.join(agentDir, "auth.json"), JSON.stringify(authEntries, null, 2));
 }
 
-async function writeAuthProfilesJson(agentDir: string, store: AuthProfileStore): Promise<void> {
-  await fs.writeFile(path.join(agentDir, "auth-profiles.json"), JSON.stringify(store, null, 2));
-}
-
-async function readLegacyAuthJson(agentDir: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await fs.readFile(path.join(agentDir, "auth.json"), "utf8")) as Record<
-    string,
-    unknown
-  >;
+function saveAuthProfiles(agentDir: string, store: AuthProfileStore): void {
+  saveAuthProfileStore(store, agentDir);
 }
 
 describe("discoverAuthStorage", () => {
@@ -213,7 +203,7 @@ describe("discoverAuthStorage", () => {
 
   it("marks keyRef-only auth profiles configured for read-only model discovery", async () => {
     await withAgentDir(async (agentDir) => {
-      await writeAuthProfilesJson(agentDir, {
+      saveAuthProfiles(agentDir, {
         version: 1,
         profiles: {
           "fixture-ref-provider:default": {
@@ -239,8 +229,9 @@ describe("discoverAuthStorage", () => {
     });
   });
 
-  it("scrubs static api_key entries from legacy auth.json and keeps oauth entries", async () => {
+  it("does not touch retired auth.json during discovery", async () => {
     await withAgentDir(async (agentDir) => {
+      const authPath = path.join(agentDir, "auth.json");
       await writeLegacyAuthJson(agentDir, {
         openrouter: { type: "api_key", key: "legacy-static-key" },
         openai: {
@@ -250,39 +241,12 @@ describe("discoverAuthStorage", () => {
           expires: Date.now() + 60_000,
         },
       });
+      const before = await fs.readFile(authPath, "utf8");
 
-      scrubLegacyStaticAuthJsonEntriesForDiscovery(path.join(agentDir, "auth.json"));
+      const storage = discoverAuthStorage(agentDir, { skipCredentials: true });
 
-      const parsed = await readLegacyAuthJson(agentDir);
-      expect(parsed.openrouter).toBeUndefined();
-      const codexEntry = parsed["openai"] as { type?: string; access?: string } | undefined;
-      expect(codexEntry?.type).toBe("oauth");
-      expect(codexEntry?.access).toBe("oauth-access");
-    });
-  });
-
-  it("preserves legacy auth.json when auth store is forced read-only", async () => {
-    await withAgentDir(async (agentDir) => {
-      const previous = process.env.OPENCLAW_AUTH_STORE_READONLY;
-      process.env.OPENCLAW_AUTH_STORE_READONLY = "1";
-      try {
-        await writeLegacyAuthJson(agentDir, {
-          openrouter: { type: "api_key", key: "legacy-static-key" },
-        });
-
-        scrubLegacyStaticAuthJsonEntriesForDiscovery(path.join(agentDir, "auth.json"));
-
-        const parsed = await readLegacyAuthJson(agentDir);
-        const openrouterEntry = parsed.openrouter as { type?: string; key?: string } | undefined;
-        expect(openrouterEntry?.type).toBe("api_key");
-        expect(openrouterEntry?.key).toBe("legacy-static-key");
-      } finally {
-        if (previous === undefined) {
-          delete process.env.OPENCLAW_AUTH_STORE_READONLY;
-        } else {
-          process.env.OPENCLAW_AUTH_STORE_READONLY = previous;
-        }
-      }
+      expect(storage).toBeTruthy();
+      await expect(fs.readFile(authPath, "utf8")).resolves.toBe(before);
     });
   });
 

@@ -1,6 +1,7 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { buildAgentRunTerminalOutcomeFromWaitResult } from "./agent-run-terminal-outcome.js";
+import { readLatestAssistantReply } from "./run-wait.js";
 import { wrapPromptDataBlock } from "./sanitize-for-prompt.js";
 import {
   captureSubagentCompletionReplyUsing,
@@ -8,11 +9,10 @@ import {
 } from "./subagent-announce-capture.js";
 import {
   callGateway,
+  getSessionEntry,
   getRuntimeConfig,
-  readSessionEntry,
   readSessionMessagesAsync,
   resolveAgentIdFromSessionKey,
-  resolveStorePath,
 } from "./subagent-announce.runtime.js";
 import { assistantCallsSessionsYield, isSessionsYieldToolResult } from "./subagent-yield-output.js";
 import { extractAssistantText, sanitizeTextContent } from "./tools/session-message-text.js";
@@ -23,19 +23,15 @@ const FAST_TEST_RETRY_INTERVAL_MS = 8;
 type SubagentAnnounceOutputDeps = {
   callGateway: typeof callGateway;
   getRuntimeConfig: typeof getRuntimeConfig;
-  readSessionEntry: typeof readSessionEntry;
+  readLatestAssistantReply: typeof readLatestAssistantReply;
   readSessionMessagesAsync: typeof readSessionMessagesAsync;
-  resolveAgentIdFromSessionKey: typeof resolveAgentIdFromSessionKey;
-  resolveStorePath: typeof resolveStorePath;
 };
 
 const defaultSubagentAnnounceOutputDeps: SubagentAnnounceOutputDeps = {
   callGateway,
   getRuntimeConfig,
-  readSessionEntry,
+  readLatestAssistantReply,
   readSessionMessagesAsync,
-  resolveAgentIdFromSessionKey,
-  resolveStorePath,
 };
 
 let subagentAnnounceOutputDeps: SubagentAnnounceOutputDeps = defaultSubagentAnnounceOutputDeps;
@@ -197,21 +193,22 @@ function selectSubagentOutputText(snapshot: SubagentOutputSnapshot): string | un
 export async function readSubagentOutput(
   sessionKey: string,
   _outcome?: SubagentRunOutcome,
-  options?: { sessionFile?: string },
+  options?: { transcriptSessionId?: string },
 ): Promise<string | undefined> {
   let messages: unknown[] | undefined;
-  if (options?.sessionFile) {
-    const transcriptMessages = await subagentAnnounceOutputDeps.readSessionMessagesAsync(
-      sessionKey,
-      undefined,
-      options.sessionFile,
+  if (options?.transcriptSessionId) {
+    const agentId = resolveAgentIdFromSessionKey(sessionKey);
+    messages = await subagentAnnounceOutputDeps.readSessionMessagesAsync(
+      {
+        agentId,
+        sessionId: options.transcriptSessionId,
+      },
       {
         mode: "recent",
         maxMessages: 100,
         maxBytes: 1024 * 1024,
       },
     );
-    messages = transcriptMessages;
   }
   const history =
     messages === undefined
@@ -295,7 +292,11 @@ export function applySubagentWaitOutcome(params: {
 
 export async function captureSubagentCompletionReply(
   sessionKey: string,
-  options?: { waitForReply?: boolean; outcome?: SubagentRunOutcome; sessionFile?: string },
+  options?: {
+    waitForReply?: boolean;
+    outcome?: SubagentRunOutcome;
+    transcriptSessionId?: string;
+  },
 ): Promise<string | undefined> {
   return await captureSubagentCompletionReplyUsing({
     sessionKey,
@@ -304,7 +305,7 @@ export async function captureSubagentCompletionReply(
     retryIntervalMs: isFastTestMode() ? FAST_TEST_RETRY_INTERVAL_MS : 100,
     readSubagentOutput: async (nextSessionKey) =>
       await readSubagentOutput(nextSessionKey, options?.outcome, {
-        sessionFile: options?.sessionFile,
+        transcriptSessionId: options?.transcriptSessionId,
       }),
   });
 }
@@ -521,10 +522,8 @@ export async function buildCompactAnnounceStatsLine(params: {
   startedAt?: number;
   endedAt?: number;
 }) {
-  const cfg = subagentAnnounceOutputDeps.getRuntimeConfig();
-  const agentId = subagentAnnounceOutputDeps.resolveAgentIdFromSessionKey(params.sessionKey);
-  const storePath = subagentAnnounceOutputDeps.resolveStorePath(cfg.session?.store, { agentId });
-  let entry = subagentAnnounceOutputDeps.readSessionEntry(storePath, params.sessionKey);
+  const agentId = resolveAgentIdFromSessionKey(params.sessionKey);
+  let entry = getSessionEntry({ agentId, sessionKey: params.sessionKey });
   const tokenWaitAttempts = isFastTestMode() ? 1 : 3;
   for (let attempt = 0; attempt < tokenWaitAttempts; attempt += 1) {
     const hasTokenData =
@@ -537,7 +536,7 @@ export async function buildCompactAnnounceStatsLine(params: {
     if (!isFastTestMode()) {
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    entry = subagentAnnounceOutputDeps.readSessionEntry(storePath, params.sessionKey);
+    entry = getSessionEntry({ agentId, sessionKey: params.sessionKey });
   }
 
   const input = typeof entry?.inputTokens === "number" ? entry.inputTokens : 0;

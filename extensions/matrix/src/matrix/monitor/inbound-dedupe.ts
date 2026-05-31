@@ -1,17 +1,11 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
-import { readJsonFileWithFallback } from "openclaw/plugin-sdk/json-store";
-import { getMatrixRuntime } from "../../runtime.js";
-import { resolveMatrixStateFilePath } from "../client/storage.js";
+import { createPluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import type { MatrixAuth } from "../client/types.js";
 import { LogService } from "../sdk/logger.js";
 import { resolveMatrixSqliteStateEnv } from "../sqlite-state.js";
 
-const INBOUND_DEDUPE_FILENAME = "inbound-dedupe.json";
+const MATRIX_PLUGIN_ID = "matrix";
 const INBOUND_DEDUPE_NAMESPACE = "inbound-dedupe";
-const INBOUND_DEDUPE_MIGRATIONS_NAMESPACE = "inbound-dedupe-migrations";
-const STORE_VERSION = 1;
 const DEFAULT_MAX_ENTRIES = 20_000;
 const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -21,19 +15,17 @@ type StoredMatrixInboundDedupeEntry = {
   ts: number;
 };
 
-type LegacyMatrixInboundDedupeEntry = {
-  key: string;
-  ts: number;
-};
-
-type LegacyMatrixInboundDedupeState = {
-  version: number;
-  entries: LegacyMatrixInboundDedupeEntry[];
-};
-
-type MatrixInboundDedupeMigrationMarker = {
-  importedAt: number;
-};
+function createInboundDedupeStore(params: {
+  env?: NodeJS.ProcessEnv;
+  stateDir?: string;
+  stateRootDir?: string;
+}) {
+  return createPluginStateKeyedStore<StoredMatrixInboundDedupeEntry>(MATRIX_PLUGIN_ID, {
+    namespace: INBOUND_DEDUPE_NAMESPACE,
+    maxEntries: DEFAULT_MAX_ENTRIES,
+    env: resolveMatrixSqliteStateEnv(params),
+  });
+}
 
 export type MatrixInboundEventDeduper = {
   claimEvent: (params: { roomId: string; eventId: string }) => boolean;
@@ -62,19 +54,6 @@ function buildEventKey(params: { auth: MatrixAuth; roomId: string; eventId: stri
     .update(eventId)
     .digest("hex");
   return `${accountId}:${digest}`;
-}
-
-function resolveInboundDedupeStatePath(params: {
-  auth: MatrixAuth;
-  env?: NodeJS.ProcessEnv;
-  stateDir?: string;
-}): string {
-  return resolveMatrixStateFilePath({
-    auth: params.auth,
-    env: params.env,
-    stateDir: params.stateDir,
-    filename: INBOUND_DEDUPE_FILENAME,
-  });
 }
 
 function normalizeTimestamp(raw: unknown): number | null {
@@ -115,65 +94,11 @@ function pruneSeenEvents(params: {
   }
 }
 
-function createInboundDedupeStore(params: { env?: NodeJS.ProcessEnv; stateDir?: string }) {
-  return getMatrixRuntime().state.openKeyedStore<StoredMatrixInboundDedupeEntry>({
-    namespace: INBOUND_DEDUPE_NAMESPACE,
-    maxEntries: DEFAULT_MAX_ENTRIES,
-    env: resolveMatrixSqliteStateEnv(params),
-  });
-}
-
-function createInboundDedupeMigrationStore(params: { env?: NodeJS.ProcessEnv; stateDir?: string }) {
-  return getMatrixRuntime().state.openKeyedStore<MatrixInboundDedupeMigrationMarker>({
-    namespace: INBOUND_DEDUPE_MIGRATIONS_NAMESPACE,
-    maxEntries: 1_000,
-    env: resolveMatrixSqliteStateEnv(params),
-  });
-}
-
-function buildLegacyImportKey(params: { auth: MatrixAuth; storagePath: string }): string {
-  const accountId = normalizeEventPart(params.auth.accountId) || "default";
-  const digest = createHash("sha256")
-    .update(accountId)
-    .update("\0")
-    .update(params.storagePath)
-    .digest("hex");
-  return `${accountId}:${digest}`;
-}
-
-async function loadLegacyEntries(storagePath: string): Promise<StoredMatrixInboundDedupeEntry[]> {
-  const { value } = await readJsonFileWithFallback<LegacyMatrixInboundDedupeState | null>(
-    storagePath,
-    null,
-  );
-  if (value?.version !== STORE_VERSION || !Array.isArray(value.entries)) {
-    return [];
-  }
-  const entries: StoredMatrixInboundDedupeEntry[] = [];
-  for (const entry of value.entries) {
-    if (!entry || typeof entry.key !== "string") {
-      continue;
-    }
-    const separatorIndex = entry.key.indexOf("|");
-    if (separatorIndex <= 0) {
-      continue;
-    }
-    const roomId = entry.key.slice(0, separatorIndex).trim();
-    const eventId = entry.key.slice(separatorIndex + 1).trim();
-    const ts = normalizeTimestamp(entry.ts);
-    if (!roomId || !eventId || ts === null) {
-      continue;
-    }
-    entries.push({ roomId, eventId, ts });
-  }
-  return entries;
-}
-
 export async function createMatrixInboundEventDeduper(params: {
   auth: MatrixAuth;
   env?: NodeJS.ProcessEnv;
   stateDir?: string;
-  storagePath?: string;
+  stateRootDir?: string;
   ttlMs?: number;
   maxEntries?: number;
   nowMs?: () => number;
@@ -187,60 +112,28 @@ export async function createMatrixInboundEventDeduper(params: {
     typeof params.maxEntries === "number" && Number.isFinite(params.maxEntries)
       ? Math.max(0, Math.floor(params.maxEntries))
       : DEFAULT_MAX_ENTRIES;
-  const storagePath =
-    params.storagePath ??
-    resolveInboundDedupeStatePath({
-      auth: params.auth,
-      env: params.env,
-      stateDir: params.stateDir,
-    });
-  const stateDir = params.stateDir ?? path.dirname(storagePath);
-  const store = createInboundDedupeStore({ env: params.env, stateDir });
-  const migrationStore = createInboundDedupeMigrationStore({ env: params.env, stateDir });
+  const store = createInboundDedupeStore(params);
 
   const seen = new Map<string, number>();
   const pending = new Set<string>();
 
   try {
-    for (const entry of await store.entries()) {
+    const entries = await store.entries();
+    for (const entry of entries) {
       const value = entry.value;
-      const roomId = typeof value?.roomId === "string" ? value.roomId.trim() : "";
-      const eventId = typeof value?.eventId === "string" ? value.eventId.trim() : "";
-      const ts = normalizeTimestamp(value?.ts);
+      if (!value) {
+        continue;
+      }
+      const key = entry.key.trim();
+      const roomId = typeof value.roomId === "string" ? value.roomId.trim() : "";
+      const eventId = typeof value.eventId === "string" ? value.eventId.trim() : "";
+      const ts = normalizeTimestamp(value.ts);
+      if (!key || ts === null) {
+        continue;
+      }
       const expectedKey = buildEventKey({ auth: params.auth, roomId, eventId });
-      if (expectedKey && expectedKey === entry.key && ts !== null) {
-        seen.set(entry.key, ts);
-      }
-    }
-    const legacyImportKey = buildLegacyImportKey({ auth: params.auth, storagePath });
-    const legacyAlreadyImported = await migrationStore.lookup(legacyImportKey);
-    if (!legacyAlreadyImported) {
-      const legacyEntries = await loadLegacyEntries(storagePath);
-      let migratedLegacyEntries = 0;
-      for (const entry of legacyEntries) {
-        const key = buildEventKey({
-          auth: params.auth,
-          roomId: entry.roomId,
-          eventId: entry.eventId,
-        });
-        if (!key) {
-          continue;
-        }
-        if (seen.has(key)) {
-          migratedLegacyEntries += 1;
-          continue;
-        }
-        seen.set(key, entry.ts);
-        await store
-          .register(key, entry, ttlMs > 0 ? { ttlMs } : undefined)
-          .then(() => {
-            migratedLegacyEntries += 1;
-          })
-          .catch(() => {});
-      }
-      if (legacyEntries.length > 0 && migratedLegacyEntries === legacyEntries.length) {
-        await migrationStore.register(legacyImportKey, { importedAt: nowMs() });
-        await fs.rm(storagePath, { force: true }).catch(() => {});
+      if (expectedKey === key) {
+        seen.set(key, ts);
       }
     }
     pruneSeenEvents({ seen, ttlMs, maxEntries, nowMs: nowMs() });
@@ -271,23 +164,15 @@ export async function createMatrixInboundEventDeduper(params: {
       seen.delete(key);
       seen.set(key, ts);
       pruneSeenEvents({ seen, ttlMs, maxEntries, nowMs: nowMs() });
-      await store
-        .register(
-          key,
-          {
-            roomId: normalizeEventPart(roomId),
-            eventId: normalizeEventPart(eventId),
-            ts,
-          },
-          ttlMs > 0 ? { ttlMs } : undefined,
-        )
-        .catch((err) => {
-          LogService.warn(
-            "MatrixInboundDedupe",
-            "Failed persisting Matrix inbound dedupe entry:",
-            err,
-          );
-        });
+      await store.register(
+        key,
+        {
+          roomId: normalizeEventPart(roomId),
+          eventId: normalizeEventPart(eventId),
+          ts,
+        },
+        ttlMs > 0 ? { ttlMs } : undefined,
+      );
     },
     releaseEvent: ({ roomId, eventId }) => {
       const key = buildEventKey({ auth: params.auth, roomId, eventId });

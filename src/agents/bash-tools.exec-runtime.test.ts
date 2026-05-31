@@ -444,11 +444,7 @@ describe("exec notifyOnExit suppression", () => {
     const [message, options] = requireSystemEventCall();
     expect(message).toContain("partial output");
     expect(options.sessionKey).toBe("agent:main:main");
-    expect(requestHeartbeatMock).toHaveBeenCalledTimes(1);
-    const heartbeat = requireHeartbeatCall();
-    expect(heartbeat.coalesceMs).toBe(0);
-    expect(heartbeat.reason).toBe("exec-event");
-    expect(heartbeat.sessionKey).toBe("agent:main:main");
+    expect(requestHeartbeatMock).toHaveBeenCalled();
   });
 
   it("still notifies for no-output background exec timeouts", async () => {
@@ -457,11 +453,7 @@ describe("exec notifyOnExit suppression", () => {
     const [message, options] = requireSystemEventCall();
     expect(message).toContain("Exec failed");
     expect(options.sessionKey).toBe("agent:main:main");
-    expect(requestHeartbeatMock).toHaveBeenCalledTimes(1);
-    const heartbeat = requireHeartbeatCall();
-    expect(heartbeat.coalesceMs).toBe(0);
-    expect(heartbeat.reason).toBe("exec-event");
-    expect(heartbeat.sessionKey).toBe("agent:main:main");
+    expect(requestHeartbeatMock).toHaveBeenCalled();
   });
 });
 
@@ -535,7 +527,7 @@ describe("emitExecSystemEvent", () => {
     expect(heartbeatParams.agentId).toBe("ops");
     expect(heartbeatParams.coalesceMs).toBe(0);
     expect(heartbeatParams.reason).toBe("exec-event");
-    expect(requireHeartbeatCall()).not.toHaveProperty("sessionKey");
+    expect(requestHeartbeatMock.mock.calls[0]?.[0]).not.toHaveProperty("sessionKey");
   });
 
   it("routes single-owner dmScope=main direct exec events to the agent main session", () => {

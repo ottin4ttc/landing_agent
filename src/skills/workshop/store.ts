@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveStateDir } from "../../config/paths.js";
-import { type FileLockOptions, withFileLock } from "../../infra/file-lock.js";
+import { type FileLockOptions, withFileLock } from "../../plugin-sdk/file-lock.js";
 import { pathExists, root } from "../../infra/fs-safe.js";
 import { tryReadJson } from "../../infra/json-files.js";
 import { isPathInside } from "../../infra/path-safety.js";

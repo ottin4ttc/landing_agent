@@ -1,4 +1,3 @@
-import path from "node:path";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
@@ -31,7 +30,8 @@ import {
   listProfilesForProvider,
   resolveApiKeyForProfile,
   resolveAuthProfileOrder,
-  resolveAuthStorePathForDisplay,
+  resolveAuthProfileStoreAgentDir,
+  resolveAuthProfileStoreLocationForDisplay,
 } from "./auth-profiles.js";
 import * as cliCredentials from "./cli-credentials.js";
 import { resolveProviderEnvAuthLookupMaps } from "./model-auth-env-vars.js";
@@ -282,7 +282,7 @@ export function resolveUsableCustomProviderApiKey(params: {
       source: resolveEnvSourceLabel({
         applied,
         envVars: [envVarName],
-        label: `${envVarName} (models.json secretref)`,
+        label: `${envVarName} (stored model catalog secretref)`,
       }),
     };
   }
@@ -292,7 +292,7 @@ export function resolveUsableCustomProviderApiKey(params: {
     return null;
   }
   if (!isNonSecretApiKeyMarker(customKey)) {
-    return { apiKey: customKey, source: "models.json" };
+    return { apiKey: customKey, source: "stored model catalog" };
   }
   if (isKnownEnvApiKeyMarker(customKey)) {
     const envValue = normalizeOptionalSecretInput((params.env ?? process.env)[customKey]);
@@ -305,7 +305,7 @@ export function resolveUsableCustomProviderApiKey(params: {
       source: resolveEnvSourceLabel({
         applied,
         envVars: [customKey],
-        label: `${customKey} (models.json marker)`,
+        label: `${customKey} (stored model catalog marker)`,
       }),
     };
   }
@@ -318,7 +318,7 @@ export function resolveUsableCustomProviderApiKey(params: {
   ) {
     return {
       apiKey: customProviderConfig.api === "ollama" ? customKey : CUSTOM_LOCAL_AUTH_MARKER,
-      source: "models.json (local marker)",
+      source: "stored model catalog (local marker)",
     };
   }
   return null;
@@ -1030,12 +1030,12 @@ export async function resolveApiKeyForProvider(params: {
     }
   }
 
-  const authStorePath = resolveAuthStorePathForDisplay(agentDir);
-  const resolvedAgentDir = path.dirname(authStorePath);
+  const authStoreLocation = resolveAuthProfileStoreLocationForDisplay(agentDir);
+  const resolvedAgentDir = resolveAuthProfileStoreAgentDir(agentDir);
   throw new Error(
     [
       `No API key found for provider "${provider}".`,
-      `Auth store: ${authStorePath} (agentDir: ${resolvedAgentDir}).`,
+      `Auth store: ${authStoreLocation} (agentDir: ${resolvedAgentDir}).`,
       `Configure auth for this agent (${formatCliCommand("openclaw agents add <id>")}) or copy only portable static auth profiles from the main agentDir.`,
     ].join(" "),
   );

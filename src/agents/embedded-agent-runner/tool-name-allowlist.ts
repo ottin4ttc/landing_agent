@@ -1,4 +1,4 @@
-import type { AgentTool } from "../runtime/index.js";
+import type { AgentTool } from "../agent-core-contract.js";
 import type { ClientToolDefinition } from "./run/params.js";
 
 /**

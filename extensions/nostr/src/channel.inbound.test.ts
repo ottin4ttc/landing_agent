@@ -62,7 +62,6 @@ function createRuntimeHarness() {
         })),
       },
       session: {
-        resolveStorePath: vi.fn(() => "/tmp/nostr-session-store"),
         readSessionUpdatedAt: vi.fn(() => undefined),
         recordInboundSession,
       },
@@ -164,7 +163,7 @@ describe("nostr inbound gateway path", () => {
         config: { dmPolicy: "allowlist", allowFrom: ["nostr:sender-pubkey"] },
       }),
       cfg: {
-        session: { store: { type: "jsonl" } },
+        session: {},
         commands: { useAccessGroups: true },
       } as never,
     });

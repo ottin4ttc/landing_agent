@@ -1,15 +1,23 @@
 import path from "node:path";
 import { normalizeOptionalString } from "../../packages/normalization-core/src/string-coerce.js";
 import { uniqueStrings } from "../../packages/normalization-core/src/string-normalization.js";
-import { parseUsageCountedSessionIdFromFileName } from "../config/sessions/artifacts.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 
-export { loadCombinedSessionStoreForGateway } from "../config/sessions/combined-store-gateway.js";
+export { loadCombinedSessionEntriesForGateway } from "../config/sessions/combined-session-entries-gateway.js";
 
+const TRANSCRIPT_KEY_PREFIX = "transcript:";
+const SESSION_ARCHIVE_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:\.\d{3})?Z$/;
 const QMD_ARCHIVE_STEM_RE = /^(.+)-jsonl-(reset|deleted)-(.+)$/;
 const QMD_ARCHIVE_TIMESTAMP_RE =
   /^(\d{4}-\d{2}-\d{2})[tT](\d{2}-\d{2}-\d{2})(?:(?:\.|-)(\d{3}))?[zZ]$/;
+
+export type SessionTranscriptHitIdentity = {
+  stem: string;
+  liveStem?: string;
+  ownerAgentId?: string;
+  archived: boolean;
+};
 
 function restoreQmdNormalizedArchiveTimestamp(timestamp: string): string | null {
   const match = QMD_ARCHIVE_TIMESTAMP_RE.exec(timestamp);
@@ -39,14 +47,47 @@ function normalizeQmdSessionStem(stem: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-export type SessionTranscriptHitIdentity = {
-  stem: string;
-  liveStem?: string;
-  ownerAgentId?: string;
-  archived: boolean;
-};
+function hasUsageCountedArchiveSuffix(fileName: string, reason: "reset" | "deleted"): boolean {
+  const marker = `.${reason}.`;
+  const index = fileName.lastIndexOf(marker);
+  if (index < 0) {
+    return false;
+  }
+  return SESSION_ARCHIVE_TIMESTAMP_RE.test(fileName.slice(index + marker.length));
+}
 
-function parseSessionsPath(hitPath: string): { base: string; ownerAgentId?: string } {
+function parseUsageCountedSessionIdFromFileName(fileName: string): string | null {
+  if (fileName.endsWith(".jsonl")) {
+    return fileName.slice(0, -".jsonl".length);
+  }
+  for (const reason of ["reset", "deleted"] as const) {
+    const marker = `.jsonl.${reason}.`;
+    const index = fileName.lastIndexOf(marker);
+    if (index > 0 && hasUsageCountedArchiveSuffix(fileName, reason)) {
+      return fileName.slice(0, index);
+    }
+  }
+  return null;
+}
+
+function parseTranscriptKey(hitPath: string): { base: string; ownerAgentId?: string } | null {
+  if (!hitPath.startsWith(TRANSCRIPT_KEY_PREFIX)) {
+    return null;
+  }
+  const parts = hitPath.slice(TRANSCRIPT_KEY_PREFIX.length).split(":");
+  const agentId = parts.shift()?.trim();
+  const sessionId = parts.join(":").trim();
+  if (!agentId || !sessionId) {
+    return null;
+  }
+  return { base: sessionId, ownerAgentId: normalizeAgentId(agentId) };
+}
+
+function parseSessionsPath(hitPath: string): { base: string; ownerAgentId?: string } | null {
+  const transcriptKey = parseTranscriptKey(hitPath);
+  if (transcriptKey) {
+    return transcriptKey;
+  }
   const normalized = hitPath.replace(/\\/g, "/");
   const fromSessionsRoot = normalized.startsWith("sessions/")
     ? normalized.slice("sessions/".length)
@@ -61,10 +102,9 @@ function parseSessionsPath(hitPath: string): { base: string; ownerAgentId?: stri
 }
 
 /**
- * Derive transcript stem `S` from a memory search hit path for `source === "sessions"`.
- * Builtin index uses `sessions/<basename>.jsonl`; QMD exports use `<stem>.md`.
- * Archived transcripts (`.jsonl.reset.<iso>` / `.jsonl.deleted.<iso>`) resolve
- * to the same stem as the live `.jsonl` they were rotated from.
+ * Derive transcript stem `S` from a memory search hit key for `source === "sessions"`.
+ * SQLite-backed hits use `transcript:<agent>:<session>`. Legacy/QMD paths are
+ * still accepted so old QMD session collections remain visibility-gated.
  */
 export function extractTranscriptStemFromSessionsMemoryHit(hitPath: string): string | null {
   return extractTranscriptIdentityFromSessionsMemoryHit(hitPath)?.stem ?? null;
@@ -74,7 +114,14 @@ export function extractTranscriptIdentityFromSessionsMemoryHit(
   hitPath: string,
 ): SessionTranscriptHitIdentity | null {
   const isQmdPath = hitPath.replace(/\\/g, "/").startsWith("qmd/");
-  const { base, ownerAgentId } = parseSessionsPath(hitPath);
+  const parsed = parseSessionsPath(hitPath);
+  if (!parsed) {
+    return null;
+  }
+  const { base, ownerAgentId } = parsed;
+  if (hitPath.startsWith(TRANSCRIPT_KEY_PREFIX)) {
+    return { stem: base, ownerAgentId, archived: false };
+  }
   const archivedStem = parseUsageCountedSessionIdFromFileName(base);
   if (archivedStem && base !== `${archivedStem}.jsonl`) {
     return { stem: archivedStem, ownerAgentId, archived: true };
@@ -95,9 +142,9 @@ export function extractTranscriptIdentityFromSessionsMemoryHit(
       }
       const restoredArchiveName = restoreQmdNormalizedArchiveName(mdStem);
       if (restoredArchiveName) {
-        const archivedStem = parseUsageCountedSessionIdFromFileName(restoredArchiveName);
-        if (archivedStem && restoredArchiveName !== `${archivedStem}.jsonl`) {
-          return { stem: archivedStem, liveStem: mdStem, ownerAgentId, archived: true };
+        const normalizedArchiveStem = parseUsageCountedSessionIdFromFileName(restoredArchiveName);
+        if (normalizedArchiveStem && restoredArchiveName !== `${normalizedArchiveStem}.jsonl`) {
+          return { stem: normalizedArchiveStem, liveStem: mdStem, ownerAgentId, archived: true };
         }
       }
     }
@@ -107,31 +154,20 @@ export function extractTranscriptIdentityFromSessionsMemoryHit(
 }
 
 /**
- * Map transcript stem to canonical session store keys (all agents in the combined store).
- * Session tools visibility and agent-to-agent policy are enforced by the caller (e.g.
- * `createSessionVisibilityGuard`), including cross-agent cases.
+ * Map transcript stem to canonical session row keys across all agents.
+ * Session tools visibility and agent-to-agent policy are enforced by the caller.
  */
 export function resolveTranscriptStemToSessionKeys(params: {
-  store: Record<string, SessionEntry>;
+  entries: Record<string, SessionEntry>;
   stem: string;
   archivedOwnerAgentId?: string;
   allowQmdSlugFallback?: boolean;
 }): string[] {
-  const { store } = params;
   const matches: string[] = [];
   const stemAsFile = params.stem.endsWith(".jsonl") ? params.stem : `${params.stem}.jsonl`;
   const parsedStemId = parseUsageCountedSessionIdFromFileName(stemAsFile);
 
-  for (const [sessionKey, entry] of Object.entries(store)) {
-    const sessionFile = normalizeOptionalString(entry.sessionFile);
-    if (sessionFile) {
-      const base = path.basename(sessionFile);
-      const fileStem = base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : base;
-      if (fileStem === params.stem) {
-        matches.push(sessionKey);
-        continue;
-      }
-    }
+  for (const [sessionKey, entry] of Object.entries(params.entries)) {
     if (entry.sessionId === params.stem || (parsedStemId && entry.sessionId === parsedStemId)) {
       matches.push(sessionKey);
     }
@@ -140,20 +176,11 @@ export function resolveTranscriptStemToSessionKeys(params: {
   if (deduped.length > 0) {
     return deduped;
   }
+
   const normalizedStem = normalizeQmdSessionStem(params.stem);
   if (params.allowQmdSlugFallback === true && normalizedStem) {
-    for (const [sessionKey, entry] of Object.entries(store)) {
-      const sessionFile = normalizeOptionalString(entry.sessionFile);
-      if (sessionFile) {
-        const base = path.basename(sessionFile);
-        const fileStem = base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : base;
-        if (normalizeQmdSessionStem(fileStem) === normalizedStem) {
-          matches.push(sessionKey);
-          continue;
-        }
-      }
-      const entrySessionId = normalizeOptionalString(entry.sessionId);
-      if (entrySessionId && normalizeQmdSessionStem(entrySessionId) === normalizedStem) {
+    for (const [sessionKey, entry] of Object.entries(params.entries)) {
+      if (normalizeQmdSessionStem(entry.sessionId) === normalizedStem) {
         matches.push(sessionKey);
       }
     }
@@ -162,6 +189,7 @@ export function resolveTranscriptStemToSessionKeys(params: {
   if (normalizedDeduped.length > 0) {
     return normalizedDeduped.length === 1 ? normalizedDeduped : [];
   }
+
   const archivedOwnerAgentId = normalizeOptionalString(params.archivedOwnerAgentId);
   return archivedOwnerAgentId
     ? [`agent:${normalizeAgentId(archivedOwnerAgentId)}:${params.stem}`]

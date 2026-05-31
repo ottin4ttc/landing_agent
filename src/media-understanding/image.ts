@@ -6,7 +6,7 @@ import {
   resolveApiKeyForProvider,
 } from "../agents/model-auth.js";
 import { normalizeModelRef } from "../agents/model-selection.js";
-import { ensureOpenClawModelsJson } from "../agents/models-config.js";
+import { ensureOpenClawModelCatalog } from "../agents/models-config.js";
 import { resolveProviderRequestCapabilities } from "../agents/provider-attribution.js";
 import { registerProviderStreamForModel } from "../agents/provider-stream.js";
 import {
@@ -175,7 +175,7 @@ async function resolveImageRuntime(params: {
   }
 
   const modelsOptions = params.workspaceDir ? { workspaceDir: params.workspaceDir } : undefined;
-  await ensureOpenClawModelsJson(params.cfg, params.agentDir, modelsOptions);
+  await ensureOpenClawModelCatalog(params.cfg, params.agentDir, modelsOptions);
   const resolved = await resolveModelAsync(
     resolvedRef.provider,
     resolvedRef.model,

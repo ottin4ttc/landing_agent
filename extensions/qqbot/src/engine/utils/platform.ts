@@ -47,18 +47,7 @@ export function getHomeDir(): string {
 /**
  * Resolve the effective OpenClaw home directory.
  *
- * Mirrors the contract from core (`src/infra/home-dir.ts::resolveEffectiveHomeDir`)
- * so QQ Bot media roots live under the same tree the rest of OpenClaw treats as
- * `~`. The extension cannot import the core helper directly (it is a separate
- * package with `openclaw` as a peer dependency), so this re-implements the
- * minimal contract:
- *
- * 1. `OPENCLAW_HOME` when set (with `~` / `~/...` expanded against the OS home).
- * 2. Otherwise fall back to {@link getHomeDir} so existing single-home
- *    deployments are unaffected.
- *
- * Empty / `"undefined"` / `"null"` strings are treated as unset to match how
- * core normalizes the variable.
+ * Mirrors core's `OPENCLAW_HOME` contract without importing core internals.
  */
 function resolveOpenClawHome(): string {
   const raw = process.env.OPENCLAW_HOME?.trim();
@@ -78,33 +67,10 @@ function resolveOpenClawHome(): string {
 }
 
 /**
- * Return a path under `~/.openclaw/qqbot` without creating it.
- *
- * Anchored on the OS home (not `OPENCLAW_HOME`) so persisted QQ Bot data
- * (sessions, known users, ref index, credential backups) does not silently
- * disappear when an operator adds `OPENCLAW_HOME` after the fact.
- */
-export function getQQBotDataPath(...subPaths: string[]): string {
-  return path.join(getHomeDir(), ".openclaw", "qqbot", ...subPaths);
-}
-
-/** Return a path under `~/.openclaw/qqbot`, creating it on demand. */
-export function getQQBotDataDir(...subPaths: string[]): string {
-  const dir = getQQBotDataPath(...subPaths);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return dir;
-}
-
-/**
  * Return a path under `<openclaw-home>/.openclaw/media/qqbot` without creating it.
  *
- * Unlike `getQQBotDataPath`, this lives under OpenClaw's core media allowlist
- * so downloaded images and audio can be accessed by framework media tooling.
- * The base honors `OPENCLAW_HOME` (when set) so files written by agents into
- * the OpenClaw-managed media tree are reachable by this plugin even when
- * `HOME` and `OPENCLAW_HOME` differ (Docker, multi-user hosts). Fixes #83562.
+ * Runtime QQBot files are media materializations/downloads, not durable state.
+ * Durable QQBot state lives in SQLite plugin state.
  */
 export function getQQBotMediaPath(...subPaths: string[]): string {
   return path.join(resolveOpenClawHome(), ".openclaw", "media", "qqbot", ...subPaths);
@@ -254,21 +220,13 @@ export function resolveQQBotLocalMediaPath(p: string): string {
   const osHomeDir = getHomeDir();
   const openclawHomeDir = resolveOpenClawHome();
   const mediaRoot = getQQBotMediaPath();
-  const dataRoot = getQQBotDataPath();
-  // When OPENCLAW_HOME differs from HOME we have to consider workspace roots
-  // under both trees: agents may be configured with `~`-relative paths (HOME)
-  // or with the OpenClaw-managed home tree. Deduplicate when they match.
   const workspaceRoots = Array.from(
     new Set([
       path.join(osHomeDir, ".openclaw", "workspace", "qqbot"),
       path.join(openclawHomeDir, ".openclaw", "workspace", "qqbot"),
     ]),
   );
-  const candidateRoots = [
-    ...workspaceRoots.map((from) => ({ from, to: mediaRoot })),
-    { from: dataRoot, to: mediaRoot },
-    { from: mediaRoot, to: dataRoot },
-  ];
+  const candidateRoots = workspaceRoots.map((from) => ({ from, to: mediaRoot }));
 
   for (const { from, to } of candidateRoots) {
     if (!isPathWithinRoot(normalized, from)) {

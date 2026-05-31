@@ -7,6 +7,8 @@ import type {
   AgentHarnessAttemptResult,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { SandboxContext } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
+import { closeOpenClawStateDatabaseForTest } from "openclaw/plugin-sdk/sqlite-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCopilotAttempt } from "./attempt.js";
 import type { CopilotClientPool } from "./runtime.js";
@@ -15,10 +17,9 @@ const TINY_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAsTAAALEwEAmpwYAAAADUlEQVR4nGP4////KwAJ5gPoxLp9owAAAABJRU5ErkJggg==";
 
 // Mock the dual-write transcript mirror so attempt tests do not touch the
-// real filesystem. The mirror call site is exercised separately in
-// dual-write-transcripts.test.ts and by the dedicated attempt
-// dual-write tests below; the mocked module here just captures the
-// invocation arguments without writing to disk.
+// real transcript store. The mirror call site is exercised separately in
+// dual-write-transcripts.test.ts and by the dedicated attempt dual-write
+// tests below; the mocked module here just captures the invocation arguments.
 const dualWriteMock = vi.hoisted(() => ({
   dualWriteCopilotTranscriptBestEffort: vi.fn().mockResolvedValue(undefined),
   attachCopilotMirrorIdentity: <T>(message: T, identity: string): T => {
@@ -241,7 +242,6 @@ function makeParams(
     },
     prompt: "hello",
     runId: "run-1",
-    sessionFile: "session.json",
     sessionId: "session-1",
     timeoutMs: 5000,
     workspaceDir: "C:\\workspace",
@@ -302,11 +302,14 @@ describe("runCopilotAttempt", () => {
 
   it("hydrates offloaded prompt images before creating SDK blob attachments", async () => {
     const stateDir = await fsp.mkdtemp(path.join(tmpdir(), "copilot-offloaded-image-"));
-    const inboundDir = path.join(stateDir, "media", "inbound");
-    const mediaId = "telegram-photo.png";
-    await fsp.mkdir(inboundDir, { recursive: true });
-    await fsp.writeFile(path.join(inboundDir, mediaId), Buffer.from(TINY_PNG_BASE64, "base64"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const saved = await saveMediaBuffer(
+      Buffer.from(TINY_PNG_BASE64, "base64"),
+      "image/png",
+      "inbound",
+      undefined,
+      "telegram-photo.png",
+    );
     const sdk = makeFakeSdk();
     const pool = makeFakePool(sdk);
 
@@ -321,7 +324,7 @@ describe("runCopilotAttempt", () => {
             input: ["text", "image"],
             provider: "github-copilot",
           },
-          prompt: `describe this\n[media attached: media://inbound/${mediaId}]`,
+          prompt: `describe this\n[media attached: media://inbound/${saved.id}]`,
         } as never),
         { pool },
       );
@@ -338,6 +341,7 @@ describe("runCopilotAttempt", () => {
         },
       ]);
     } finally {
+      closeOpenClawStateDatabaseForTest();
       vi.unstubAllEnvs();
       await fsp.rm(stateDir, { recursive: true, force: true });
     }
@@ -1668,7 +1672,7 @@ describe("runCopilotAttempt", () => {
       dualWriteMock.dualWriteCopilotTranscriptBestEffort.mockResolvedValue(undefined);
     });
 
-    it("invokes dual-write mirror with sessionFile and scoped idempotencyScope when sessionFile is set", async () => {
+    it("invokes dual-write mirror with sdk session id and scoped idempotencyScope", async () => {
       dualWriteMock.dualWriteCopilotTranscriptBestEffort.mockClear();
       const sdk = makeFakeSdk({
         onCreateSession: (session) => {
@@ -1681,32 +1685,16 @@ describe("runCopilotAttempt", () => {
 
       expect(dualWriteMock.dualWriteCopilotTranscriptBestEffort).toHaveBeenCalledTimes(1);
       const args = dualWriteMock.dualWriteCopilotTranscriptBestEffort.mock.calls[0]?.[0] as {
-        sessionFile: string;
+        sessionId?: string;
         messages: Array<{ role: string }>;
         idempotencyScope?: string;
       };
-      expect(args.sessionFile).toBe("session.json");
+      expect(args.sessionId).toBe("sess-1");
       expect(args.idempotencyScope).toMatch(/^copilot:/u);
       expect(args.messages.length).toBeGreaterThan(0);
       const roles = args.messages.map((m) => m.role);
       expect(roles).toContain("user");
       expect(roles).toContain("assistant");
-    });
-
-    it("does not invoke dual-write mirror when sessionFile is absent", async () => {
-      dualWriteMock.dualWriteCopilotTranscriptBestEffort.mockClear();
-      const sdk = makeFakeSdk({
-        onCreateSession: (session) => {
-          session.sendAndWait.mockResolvedValueOnce(makeAssistantMessageEvent("done"));
-        },
-      });
-      const pool = makeFakePool(sdk);
-      const params = makeParams() as unknown as Record<string, unknown>;
-      delete params.sessionFile;
-
-      await runCopilotAttempt(params as never, { pool });
-
-      expect(dualWriteMock.dualWriteCopilotTranscriptBestEffort).not.toHaveBeenCalled();
     });
 
     it("tags mirrored messages with copilot mirror identity per role and position", async () => {

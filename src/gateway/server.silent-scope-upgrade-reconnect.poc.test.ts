@@ -149,7 +149,7 @@ describe("gateway silent scope-upgrade reconnect", () => {
       sharedAuthReconnectWs = await openTrackedWs(started.port);
       const sharedAuthUpgradeAttempt = await connectReq(sharedAuthReconnectWs, {
         token: "secret",
-        deviceIdentityPath: paired.identityPath,
+        deviceIdentityKey: paired.identityKey,
         scopes: ["operator.admin"],
       });
       expect(sharedAuthUpgradeAttempt.ok).toBe(false);
@@ -168,7 +168,7 @@ describe("gateway silent scope-upgrade reconnect", () => {
       const afterUpgrade = await connectReq(postAttemptDeviceTokenWs, {
         skipDefaultAuth: true,
         deviceToken: paired.token,
-        deviceIdentityPath: paired.identityPath,
+        deviceIdentityKey: paired.identityKey,
         scopes: ["operator.admin"],
       });
       expect(afterUpgrade.ok).toBe(false);
@@ -205,7 +205,7 @@ describe("gateway silent scope-upgrade reconnect", () => {
       backendReconnectWs = await openTrackedWs(started.port);
       const reconnectAttempt = await connectReq(backendReconnectWs, {
         token: "secret",
-        deviceIdentityPath: paired.identityPath,
+        deviceIdentityKey: paired.identityKey,
         client: {
           id: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
           version: "1.0.0",
@@ -341,7 +341,7 @@ describe("gateway silent scope-upgrade reconnect", () => {
       ws = await openTrackedWs(started.port);
       const res = await connectReq(ws, {
         token: "secret",
-        deviceIdentityPath: loaded.identityPath,
+        deviceIdentityKey: loaded.identityKey,
       });
       expect(res.ok).toBe(true);
 
@@ -386,7 +386,7 @@ describe("gateway silent scope-upgrade reconnect", () => {
       ws = await openTrackedWs(started.port);
       const res = await connectReq(ws, {
         token: "secret",
-        deviceIdentityPath: loaded.identityPath,
+        deviceIdentityKey: loaded.identityKey,
       });
 
       expect(res.ok).toBe(false);
@@ -439,7 +439,7 @@ describe("gateway silent scope-upgrade reconnect", () => {
       ws = await openTrackedWs(started.port);
       const res = await connectReq(ws, {
         token: "secret",
-        deviceIdentityPath: loaded.identityPath,
+        deviceIdentityKey: loaded.identityKey,
       });
 
       expect(res.ok).toBe(false);

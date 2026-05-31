@@ -31,6 +31,10 @@ vi.mock("./external-auth.js", () => ({
 import { resolveAuthProfileOrder } from "./order.js";
 import { markAuthProfileSuccess } from "./profiles.js";
 
+async function importAuthProfileModulesWithAliasRegistry() {
+  return { resolveAuthProfileOrder };
+}
+
 describe("resolveAuthProfileOrder", () => {
   beforeEach(() => {
     resetProviderAuthAliasMapCacheForTest();
@@ -205,6 +209,7 @@ describe("resolveAuthProfileOrder", () => {
   });
 
   it("lets Codex auth use friendly OpenAI auth order entries", async () => {
+    const { resolveAuthProfileOrder } = await importAuthProfileModulesWithAliasRegistry();
     const store: AuthProfileStore = {
       version: 1,
       profiles: {
@@ -244,6 +249,7 @@ describe("resolveAuthProfileOrder", () => {
   });
 
   it("discovers OpenAI OAuth profiles before API-key backups", async () => {
+    const { resolveAuthProfileOrder } = await importAuthProfileModulesWithAliasRegistry();
     const store: AuthProfileStore = {
       version: 1,
       profiles: {
@@ -368,6 +374,7 @@ describe("resolveAuthProfileOrder", () => {
   });
 
   it("uses canonical OpenAI auth order", async () => {
+    const { resolveAuthProfileOrder } = await importAuthProfileModulesWithAliasRegistry();
     const store: AuthProfileStore = {
       version: 1,
       profiles: {

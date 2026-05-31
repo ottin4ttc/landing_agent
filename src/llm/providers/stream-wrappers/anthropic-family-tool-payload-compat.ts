@@ -1,6 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { StreamFn } from "../../../agents/runtime/index.js";
-import { streamSimple } from "../../stream.js";
+import type { StreamFn } from "../../../agents/agent-core-contract.js";
+import { streamSimple } from "../../../agents/pi-ai-contract.js";
 type AnthropicToolSchemaMode = "openai-functions";
 type AnthropicToolChoiceMode = "openai-string-modes";
 

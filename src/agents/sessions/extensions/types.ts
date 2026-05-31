@@ -592,15 +592,15 @@ export interface SessionStartEvent {
   type: "session_start";
   /** Why this session start happened. */
   reason: "startup" | "reload" | "new" | "resume" | "fork";
-  /** Previously active session file. Present for "new", "resume", and "fork". */
-  previousSessionFile?: string;
+  /** Previously active transcript reference. Present for "new", "resume", and "fork". */
+  previousSessionRef?: string;
 }
 
 /** Fired before switching to another session (can be cancelled) */
 export interface SessionBeforeSwitchEvent {
   type: "session_before_switch";
   reason: "new" | "resume";
-  targetSessionFile?: string;
+  targetSessionRef?: string;
 }
 
 /** Fired before forking a session (can be cancelled) */
@@ -630,8 +630,8 @@ export interface SessionCompactEvent {
 export interface SessionShutdownEvent {
   type: "session_shutdown";
   reason: "quit" | "reload" | "new" | "resume" | "fork";
-  /** Destination session file when shutting down due to session replacement. */
-  targetSessionFile?: string;
+  /** Destination transcript reference when shutting down due to session replacement. */
+  targetSessionRef?: string;
 }
 
 /** Preparation data for tree navigation */

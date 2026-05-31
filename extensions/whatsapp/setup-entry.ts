@@ -11,11 +11,11 @@ export default defineBundledChannelSetupEntry({
     exportName: "whatsappSetupPlugin",
   },
   legacyStateMigrations: {
-    specifier: "./legacy-state-migrations-api.js",
+    specifier: "./doctor-legacy-state-api.js",
     exportName: "detectWhatsAppLegacyStateMigrations",
   },
   legacySessionSurface: {
-    specifier: "./legacy-session-surface-api.js",
-    exportName: "whatsappLegacySessionSurface",
+    specifier: "./doctor-session-migration-surface-api.js",
+    exportName: "whatsappDoctorSessionMigrationSurface",
   },
 });

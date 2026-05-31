@@ -11,7 +11,6 @@ import {
   resolveGatewayPort,
   resolveIncludeRoots,
   resolveOAuthDir,
-  resolveOAuthPath,
   resolveStateDir,
 } from "./paths.js";
 
@@ -27,20 +26,14 @@ describe("oauth paths", () => {
     } as NodeJS.ProcessEnv;
 
     expect(resolveOAuthDir(env, "/custom/state")).toBe(path.resolve("/custom/oauth"));
-    expect(resolveOAuthPath(env, "/custom/state")).toBe(
-      path.join(path.resolve("/custom/oauth"), "oauth.json"),
-    );
   });
 
-  it("derives oauth path from OPENCLAW_STATE_DIR when unset", () => {
+  it("derives oauth dir from OPENCLAW_STATE_DIR when unset", () => {
     const env = {
       OPENCLAW_STATE_DIR: "/custom/state",
     } as NodeJS.ProcessEnv;
 
     expect(resolveOAuthDir(env, "/custom/state")).toBe(path.join("/custom/state", "credentials"));
-    expect(resolveOAuthPath(env, "/custom/state")).toBe(
-      path.join("/custom/state", "credentials", "oauth.json"),
-    );
   });
 });
 
@@ -142,28 +135,21 @@ describe("state + config path candidates", () => {
     expect(resolveStateDir(env, () => "/home/test")).toBe(path.resolve("/new/state"));
   });
 
-  it("normalizes relative OPENCLAW_STATE_DIR overrides to absolute paths", () => {
+  it("treats literal undefined path overrides as unset", () => {
     const env = {
-      OPENCLAW_STATE_DIR: ".",
-      OPENCLAW_HOME: "/srv/openclaw-home",
+      OPENCLAW_STATE_DIR: "undefined",
+      OPENCLAW_CONFIG_PATH: "null",
+      OPENCLAW_OAUTH_DIR: "undefined",
     } as NodeJS.ProcessEnv;
+    const home = "/home/test";
 
-    normalizeStateDirEnv(env);
-
-    expect(env.OPENCLAW_STATE_DIR).toBe(path.resolve("."));
-  });
-
-  it("pins a relative state-dir override before later resolution", () => {
-    const env = {
-      OPENCLAW_STATE_DIR: "relative-state",
-      OPENCLAW_HOME: "/srv/openclaw-home",
-    } as NodeJS.ProcessEnv;
-
-    normalizeStateDirEnv(env);
-    const normalized = env.OPENCLAW_STATE_DIR;
-
-    expect(normalized).toBe(path.resolve("relative-state"));
-    expect(resolveStateDir(env, () => "/srv/other-home")).toBe(normalized);
+    expect(resolveStateDir(env, () => home)).toBe(path.join(path.resolve(home), ".openclaw"));
+    expect(resolveConfigPathCandidate(env, () => home)).toBe(
+      path.join(path.resolve(home), ".openclaw", "openclaw.json"),
+    );
+    expect(resolveOAuthDir(env, path.join(path.resolve(home), ".openclaw"))).toBe(
+      path.join(path.resolve(home), ".openclaw", "credentials"),
+    );
   });
 
   it("uses OPENCLAW_HOME for default state/config locations", () => {

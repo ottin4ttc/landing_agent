@@ -1,7 +1,6 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getApiProvider } from "../../llm/api-registry.js";
-import { streamSimple } from "../../llm/stream.js";
+import { getApiProvider, streamSimple } from "../pi-ai-contract.js";
 import * as providerTransportStream from "../provider-transport-stream.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../system-prompt-cache-boundary.js";
 import {

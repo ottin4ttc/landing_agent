@@ -109,7 +109,6 @@ function createTestRuntime(overrides?: {
   const recordInboundSession = vi.fn(async () => {});
   const dispatchPreparedForTest = vi.fn(async (turn: PreparedInboundReply<unknown>) => {
     await turn.recordInboundSession({
-      storePath: turn.storePath,
       sessionKey: turn.ctxPayload.SessionKey ?? turn.routeSessionKey,
       ctx: turn.ctxPayload,
       groupResolution: turn.record?.groupResolution,
@@ -149,7 +148,6 @@ function createTestRuntime(overrides?: {
         withReplyDispatcher,
       },
       session: {
-        resolveStorePath: vi.fn(() => "/tmp/feishu-session-store.json"),
         recordInboundSession,
       },
       inbound: {

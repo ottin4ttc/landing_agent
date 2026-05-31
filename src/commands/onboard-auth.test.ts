@@ -1,13 +1,15 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OAuthCredentials } from "../llm/utils/oauth/types.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearRuntimeAuthProfileStoreSnapshots } from "../agents/auth-profiles/store.js";
+import type { OAuthCredentials } from "../agents/pi-ai-oauth-contract.js";
 import {
   applyAuthProfileConfig,
   upsertApiKeyProfile,
   writeOAuthCredentials,
 } from "../plugins/provider-auth-helpers.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
   createAuthTestLifecycle,
   readAuthProfilesForAgent,
@@ -30,52 +32,6 @@ vi.mock("../config/paths.js", () => ({
   resolveStateDir: () => process.env.OPENCLAW_STATE_DIR ?? "/tmp/openclaw-state",
 }));
 
-vi.mock("../agents/auth-profiles/profiles.js", async () => {
-  const fs = await import("node:fs");
-  const path = await import("node:path");
-  const upsert = (params: { profileId: string; credential: unknown; agentDir?: string }) => {
-    const stateDir = process.env.OPENCLAW_STATE_DIR ?? "/tmp/openclaw-state";
-    const agentDir = params.agentDir ?? path.join(stateDir, "agents", "main", "agent");
-    const file = path.join(agentDir, "auth-profiles.json");
-    fs.mkdirSync(agentDir, { recursive: true });
-    const existing = (() => {
-      try {
-        return JSON.parse(fs.readFileSync(file, "utf8")) as {
-          version?: number;
-          profiles?: Record<string, unknown>;
-        };
-      } catch {
-        return { version: 1, profiles: {} };
-      }
-    })();
-    fs.writeFileSync(
-      file,
-      `${JSON.stringify(
-        {
-          version: existing.version ?? 1,
-          profiles: {
-            ...existing.profiles,
-            [params.profileId]: params.credential,
-          },
-        },
-        null,
-        2,
-      )}\n`,
-    );
-  };
-  return {
-    upsertAuthProfile: upsert,
-    upsertAuthProfileWithLock: async (params: {
-      profileId: string;
-      credential: unknown;
-      agentDir?: string;
-    }) => {
-      upsert(params);
-      return { version: 1, profiles: {} };
-    },
-  };
-});
-
 vi.mock("../agents/provider-auth-aliases.js", () => ({
   resolveProviderIdForAuth: (provider: string) => {
     const normalized = provider.trim().toLowerCase();
@@ -95,6 +51,17 @@ vi.mock("../secrets/provider-env-vars.js", () => ({
   }),
 }));
 
+beforeEach(() => {
+  closeOpenClawStateDatabaseForTest();
+  clearRuntimeAuthProfileStoreSnapshots();
+});
+
+afterEach(() => {
+  closeOpenClawStateDatabaseForTest();
+  clearRuntimeAuthProfileStoreSnapshots();
+  vi.unstubAllEnvs();
+});
+
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object") {
     throw new Error(`expected ${label}`);
@@ -110,16 +77,6 @@ function expectFields(value: unknown, expected: Record<string, unknown>, label =
   return record;
 }
 
-async function expectMissingFile(readPromise: Promise<unknown>) {
-  try {
-    await readPromise;
-  } catch (error) {
-    expectFields(error, { code: "ENOENT" }, "read error");
-    return;
-  }
-  throw new Error("Expected file read to fail with ENOENT");
-}
-
 describe("writeOAuthCredentials", () => {
   const lifecycle = createAuthTestLifecycle([
     "OPENCLAW_STATE_DIR",
@@ -128,13 +85,12 @@ describe("writeOAuthCredentials", () => {
   ]);
 
   let tempStateDir: string;
-  const authProfilePathFor = (dir: string) => path.join(dir, "auth-profiles.json");
 
   afterEach(async () => {
     await lifecycle.cleanup();
   });
 
-  it("writes auth-profiles.json under the default agent dir", async () => {
+  it("writes OAuth credentials under the default agent dir SQLite store", async () => {
     const env = await setupAuthTestEnv("openclaw-oauth-");
     lifecycle.setStateDir(env.stateDir);
     const defaultAgentDir = path.join(env.stateDir, "agents", "main", "agent");
@@ -155,8 +111,6 @@ describe("writeOAuthCredentials", () => {
       access: "access-token",
       type: "oauth",
     });
-
-    await expectMissingFile(fs.readFile(path.join(env.agentDir, "auth-profiles.json"), "utf8"));
   });
 
   it("writes OAuth credentials to all sibling agent dirs when syncSiblingAgents=true", async () => {
@@ -183,10 +137,9 @@ describe("writeOAuthCredentials", () => {
     });
 
     for (const dir of [mainAgentDir, kidAgentDir, workerAgentDir]) {
-      const raw = await fs.readFile(authProfilePathFor(dir), "utf8");
-      const parsed = JSON.parse(raw) as {
+      const parsed = await readAuthProfilesForAgent<{
         profiles?: Record<string, OAuthCredentials & { type?: string }>;
-      };
+      }>(dir);
       expectFields(parsed.profiles?.["openai:default"], {
         refresh: "refresh-sync",
         access: "access-sync",
@@ -214,16 +167,17 @@ describe("writeOAuthCredentials", () => {
 
     await writeOAuthCredentials("openai", creds, kidAgentDir);
 
-    const kidRaw = await fs.readFile(authProfilePathFor(kidAgentDir), "utf8");
-    const kidParsed = JSON.parse(kidRaw) as {
+    const kidParsed = await readAuthProfilesForAgent<{
       profiles?: Record<string, OAuthCredentials & { type?: string }>;
-    };
+    }>(kidAgentDir);
     expectFields(kidParsed.profiles?.["openai:default"], {
       access: "access-kid",
       type: "oauth",
     });
 
-    await expectMissingFile(fs.readFile(authProfilePathFor(mainAgentDir), "utf8"));
+    await expect(readAuthProfilesForAgent(mainAgentDir)).rejects.toThrow(
+      "Expected SQLite auth profile store",
+    );
   });
 
   it("syncs siblings from explicit agentDir outside OPENCLAW_STATE_DIR", async () => {
@@ -251,10 +205,9 @@ describe("writeOAuthCredentials", () => {
 
     // All siblings under the external root should have credentials
     for (const dir of [extMain, extKid, extWorker]) {
-      const raw = await fs.readFile(authProfilePathFor(dir), "utf8");
-      const parsed = JSON.parse(raw) as {
+      const parsed = await readAuthProfilesForAgent<{
         profiles?: Record<string, OAuthCredentials & { type?: string }>;
-      };
+      }>(dir);
       expectFields(parsed.profiles?.["openai:default"], {
         refresh: "refresh-ext",
         access: "access-ext",
@@ -264,7 +217,9 @@ describe("writeOAuthCredentials", () => {
 
     // Global state dir should NOT have credentials written
     const globalMain = path.join(tempStateDir, "agents", "main", "agent");
-    await expectMissingFile(fs.readFile(authProfilePathFor(globalMain), "utf8"));
+    await expect(readAuthProfilesForAgent(globalMain)).rejects.toThrow(
+      "Expected SQLite auth profile store",
+    );
   });
 });
 
@@ -296,11 +251,20 @@ describe("upsertApiKeyProfile secret refs", () => {
     return parsed.profiles?.[profileId];
   }
 
+  async function readProfileIds(agentDir: string): Promise<string[]> {
+    const parsed = await readAuthProfilesForAgent<{
+      profiles?: Record<string, AuthProfileEntry>;
+    }>(agentDir);
+    return Object.keys(parsed.profiles ?? {}).toSorted();
+  }
+
   it("handles plaintext, ref mode, and inline env-ref provider keys", async () => {
     const env = await setupAuthTestEnv("openclaw-onboard-auth-credentials-");
     lifecycle.setStateDir(env.stateDir);
-    process.env.MOONSHOT_API_KEY = "sk-moonshot-env"; // pragma: allowlist secret
-    process.env.OPENAI_API_KEY = "sk-openai-env"; // pragma: allowlist secret
+    closeOpenClawStateDatabaseForTest();
+    clearRuntimeAuthProfileStoreSnapshots();
+    vi.stubEnv("MOONSHOT_API_KEY", "sk-moonshot-env"); // pragma: allowlist secret
+    vi.stubEnv("OPENAI_API_KEY", "sk-openai-env"); // pragma: allowlist secret
 
     upsertApiKeyProfile({
       provider: "moonshot",
@@ -336,7 +300,7 @@ describe("upsertApiKeyProfile secret refs", () => {
       agentDir: env.agentDir,
       profileId: "moonshot:inline",
     });
-    process.env.MOONSHOT_API_KEY = "sk-moonshot-other"; // pragma: allowlist secret
+    vi.stubEnv("MOONSHOT_API_KEY", "sk-moonshot-other"); // pragma: allowlist secret
     upsertApiKeyProfile({
       provider: "moonshot",
       input: "sk-moonshot-plaintext",
@@ -364,10 +328,12 @@ describe("upsertApiKeyProfile secret refs", () => {
   it("stores provider-specific env refs and metadata in ref mode", async () => {
     const env = await setupAuthTestEnv("openclaw-onboard-auth-credentials-provider-ref-");
     lifecycle.setStateDir(env.stateDir);
-    process.env.CLOUDFLARE_AI_GATEWAY_API_KEY = "cf-secret"; // pragma: allowlist secret
-    process.env.VOLCANO_ENGINE_API_KEY = "volcengine-secret"; // pragma: allowlist secret
-    process.env.BYTEPLUS_API_KEY = "byteplus-secret"; // pragma: allowlist secret
-    process.env.OPENCODE_API_KEY = "sk-opencode-env"; // pragma: allowlist secret
+    closeOpenClawStateDatabaseForTest();
+    clearRuntimeAuthProfileStoreSnapshots();
+    vi.stubEnv("CLOUDFLARE_AI_GATEWAY_API_KEY", "cf-secret"); // pragma: allowlist secret
+    vi.stubEnv("VOLCANO_ENGINE_API_KEY", "volcengine-secret"); // pragma: allowlist secret
+    vi.stubEnv("BYTEPLUS_API_KEY", "byteplus-secret"); // pragma: allowlist secret
+    vi.stubEnv("OPENCODE_API_KEY", "sk-opencode-env"); // pragma: allowlist secret
 
     upsertApiKeyProfile({
       provider: "cloudflare-ai-gateway",
@@ -393,6 +359,13 @@ describe("upsertApiKeyProfile secret refs", () => {
       });
     }
 
+    expect(await readProfileIds(env.agentDir)).toEqual([
+      "byteplus:default",
+      "cloudflare-ai-gateway:default",
+      "opencode-go:default",
+      "opencode:default",
+      "volcengine:default",
+    ]);
     expectFields(await readProfile(env.agentDir, "cloudflare-ai-gateway:default"), {
       keyRef: { source: "env", provider: "default", id: "CLOUDFLARE_AI_GATEWAY_API_KEY" },
       metadata: { accountId: "account-1", gatewayId: "gateway-1" },
@@ -435,8 +408,6 @@ describe("upsertApiKeyProfile", () => {
       provider: "minimax",
       key: "sk-minimax-test",
     });
-
-    await expectMissingFile(fs.readFile(path.join(env.agentDir, "auth-profiles.json"), "utf8"));
   });
 });
 

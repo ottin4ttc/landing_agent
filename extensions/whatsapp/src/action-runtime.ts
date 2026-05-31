@@ -18,7 +18,7 @@ export const whatsAppActionRuntime = {
 export async function handleWhatsAppAction(
   params: Record<string, unknown>,
   cfg: OpenClawConfig,
-): Promise<AgentToolResult<unknown>> {
+): Promise<AgentToolResult> {
   const action = readStringParam(params, "action", { required: true });
   const whatsAppConfig = cfg.channels?.whatsapp;
   const isActionEnabled = createActionGate(whatsAppConfig?.actions);

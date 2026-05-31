@@ -1,31 +1,22 @@
-import fs from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { CronService } from "./service.js";
-import { createCronStoreHarness, createNoopLogger } from "./service.test-harness.js";
-import { loadCronStore, saveCronStore } from "./store.js";
+import {
+  createCronStoreHarness,
+  createNoopLogger,
+  writeCronStoreSnapshot,
+} from "./service.test-harness.js";
+import { loadCronStore } from "./store.js";
 
 const noopLogger = createNoopLogger();
-const { makeStorePath } = createCronStoreHarness({ prefix: "openclaw-cron-issue-35195-" });
+const { makeStoreKey } = createCronStoreHarness({ prefix: "openclaw-cron-issue-35195-" });
 
-async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.stat(filePath);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
-describe("cron backup timing for edit", () => {
-  it("updates SQLite cron jobs without creating a legacy migration archive", async () => {
-    const store = await makeStorePath();
+describe("cron SQLite edit persistence", () => {
+  it("persists edits in SQLite across restart", async () => {
+    const { storeKey } = await makeStoreKey();
     const base = Date.now();
 
-    await saveCronStore(store.storePath, {
-      version: 1,
+    await writeCronStoreSnapshot({
+      storeKey,
       jobs: [
         {
           id: "job-35195",
@@ -43,7 +34,7 @@ describe("cron backup timing for edit", () => {
     });
 
     const service = new CronService({
-      storePath: store.storePath,
+      storeKey,
       cronEnabled: true,
       log: noopLogger,
       enqueueSystemEvent: vi.fn(),
@@ -51,22 +42,36 @@ describe("cron backup timing for edit", () => {
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
 
-    try {
-      await service.start();
+    await service.start();
 
-      await service.update("job-35195", {
-        payload: { kind: "systemEvent", text: "edited" },
-      });
+    await service.update("job-35195", {
+      payload: { kind: "systemEvent", text: "edited" },
+    });
 
-      expect(await pathExists(`${store.storePath}.migrated`)).toBe(false);
-      const persistedAfterEdit = await loadCronStore(store.storePath);
-      expect(persistedAfterEdit.jobs[0]?.payload).toEqual({
-        kind: "systemEvent",
-        text: "edited",
-      });
-    } finally {
-      service.stop();
-      await store.cleanup();
-    }
+    const afterEdit = await loadCronStore(storeKey);
+    expect(afterEdit.jobs[0]?.payload).toMatchObject({
+      kind: "systemEvent",
+      text: "edited",
+    });
+
+    service.stop();
+    const service2 = new CronService({
+      storeKey,
+      cronEnabled: true,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+
+    await service2.start();
+
+    const afterRestart = await loadCronStore(storeKey);
+    expect(afterRestart.jobs[0]?.payload).toMatchObject({
+      kind: "systemEvent",
+      text: "edited",
+    });
+
+    service2.stop();
   });
 });

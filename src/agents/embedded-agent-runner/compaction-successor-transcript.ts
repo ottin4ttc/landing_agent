@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import { resolveTimestampMsToIsoString } from "@openclaw/normalization-core/number-coercion";
-import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { CompactionEntry, SessionEntry, SessionHeader } from "../sessions/index.js";
-import { collectDuplicateUserMessageEntryIdsForCompaction } from "./compaction-duplicate-user-messages.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import {
-  readTranscriptFileState,
-  TranscriptFileState,
-  writeTranscriptFileAtomic,
-} from "./transcript-file-state.js";
+  CURRENT_SESSION_VERSION,
+  type CompactionEntry,
+  type SessionEntry,
+  type SessionHeader,
+} from "../transcript/session-transcript-contract.js";
+import {
+  readTranscriptStateForSessionSync,
+  replaceTranscriptStateForSession,
+} from "../transcript/transcript-persistence.js";
+import { TranscriptState } from "../transcript/transcript-state.js";
+import { collectDuplicateUserMessageEntryIdsForCompaction } from "./compaction-duplicate-user-messages.js";
 
 type ReadonlySessionManagerForRotation = Pick<
-  TranscriptFileState,
+  TranscriptState,
   "buildSessionContext" | "getBranch" | "getCwd" | "getEntries" | "getHeader"
 >;
 
@@ -20,24 +24,26 @@ export type CompactionTranscriptRotation = {
   rotated: boolean;
   reason?: string;
   sessionId?: string;
-  sessionFile?: string;
   compactionEntryId?: string;
   leafId?: string;
   entriesWritten?: number;
 };
 
 export function shouldRotateCompactionTranscript(config?: OpenClawConfig): boolean {
-  return config?.agents?.defaults?.compaction?.truncateAfterCompaction === true;
+  return config?.agents?.defaults?.compaction?.rotateAfterCompaction === true;
 }
 
 export async function rotateTranscriptAfterCompaction(params: {
   sessionManager: ReadonlySessionManagerForRotation;
-  sessionFile: string;
+  agentId: string;
+  path?: string;
+  sessionId: string;
   now?: () => Date;
 }): Promise<CompactionTranscriptRotation> {
-  const sessionFile = params.sessionFile.trim();
-  if (!sessionFile) {
-    return { rotated: false, reason: "missing session file" };
+  const agentId = normalizeAgentId(params.agentId);
+  const sourceSessionId = params.sessionId.trim();
+  if (!sourceSessionId) {
+    return { rotated: false, reason: "missing session id" };
   }
 
   const branch = params.sessionManager.getBranch();
@@ -49,11 +55,6 @@ export async function rotateTranscriptAfterCompaction(params: {
   const compaction = branch[latestCompactionIndex] as CompactionEntry;
   const timestamp = resolveTimestampMsToIsoString(params.now?.().getTime());
   const sessionId = randomUUID();
-  const successorFile = resolveSuccessorSessionFile({
-    sessionFile,
-    sessionId,
-    timestamp,
-  });
   const successorEntries = buildSuccessorEntries({
     allEntries: params.sessionManager.getEntries(),
     branch,
@@ -68,31 +69,66 @@ export async function rotateTranscriptAfterCompaction(params: {
     sessionId,
     timestamp,
     cwd: params.sessionManager.getCwd(),
-    parentSession: sessionFile,
+    parentTranscriptScope: { agentId, sessionId: sourceSessionId },
   });
-  await writeTranscriptFileAtomic(successorFile, [header, ...successorEntries]);
-  new TranscriptFileState({ header, entries: successorEntries }).buildSessionContext();
+  const successorState = new TranscriptState({ header, entries: successorEntries });
+  replaceTranscriptStateForSession({
+    scope: {
+      agentId,
+      ...(params.path ? { path: params.path } : {}),
+      sessionId,
+    },
+    state: successorState,
+  });
+  successorState.buildSessionContext();
 
   return {
     rotated: true,
     sessionId,
-    sessionFile: successorFile,
     compactionEntryId: compaction.id,
     leafId: successorEntries[successorEntries.length - 1]?.id,
     entriesWritten: successorEntries.length,
   };
 }
 
-export async function rotateTranscriptFileAfterCompaction(params: {
-  sessionFile: string;
+export async function rotateSqliteTranscriptAfterCompaction(params: {
+  agentId: string;
+  path?: string;
+  sessionId: string;
   now?: () => Date;
 }): Promise<CompactionTranscriptRotation> {
-  const state = await readTranscriptFileState(params.sessionFile);
+  const state = loadTranscriptStateFromSqlite(params);
+  if (!state) {
+    return { rotated: false, reason: "transcript not in SQLite" };
+  }
   return rotateTranscriptAfterCompaction({
     sessionManager: state,
-    sessionFile: params.sessionFile,
+    agentId: params.agentId,
+    path: params.path,
+    sessionId: params.sessionId,
     ...(params.now ? { now: params.now } : {}),
   });
+}
+
+function loadTranscriptStateFromSqlite(params: {
+  agentId: string;
+  path?: string;
+  sessionId: string;
+}): TranscriptState | null {
+  const sessionId = params.sessionId.trim();
+  if (!sessionId) {
+    return null;
+  }
+  const agentId = normalizeAgentId(params.agentId);
+  try {
+    return readTranscriptStateForSessionSync({
+      agentId,
+      ...(params.path ? { path: params.path } : {}),
+      sessionId,
+    });
+  } catch {
+    return null;
+  }
 }
 
 function findLatestCompactionIndex(entries: SessionEntry[]): number {
@@ -264,7 +300,7 @@ function buildSuccessorHeader(params: {
   sessionId: string;
   timestamp: string;
   cwd: string;
-  parentSession: string;
+  parentTranscriptScope: { agentId: string; sessionId: string };
 }): SessionHeader {
   return {
     type: "session",
@@ -272,15 +308,6 @@ function buildSuccessorHeader(params: {
     id: params.sessionId,
     timestamp: params.timestamp,
     cwd: params.previousHeader?.cwd || params.cwd,
-    parentSession: params.parentSession,
+    parentTranscriptScope: { ...params.parentTranscriptScope },
   };
-}
-
-function resolveSuccessorSessionFile(params: {
-  sessionFile: string;
-  sessionId: string;
-  timestamp: string;
-}): string {
-  const fileTimestamp = params.timestamp.replace(/[:.]/g, "-");
-  return path.join(path.dirname(params.sessionFile), `${fileTimestamp}_${params.sessionId}.jsonl`);
 }

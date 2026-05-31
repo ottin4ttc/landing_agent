@@ -1,4 +1,4 @@
-import type { ModelRegistry } from "openclaw/plugin-sdk/agent-sessions";
+import type { ModelRegistry } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type {
   ProviderCatalogContext,
   ProviderResolveDynamicModelContext,

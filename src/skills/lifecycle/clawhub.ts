@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fsSync from "node:fs";
 import path from "node:path";
 import {
@@ -11,7 +12,11 @@ import {
 import { formatErrorMessage } from "../../infra/errors.js";
 import { pathExists } from "../../infra/fs-safe.js";
 import { withExtractedArchiveRoot } from "../../infra/install-flow.js";
-import { readJsonIfExists, tryReadJson, writeJson } from "../../infra/json-files.js";
+import { tryReadJson, writeJson } from "../../infra/json-files.js";
+import {
+  createCorePluginStateKeyedStore,
+  createCorePluginStateSyncKeyedStore,
+} from "../../plugin-state/plugin-state-store.js";
 import {
   CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
   installExtractedSkillRoot,
@@ -20,13 +25,28 @@ import {
   validateRequestedSkillSlug,
 } from "./archive-install.js";
 
-const DOT_DIR = ".clawhub";
-const LEGACY_DOT_DIR = ".clawdhub";
-const SKILL_ORIGIN_RELATIVE_PATH = path.join(DOT_DIR, "origin.json");
+const CLAWHUB_SKILL_STATE_OWNER_ID = "core:clawhub-skills";
+const CLAWHUB_SKILL_STATE_NAMESPACE = "skill-installs";
+const CLAWHUB_SKILL_STATE_MAX_ENTRIES = 10_000;
+const CLAWHUB_DOT_DIR = ".clawhub";
+const LEGACY_CLAWHUB_DOT_DIR = ".clawdhub";
 const LOCAL_SKILL_CARD_FILENAME = "skill-card.md";
 const LOCAL_SKILL_CARD_MAX_BYTES = 256 * 1024;
 
-export type ClawHubSkillOrigin = {
+const clawHubSkillInstallStore = createCorePluginStateKeyedStore<ClawHubSkillInstallRecord>({
+  ownerId: CLAWHUB_SKILL_STATE_OWNER_ID,
+  namespace: CLAWHUB_SKILL_STATE_NAMESPACE,
+  maxEntries: CLAWHUB_SKILL_STATE_MAX_ENTRIES,
+});
+const clawHubSkillInstallSyncStore = createCorePluginStateSyncKeyedStore<ClawHubSkillInstallRecord>(
+  {
+    ownerId: CLAWHUB_SKILL_STATE_OWNER_ID,
+    namespace: CLAWHUB_SKILL_STATE_NAMESPACE,
+    maxEntries: CLAWHUB_SKILL_STATE_MAX_ENTRIES,
+  },
+);
+
+type TrackedClawHubSkillInstall = {
   version: 1;
   registry: string;
   slug: string;
@@ -34,7 +54,7 @@ export type ClawHubSkillOrigin = {
   installedAt: number;
 };
 
-export type ClawHubSkillsLockfile = {
+type TrackedClawHubSkills = {
   version: 1;
   skills: Record<
     string,
@@ -45,6 +65,8 @@ export type ClawHubSkillsLockfile = {
     }
   >;
 };
+
+export type ClawHubSkillsLockfile = TrackedClawHubSkills;
 
 export type ClawHubSkillsLockfileStatusRead =
   | { kind: "found"; lock: ClawHubSkillsLockfile; path: string }
@@ -84,6 +106,12 @@ type LocalSkillCardRead = LocalSkillCardStatus & {
   content?: string;
 };
 
+type ClawHubSkillInstallRecord = TrackedClawHubSkillInstall & {
+  workspaceDir: string;
+  targetDir: string;
+  updatedAt: number;
+};
+
 export type InstallClawHubSkillResult =
   | {
       ok: true;
@@ -105,6 +133,29 @@ export type UpdateClawHubSkillResult =
     }
   | { ok: false; error: string };
 
+export type ClawHubSkillVerificationResolutionSource = "installed" | "registry";
+export type ClawHubSkillVerificationSelector = "installed-version" | "version" | "tag" | "latest";
+
+export type ClawHubSkillVerificationTargetResult =
+  | {
+      ok: true;
+      slug: string;
+      baseUrl: string;
+      version: string | undefined;
+      tag: string | undefined;
+      resolution: {
+        source: ClawHubSkillVerificationResolutionSource;
+        selector: ClawHubSkillVerificationSelector;
+        registry: string;
+        skillDir: string | undefined;
+        installedVersion: string | undefined;
+      };
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
 type Logger = {
   info?: (message: string) => void;
 };
@@ -112,12 +163,12 @@ type Logger = {
 async function resolveRequestedUpdateSlug(params: {
   workspaceDir: string;
   requestedSlug: string;
-  lock: ClawHubSkillsLockfile;
+  tracked: TrackedClawHubSkills;
 }): Promise<string> {
   const trackedSlug = normalizeTrackedSkillSlug(params.requestedSlug);
   const trackedTargetDir = resolveWorkspaceSkillInstallDir(params.workspaceDir, trackedSlug);
-  const trackedOrigin = await readClawHubSkillOrigin(trackedTargetDir);
-  if (trackedOrigin || params.lock.skills[trackedSlug]) {
+  const trackedInstall = await readTrackedClawHubSkillInstall(trackedTargetDir);
+  if (trackedInstall || params.tracked.skills[trackedSlug]) {
     return trackedSlug;
   }
   return validateRequestedSkillSlug(params.requestedSlug);
@@ -145,76 +196,201 @@ type TrackedUpdateTarget =
       error: string;
     };
 
-export type ClawHubSkillVerificationResolutionSource = "installed" | "registry";
-export type ClawHubSkillVerificationSelector = "installed-version" | "version" | "tag" | "latest";
+function resolveClawHubWorkspaceDirFromSkillDir(skillDir: string): string | null {
+  const resolved = path.resolve(skillDir);
+  const skillsDir = path.dirname(resolved);
+  if (path.basename(skillsDir) !== "skills") {
+    return null;
+  }
+  return path.dirname(skillsDir);
+}
 
-export type ClawHubSkillVerificationTargetResult =
-  | {
-      ok: true;
-      slug: string;
-      baseUrl: string;
-      version: string | undefined;
-      tag: string | undefined;
-      resolution: {
-        source: ClawHubSkillVerificationResolutionSource;
-        selector: ClawHubSkillVerificationSelector;
-        registry: string;
-        skillDir: string | undefined;
-        installedVersion: string | undefined;
-      };
+function clawHubWorkspaceKey(workspaceDir: string): string {
+  return crypto.createHash("sha256").update(path.resolve(workspaceDir)).digest("hex").slice(0, 24);
+}
+
+function clawHubSkillInstallKey(workspaceDir: string, slug: string): string {
+  return `${clawHubWorkspaceKey(workspaceDir)}:${normalizeTrackedSkillSlug(slug)}`;
+}
+
+function recordToTrackedInstall(record: ClawHubSkillInstallRecord): TrackedClawHubSkillInstall {
+  return {
+    version: 1,
+    registry: record.registry,
+    slug: record.slug,
+    installedVersion: record.installedVersion,
+    installedAt: record.installedAt,
+  };
+}
+
+function trackedSkillsFromRows(
+  workspaceDir: string,
+  rows: ReadonlyArray<{ key: string; value: ClawHubSkillInstallRecord }>,
+): TrackedClawHubSkills {
+  const resolvedWorkspaceDir = path.resolve(workspaceDir);
+  const keyPrefix = `${clawHubWorkspaceKey(resolvedWorkspaceDir)}:`;
+  const trackedSkills: TrackedClawHubSkills["skills"] = {};
+  for (const row of rows) {
+    if (
+      !row.key.startsWith(keyPrefix) ||
+      path.resolve(row.value.workspaceDir) !== resolvedWorkspaceDir
+    ) {
+      continue;
     }
-  | {
-      ok: false;
-      error: string;
+    trackedSkills[row.value.slug] = {
+      version: row.value.installedVersion,
+      installedAt: row.value.installedAt,
+      registry: row.value.registry,
     };
-
-export async function readClawHubSkillsLockfile(
-  workspaceDir: string,
-): Promise<ClawHubSkillsLockfile> {
-  const candidates = [
-    path.join(workspaceDir, DOT_DIR, "lock.json"),
-    path.join(workspaceDir, LEGACY_DOT_DIR, "lock.json"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const raw = await tryReadJson<Partial<ClawHubSkillsLockfile>>(candidate);
-      if (raw?.version === 1 && raw.skills && typeof raw.skills === "object") {
-        return {
-          version: 1,
-          skills: raw.skills,
-        };
-      }
-    } catch {
-      // ignore
-    }
   }
-  return { version: 1, skills: {} };
+  return { version: 1, skills: trackedSkills };
 }
 
-async function writeClawHubSkillsLockfile(
+async function readTrackedClawHubSkills(workspaceDir: string): Promise<TrackedClawHubSkills> {
+  return trackedSkillsFromRows(workspaceDir, await clawHubSkillInstallStore.entries());
+}
+
+function readTrackedClawHubSkillsSync(workspaceDir: string): TrackedClawHubSkills {
+  return trackedSkillsFromRows(workspaceDir, clawHubSkillInstallSyncStore.entries());
+}
+
+async function writeTrackedClawHubSkills(
   workspaceDir: string,
-  lockfile: ClawHubSkillsLockfile,
+  tracked: TrackedClawHubSkills,
 ): Promise<void> {
-  const targetPath = path.join(workspaceDir, DOT_DIR, "lock.json");
-  await writeJson(targetPath, lockfile, { trailingNewline: true });
+  const resolvedWorkspaceDir = path.resolve(workspaceDir);
+  for (const [slug, entry] of Object.entries(tracked.skills)) {
+    const targetDir = resolveWorkspaceSkillInstallDir(resolvedWorkspaceDir, slug);
+    const existing = await readTrackedClawHubSkillInstall(targetDir);
+    await clawHubSkillInstallStore.register(clawHubSkillInstallKey(resolvedWorkspaceDir, slug), {
+      version: 1,
+      registry: existing?.registry ?? resolveClawHubBaseUrl(undefined),
+      slug,
+      installedVersion: entry.version,
+      installedAt: entry.installedAt,
+      workspaceDir: resolvedWorkspaceDir,
+      targetDir,
+      updatedAt: Date.now(),
+    });
+  }
 }
 
-function readJsonIfExistsSync(
-  candidate: string,
-): { exists: false } | { exists: true; value: unknown } {
-  try {
-    return { exists: true, value: JSON.parse(fsSync.readFileSync(candidate, "utf8")) };
-  } catch (err) {
-    if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") {
-      return { exists: false };
+async function untrackLegacyClawHubSkillLock(workspaceDir: string, slug: string): Promise<void> {
+  for (const dotDir of [CLAWHUB_DOT_DIR, LEGACY_CLAWHUB_DOT_DIR]) {
+    const lockPath = path.join(workspaceDir, dotDir, "lock.json");
+    let lock: Partial<TrackedClawHubSkills> | null = null;
+    try {
+      lock = await tryReadJson<Partial<TrackedClawHubSkills>>(lockPath);
+    } catch {
+      continue;
     }
-    throw err;
+    if (lock?.version !== 1 || !lock.skills || typeof lock.skills !== "object") {
+      continue;
+    }
+    if (!lock.skills[slug]) {
+      continue;
+    }
+    delete lock.skills[slug];
+    await writeJson(lockPath, { version: 1, skills: lock.skills }, { trailingNewline: true });
   }
+}
+
+async function readTrackedClawHubSkillInstall(
+  skillDir: string,
+): Promise<TrackedClawHubSkillInstall | null> {
+  const resolvedSkillDir = path.resolve(skillDir);
+  const workspaceDir = resolveClawHubWorkspaceDirFromSkillDir(resolvedSkillDir);
+  if (workspaceDir) {
+    const slug = path.basename(resolvedSkillDir);
+    const row = await clawHubSkillInstallStore.lookup(clawHubSkillInstallKey(workspaceDir, slug));
+    if (row) {
+      return recordToTrackedInstall(row);
+    }
+  }
+
+  return null;
+}
+
+function readTrackedClawHubSkillInstallSync(skillDir: string): TrackedClawHubSkillInstall | null {
+  const resolvedSkillDir = path.resolve(skillDir);
+  const workspaceDir = resolveClawHubWorkspaceDirFromSkillDir(resolvedSkillDir);
+  if (workspaceDir) {
+    const slug = path.basename(resolvedSkillDir);
+    const row = clawHubSkillInstallSyncStore.lookup(clawHubSkillInstallKey(workspaceDir, slug));
+    if (row) {
+      return recordToTrackedInstall(row);
+    }
+  }
+
+  return null;
+}
+
+async function writeTrackedClawHubSkillInstall(
+  skillDir: string,
+  install: TrackedClawHubSkillInstall,
+): Promise<void> {
+  const resolvedSkillDir = path.resolve(skillDir);
+  const workspaceDir = resolveClawHubWorkspaceDirFromSkillDir(resolvedSkillDir);
+  if (!workspaceDir) {
+    throw new Error(`Invalid ClawHub skill install directory: ${skillDir}`);
+  }
+  await clawHubSkillInstallStore.register(clawHubSkillInstallKey(workspaceDir, install.slug), {
+    ...install,
+    workspaceDir: path.resolve(workspaceDir),
+    targetDir: resolvedSkillDir,
+    updatedAt: Date.now(),
+  });
 }
 
 function normalizeStoredRegistry(registry: string): string {
   const trimmed = registry.trim();
   return trimmed.replace(/\/+$/, "") || trimmed;
+}
+
+function normalizeOptionalSelector(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function skillStateRef(suffix: string): string {
+  return `sqlite:plugin-state/${CLAWHUB_SKILL_STATE_OWNER_ID}/${CLAWHUB_SKILL_STATE_NAMESPACE}/${suffix}`;
+}
+
+export async function readClawHubSkillsLockfile(
+  workspaceDir: string,
+): Promise<ClawHubSkillsLockfile> {
+  return await readTrackedClawHubSkills(workspaceDir);
+}
+
+export function readClawHubSkillsLockfileStatusSync(
+  workspaceDir: string,
+): ClawHubSkillsLockfileStatusRead {
+  const lock = readTrackedClawHubSkillsSync(workspaceDir);
+  if (Object.keys(lock.skills).length === 0) {
+    return { kind: "missing" };
+  }
+  return {
+    kind: "found",
+    lock,
+    path: skillStateRef(`${clawHubWorkspaceKey(workspaceDir)}:*`),
+  };
+}
+
+type StrictOriginReadResult =
+  | { kind: "found"; origin: TrackedClawHubSkillInstall; path: string }
+  | { kind: "missing" }
+  | { kind: "malformed"; path: string; error: string };
+
+async function readClawHubSkillOriginStrict(skillDir: string): Promise<StrictOriginReadResult> {
+  const install = await readTrackedClawHubSkillInstall(skillDir);
+  if (!install) {
+    return { kind: "missing" };
+  }
+  return {
+    kind: "found",
+    origin: install,
+    path: skillStateRef(clawHubSkillInstallKey(path.dirname(path.dirname(skillDir)), install.slug)),
+  };
 }
 
 function readRealPathSync(candidate: string): string | undefined {
@@ -225,175 +401,16 @@ function readRealPathSync(candidate: string): string | undefined {
   }
 }
 
-export function readClawHubSkillsLockfileStatusSync(
-  workspaceDir: string,
-): ClawHubSkillsLockfileStatusRead {
-  const candidates = [
-    path.join(workspaceDir, DOT_DIR, "lock.json"),
-    path.join(workspaceDir, LEGACY_DOT_DIR, "lock.json"),
-  ];
-  for (const candidate of candidates) {
-    let raw: Partial<ClawHubSkillsLockfile> | null;
-    try {
-      const read = readJsonIfExistsSync(candidate);
-      if (!read.exists) {
-        continue;
-      }
-      raw = read.value as Partial<ClawHubSkillsLockfile>;
-    } catch (err) {
-      return {
-        kind: "malformed",
-        path: candidate,
-        error: formatErrorMessage(err),
-      };
-    }
-    if (raw?.version === 1 && raw.skills && typeof raw.skills === "object") {
-      return {
-        kind: "found",
-        path: candidate,
-        lock: {
-          version: 1,
-          skills: raw.skills,
-        },
-      };
-    }
-    return {
-      kind: "malformed",
-      path: candidate,
-      error: "expected version 1 lockfile with skills",
-    };
-  }
-  return { kind: "missing" };
-}
-
-function normalizeOptionalSelector(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function normalizeClawHubSkillOrigin(
-  raw: Partial<ClawHubSkillOrigin> | null,
-): ClawHubSkillOrigin | null {
-  if (
-    raw?.version === 1 &&
-    typeof raw.registry === "string" &&
-    raw.registry.trim().length > 0 &&
-    typeof raw.slug === "string" &&
-    raw.slug.trim().length > 0 &&
-    typeof raw.installedVersion === "string" &&
-    raw.installedVersion.trim().length > 0 &&
-    typeof raw.installedAt === "number"
-  ) {
-    return {
-      version: 1,
-      registry: normalizeStoredRegistry(raw.registry),
-      slug: raw.slug,
-      installedVersion: raw.installedVersion,
-      installedAt: raw.installedAt,
-    };
-  }
-  return null;
-}
-
-async function readClawHubSkillOrigin(skillDir: string): Promise<ClawHubSkillOrigin | null> {
-  const candidates = [
-    path.join(skillDir, DOT_DIR, "origin.json"),
-    path.join(skillDir, LEGACY_DOT_DIR, "origin.json"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const raw = await tryReadJson<Partial<ClawHubSkillOrigin>>(candidate);
-      const origin = normalizeClawHubSkillOrigin(raw);
-      if (origin) {
-        return origin;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return null;
-}
-
-function readClawHubSkillOriginStatusSync(skillDir: string): StrictOriginReadResult {
-  const candidates = [
-    path.join(skillDir, DOT_DIR, "origin.json"),
-    path.join(skillDir, LEGACY_DOT_DIR, "origin.json"),
-  ];
-  for (const candidate of candidates) {
-    let raw: Partial<ClawHubSkillOrigin> | null;
-    try {
-      const read = readJsonIfExistsSync(candidate);
-      if (!read.exists) {
-        continue;
-      }
-      raw = read.value as Partial<ClawHubSkillOrigin>;
-    } catch (err) {
-      return {
-        kind: "malformed",
-        path: candidate,
-        error: formatErrorMessage(err),
-      };
-    }
-    const origin = normalizeClawHubSkillOrigin(raw);
-    if (origin) {
-      return { kind: "found", origin, path: candidate };
-    }
-    return {
-      kind: "malformed",
-      path: candidate,
-      error: "expected version 1 origin with registry, slug, installedVersion, and installedAt",
-    };
-  }
-  return { kind: "missing" };
-}
-
-type StrictOriginReadResult =
-  | { kind: "found"; origin: ClawHubSkillOrigin; path: string }
-  | { kind: "missing" }
-  | { kind: "malformed"; path: string; error: string };
-
-async function readClawHubSkillOriginStrict(skillDir: string): Promise<StrictOriginReadResult> {
-  const candidates = [
-    path.join(skillDir, DOT_DIR, "origin.json"),
-    path.join(skillDir, LEGACY_DOT_DIR, "origin.json"),
-  ];
-  for (const candidate of candidates) {
-    let raw: Partial<ClawHubSkillOrigin> | null;
-    try {
-      raw = await readJsonIfExists<Partial<ClawHubSkillOrigin>>(candidate);
-    } catch (err) {
-      return {
-        kind: "malformed",
-        path: candidate,
-        error: formatErrorMessage(err),
-      };
-    }
-    if (!raw) {
-      continue;
-    }
-    const origin = normalizeClawHubSkillOrigin(raw);
-    if (origin) {
-      return { kind: "found", origin, path: candidate };
-    }
-    return {
-      kind: "malformed",
-      path: candidate,
-      error: "expected version 1 origin with registry, slug, installedVersion, and installedAt",
-    };
-  }
-  return { kind: "missing" };
-}
-
 export function resolveClawHubSkillStatusLinkSync(params: {
   workspaceDir: string;
   skillDir: string;
   skillKey: string;
   lockRead?: ClawHubSkillsLockfileStatusRead;
 }): ClawHubSkillStatusLink | undefined {
-  const originRead = readClawHubSkillOriginStatusSync(params.skillDir);
+  const install = readTrackedClawHubSkillInstallSync(params.skillDir);
   const lockRead = params.lockRead ?? readClawHubSkillsLockfileStatusSync(params.workspaceDir);
-
-  if (originRead.kind === "missing") {
+  const lockPath = lockRead.kind === "found" ? lockRead.path : undefined;
+  if (!install) {
     let trackedSlug: string;
     try {
       trackedSlug = normalizeTrackedSkillSlug(params.skillKey);
@@ -407,126 +424,42 @@ export function resolveClawHubSkillStatusLinkSync(params: {
     return {
       status: "invalid",
       valid: false,
-      reason: `Skill "${trackedSlug}" is tracked by the workspace ClawHub lockfile but is missing local ClawHub origin metadata.`,
+      reason: `Skill "${trackedSlug}" is tracked by SQLite ClawHub state but is missing local ClawHub install metadata.`,
       slug: trackedSlug,
       installedVersion: locked.version,
       installedAt: locked.installedAt,
       registry: normalizeStoredRegistry(locked.registry ?? resolveClawHubBaseUrl()),
-      lockPath: lockRead.kind === "found" ? lockRead.path : undefined,
+      lockPath,
     };
   }
 
-  if (originRead.kind === "malformed") {
-    return {
-      status: "invalid",
-      valid: false,
-      reason: `Malformed ClawHub origin metadata at ${originRead.path}: ${originRead.error}`,
-      originPath: originRead.path,
-      lockPath: lockRead.kind === "found" ? lockRead.path : undefined,
-    };
-  }
-
-  let trackedSlug: string;
-  try {
-    trackedSlug = normalizeTrackedSkillSlug(originRead.origin.slug);
-  } catch (err) {
-    return {
-      status: "invalid",
-      valid: false,
-      reason: `Invalid ClawHub origin slug "${originRead.origin.slug}": ${formatErrorMessage(err)}`,
-      registry: originRead.origin.registry,
-      slug: originRead.origin.slug,
-      installedVersion: originRead.origin.installedVersion,
-      installedAt: originRead.origin.installedAt,
-      originPath: originRead.path,
-      lockPath: lockRead.kind === "found" ? lockRead.path : undefined,
-    };
-  }
-
-  if (lockRead.kind === "missing") {
-    return {
-      status: "invalid",
-      valid: false,
-      reason: `Skill "${trackedSlug}" has ClawHub origin metadata but is not tracked by the workspace ClawHub lockfile.`,
-      registry: originRead.origin.registry,
-      slug: trackedSlug,
-      installedVersion: originRead.origin.installedVersion,
-      installedAt: originRead.origin.installedAt,
-      originPath: originRead.path,
-    };
-  }
-  if (lockRead.kind === "malformed") {
-    return {
-      status: "invalid",
-      valid: false,
-      reason: `Malformed workspace ClawHub lockfile at ${lockRead.path}: ${lockRead.error}`,
-      registry: originRead.origin.registry,
-      slug: trackedSlug,
-      installedVersion: originRead.origin.installedVersion,
-      installedAt: originRead.origin.installedAt,
-      originPath: originRead.path,
-      lockPath: lockRead.path,
-    };
-  }
-  const locked = lockRead.lock.skills[trackedSlug];
-  if (!locked) {
-    return {
-      status: "invalid",
-      valid: false,
-      reason: `Skill "${trackedSlug}" has ClawHub origin metadata but is not tracked by the workspace ClawHub lockfile.`,
-      registry: originRead.origin.registry,
-      slug: trackedSlug,
-      installedVersion: originRead.origin.installedVersion,
-      installedAt: originRead.origin.installedAt,
-      originPath: originRead.path,
-      lockPath: lockRead.path,
-    };
-  }
+  const trackedSlug = normalizeTrackedSkillSlug(install.slug);
   const expectedSkillDir = resolveWorkspaceSkillInstallDir(params.workspaceDir, trackedSlug);
   const expectedSkillDirRealPath = readRealPathSync(expectedSkillDir);
   const actualSkillDirRealPath = readRealPathSync(params.skillDir);
+  const originPath = skillStateRef(clawHubSkillInstallKey(params.workspaceDir, trackedSlug));
   if (!expectedSkillDirRealPath || actualSkillDirRealPath !== expectedSkillDirRealPath) {
     return {
       status: "invalid",
       valid: false,
-      reason: `Skill "${trackedSlug}" ClawHub origin metadata is not in the expected ClawHub install directory.`,
-      registry: originRead.origin.registry,
+      reason: `Skill "${trackedSlug}" ClawHub install metadata is not in the expected ClawHub install directory.`,
+      registry: normalizeStoredRegistry(install.registry),
       slug: trackedSlug,
-      installedVersion: originRead.origin.installedVersion,
-      installedAt: originRead.origin.installedAt,
-      originPath: originRead.path,
-      lockPath: lockRead.path,
-    };
-  }
-  const originRegistry = normalizeStoredRegistry(originRead.origin.registry);
-  const lockedRegistry =
-    locked.registry === undefined ? originRegistry : normalizeStoredRegistry(locked.registry);
-  if (
-    locked.version !== originRead.origin.installedVersion ||
-    locked.installedAt !== originRead.origin.installedAt ||
-    lockedRegistry !== originRegistry
-  ) {
-    return {
-      status: "invalid",
-      valid: false,
-      reason: `Skill "${trackedSlug}" ClawHub origin metadata does not match the workspace ClawHub lockfile.`,
-      registry: lockedRegistry,
-      slug: trackedSlug,
-      installedVersion: originRead.origin.installedVersion,
-      installedAt: originRead.origin.installedAt,
-      originPath: originRead.path,
-      lockPath: lockRead.path,
+      installedVersion: install.installedVersion,
+      installedAt: install.installedAt,
+      originPath,
+      lockPath,
     };
   }
   return {
     status: "linked",
     valid: true,
-    registry: lockedRegistry,
+    registry: normalizeStoredRegistry(install.registry),
     slug: trackedSlug,
-    installedVersion: locked.version,
-    installedAt: locked.installedAt,
-    originPath: originRead.path,
-    lockPath: lockRead.path,
+    installedVersion: install.installedVersion,
+    installedAt: install.installedAt,
+    originPath,
+    lockPath: lockPath ?? originPath,
   };
 }
 
@@ -561,11 +494,12 @@ function readLocalSkillCardSync(
   if (!lstat.isFile() || lstat.size > LOCAL_SKILL_CARD_MAX_BYTES) {
     return undefined;
   }
+
   let fd: number | undefined;
   try {
-    const rootRealPath = fsSync.realpathSync.native(skillDir);
-    const cardRealPath = fsSync.realpathSync.native(cardPath);
-    if (!isPathInsideDir(cardRealPath, rootRealPath)) {
+    const realCardPath = fsSync.realpathSync.native(cardPath);
+    const realSkillDir = fsSync.realpathSync.native(skillDir);
+    if (!isPathInsideDir(realCardPath, realSkillDir)) {
       return undefined;
     }
     const noFollowFlag = fsSync.constants.O_NOFOLLOW ?? 0;
@@ -598,14 +532,6 @@ function readLocalSkillCardSync(
 
 export function readLocalSkillCardContentSync(skillDir: string): string | undefined {
   return readLocalSkillCardSync(skillDir, true)?.content;
-}
-
-async function writeClawHubSkillOrigin(
-  skillDir: string,
-  origin: ClawHubSkillOrigin,
-): Promise<void> {
-  const targetPath = path.join(skillDir, SKILL_ORIGIN_RELATIVE_PATH);
-  await writeJson(targetPath, origin, { trailingNewline: true });
 }
 
 export async function searchSkillsFromClawHub(params: {
@@ -797,20 +723,20 @@ async function performClawHubSkillInstall(
       }
 
       const installedAt = Date.now();
-      await writeClawHubSkillOrigin(install.targetDir, {
+      await writeTrackedClawHubSkillInstall(install.targetDir, {
         version: 1,
         registry: resolveClawHubBaseUrl(params.baseUrl),
         slug: params.slug,
         installedVersion: version,
         installedAt,
       });
-      const lock = await readClawHubSkillsLockfile(params.workspaceDir);
-      lock.skills[params.slug] = {
+      const tracked = await readTrackedClawHubSkills(params.workspaceDir);
+      tracked.skills[params.slug] = {
         version,
         installedAt,
         registry: resolveClawHubBaseUrl(params.baseUrl),
       };
-      await writeClawHubSkillsLockfile(params.workspaceDir, lock);
+      await writeTrackedClawHubSkills(params.workspaceDir, tracked);
 
       return {
         ok: true,
@@ -865,12 +791,12 @@ async function installTrackedSkillFromClawHub(
 async function resolveTrackedUpdateTarget(params: {
   workspaceDir: string;
   slug: string;
-  lock: ClawHubSkillsLockfile;
+  tracked: TrackedClawHubSkills;
   baseUrl?: string;
 }): Promise<TrackedUpdateTarget> {
   const targetDir = resolveWorkspaceSkillInstallDir(params.workspaceDir, params.slug);
-  const origin = (await readClawHubSkillOrigin(targetDir)) ?? null;
-  if (!origin && !params.lock.skills[params.slug]) {
+  const trackedInstall = (await readTrackedClawHubSkillInstall(targetDir)) ?? null;
+  if (!trackedInstall && !params.tracked.skills[params.slug]) {
     return {
       ok: false,
       slug: params.slug,
@@ -880,8 +806,9 @@ async function resolveTrackedUpdateTarget(params: {
   return {
     ok: true,
     slug: params.slug,
-    baseUrl: origin?.registry ?? params.baseUrl,
-    previousVersion: origin?.installedVersion ?? params.lock.skills[params.slug]?.version ?? null,
+    baseUrl: trackedInstall?.registry ?? params.baseUrl,
+    previousVersion:
+      trackedInstall?.installedVersion ?? params.tracked.skills[params.slug]?.version ?? null,
   };
 }
 
@@ -902,35 +829,35 @@ export async function updateSkillsFromClawHub(params: {
   baseUrl?: string;
   logger?: Logger;
 }): Promise<UpdateClawHubSkillResult[]> {
-  const lock = await readClawHubSkillsLockfile(params.workspaceDir);
+  const tracked = await readTrackedClawHubSkills(params.workspaceDir);
   const slugs = params.slug
     ? [
         await resolveRequestedUpdateSlug({
           workspaceDir: params.workspaceDir,
           requestedSlug: params.slug,
-          lock,
+          tracked,
         }),
       ]
-    : Object.keys(lock.skills).map((slug) => normalizeTrackedSkillSlug(slug));
+    : Object.keys(tracked.skills).map((slug) => normalizeTrackedSkillSlug(slug));
   const results: UpdateClawHubSkillResult[] = [];
   for (const slug of slugs) {
-    const tracked = await resolveTrackedUpdateTarget({
+    const target = await resolveTrackedUpdateTarget({
       workspaceDir: params.workspaceDir,
       slug,
-      lock,
+      tracked,
       baseUrl: params.baseUrl,
     });
-    if (!tracked.ok) {
+    if (!target.ok) {
       results.push({
         ok: false,
-        error: tracked.error,
+        error: target.error,
       });
       continue;
     }
     const install = await installTrackedSkillFromClawHub({
       workspaceDir: params.workspaceDir,
-      slug: tracked.slug,
-      baseUrl: tracked.baseUrl,
+      slug: target.slug,
+      baseUrl: target.baseUrl,
       force: true,
       logger: params.logger,
     });
@@ -940,10 +867,10 @@ export async function updateSkillsFromClawHub(params: {
     }
     results.push({
       ok: true,
-      slug: tracked.slug,
-      previousVersion: tracked.previousVersion,
+      slug: target.slug,
+      previousVersion: target.previousVersion,
       version: install.version,
-      changed: tracked.previousVersion !== install.version,
+      changed: target.previousVersion !== install.version,
       targetDir: install.targetDir,
     });
   }
@@ -951,16 +878,12 @@ export async function updateSkillsFromClawHub(params: {
 }
 
 export async function readTrackedClawHubSkillSlugs(workspaceDir: string): Promise<string[]> {
-  const lock = await readClawHubSkillsLockfile(workspaceDir);
-  return Object.keys(lock.skills).toSorted();
+  const tracked = await readTrackedClawHubSkills(workspaceDir);
+  return Object.keys(tracked.skills).toSorted();
 }
 
 export async function untrackClawHubSkill(workspaceDir: string, slug: string): Promise<void> {
   const trackedSlug = normalizeTrackedSkillSlug(slug);
-  const lock = await readClawHubSkillsLockfile(workspaceDir);
-  if (!lock.skills[trackedSlug]) {
-    return;
-  }
-  delete lock.skills[trackedSlug];
-  await writeClawHubSkillsLockfile(workspaceDir, lock);
+  await clawHubSkillInstallStore.delete(clawHubSkillInstallKey(workspaceDir, trackedSlug));
+  await untrackLegacyClawHubSkillLock(workspaceDir, trackedSlug);
 }

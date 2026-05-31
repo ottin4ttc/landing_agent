@@ -201,7 +201,7 @@ function resolveManifestProviderAuthEnvVarCandidatesFromSnapshot(
   aliases: Readonly<Record<string, string>>,
 ): Record<string, string[]> {
   const candidates: Record<string, string[]> = {};
-  for (const plugin of snapshot.plugins) {
+  for (const plugin of snapshot?.plugins ?? []) {
     if (!shouldUsePluginProviderEnvVars(plugin, params)) {
       continue;
     }
@@ -244,9 +244,9 @@ function resolveManifestProviderAuthEvidenceFromSnapshot(
   aliases: Readonly<Record<string, string>>,
 ): Record<string, ProviderAuthEvidence[]> {
   const evidenceByProvider: Record<string, ProviderAuthEvidence[]> = {};
-  for (const plugin of snapshot.plugins) {
+  for (const plugin of snapshot?.plugins ?? []) {
     if (
-      snapshot.index.plugins.length > 0 &&
+      (snapshot.index?.plugins?.length ?? 0) > 0 &&
       !isInstalledPluginEnabled(snapshot.index, plugin.id, params?.config)
     ) {
       continue;

@@ -7,7 +7,7 @@ import {
 } from "openclaw/plugin-sdk/command-auth-native";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
-import { loadSessionStore, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
+import { listSessionEntries } from "openclaw/plugin-sdk/session-store-runtime";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -42,6 +42,12 @@ type DiscordNativeChoiceInteraction =
   | CommandInteraction
   | ButtonInteraction
   | StringSelectMenuInteraction;
+
+function loadDiscordRouteSessionEntries(agentId: string) {
+  return Object.fromEntries(
+    listSessionEntries({ agentId }).map((row) => [row.sessionKey, row.entry]),
+  );
+}
 
 function resolveDiscordModelPickerCommandContext(
   command: ChatCommandDefinition,
@@ -198,14 +204,11 @@ export async function resolveDiscordNativeChoiceContext(params: {
       cfg: params.cfg,
       agentId: route.agentId,
     });
-    const storePath = resolveStorePath(params.cfg.session?.store, {
-      agentId: route.agentId,
-    });
-    const sessionStore = loadSessionStore(storePath);
-    const sessionEntry = sessionStore[route.sessionKey];
+    const sessionEntries = loadDiscordRouteSessionEntries(route.agentId);
+    const sessionEntry = sessionEntries[route.sessionKey];
     const override = resolveStoredModelOverride({
       sessionEntry,
-      sessionStore,
+      sessionStore: sessionEntries,
       sessionKey: route.sessionKey,
       defaultProvider: fallback.provider,
     });
@@ -234,14 +237,11 @@ export function resolveDiscordModelPickerCurrentModel(params: {
     params.data.resolvedDefault.model,
   );
   try {
-    const storePath = resolveStorePath(params.cfg.session?.store, {
-      agentId: params.route.agentId,
-    });
-    const sessionStore = loadSessionStore(storePath, { skipCache: true });
-    const sessionEntry = sessionStore[params.route.sessionKey];
+    const sessionEntries = loadDiscordRouteSessionEntries(params.route.agentId);
+    const sessionEntry = sessionEntries[params.route.sessionKey];
     const override = resolveStoredModelOverride({
       sessionEntry,
-      sessionStore,
+      sessionStore: sessionEntries,
       sessionKey: params.route.sessionKey,
       defaultProvider: params.data.resolvedDefault.provider,
     });
@@ -263,10 +263,12 @@ export function resolveDiscordModelPickerCurrentRuntime(params: {
   route: ResolvedAgentRoute;
 }): string {
   try {
-    const storePath = resolveStorePath(params.cfg.session?.store, {
-      agentId: params.route.agentId,
-    });
-    const sessionStore = loadSessionStore(storePath, { skipCache: true });
+    const sessionStore = Object.fromEntries(
+      listSessionEntries({ agentId: params.route.agentId }).map(({ sessionKey, entry }) => [
+        sessionKey,
+        entry,
+      ]),
+    );
     const sessionRuntime = normalizeOptionalString(
       sessionStore[params.route.sessionKey]?.agentRuntimeOverride,
     );

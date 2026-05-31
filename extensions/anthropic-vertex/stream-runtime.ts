@@ -1,10 +1,10 @@
 import { AnthropicVertex as AnthropicVertexSdk } from "@anthropic-ai/vertex-sdk";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import {
-  stream as streamDefault,
   type Model,
   type ProviderStreamOptions,
-} from "openclaw/plugin-sdk/llm";
+  streamAnthropic as streamDefault,
+} from "openclaw/plugin-sdk/provider-ai";
 import {
   applyAnthropicPayloadPolicyToParams,
   resolveAnthropicPayloadPolicy,
@@ -195,7 +195,7 @@ export function createAnthropicVertexStreamFn(
       opts.thinkingEnabled = false;
     }
 
-    return deps.streamAnthropic(transportModel, context, opts);
+    return deps.streamAnthropic(transportModel, context, opts as ProviderStreamOptions);
   };
 }
 

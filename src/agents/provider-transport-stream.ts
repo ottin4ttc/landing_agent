@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { Api, Model } from "../llm/types.js";
 import { resolveProviderStreamFn } from "../plugins/provider-runtime.js";
+import type { StreamFn } from "./agent-core-contract.js";
 import { createAnthropicMessagesTransportStreamFn } from "./anthropic-transport-stream.js";
 import {
   createAzureOpenAIResponsesTransportStreamFn,
@@ -9,7 +10,6 @@ import {
 } from "./openai-transport-stream.js";
 import { getModelProviderLocalService } from "./provider-local-service.js";
 import { getModelProviderRequestTransport } from "./provider-request-config.js";
-import type { StreamFn } from "./runtime/index.js";
 
 const SUPPORTED_TRANSPORT_APIS = new Set<Api>([
   "openai-responses",

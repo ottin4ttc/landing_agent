@@ -260,7 +260,7 @@ export interface ModelCycleResult {
 
 /** Session statistics for /session command */
 export interface SessionStats {
-  sessionFile: string | undefined;
+  sessionRef: string | undefined;
   sessionId: string;
   userMessages: number;
   assistantMessages: number;
@@ -937,9 +937,9 @@ export class AgentSession {
     return this.agent.followUpMode;
   }
 
-  /** Current session file path, or undefined if sessions are disabled */
-  get sessionFile(): string | undefined {
-    return this.sessionManager.getSessionFile();
+  /** Current transcript reference, or undefined if persistence is disabled. */
+  get sessionRef(): string | undefined {
+    return this.sessionManager.getSessionRef();
   }
 
   /** Current session ID */
@@ -3068,7 +3068,7 @@ export class AgentSession {
     }
 
     return {
-      sessionFile: this.sessionFile,
+      sessionRef: this.sessionRef,
       sessionId: this.sessionId,
       userMessages,
       assistantMessages,

@@ -1,0 +1,306 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { CHANNEL_IDS } from "../../../channels/ids.js";
+import { getPairingAdapter } from "../../../channels/plugins/pairing.js";
+import { createConfigIO } from "../../../config/config.js";
+import {
+  resolveAllowFromAccountId,
+  safeAccountKey,
+  type AllowFromStore,
+} from "../../../pairing/pairing-store-keys.js";
+import {
+  readChannelPairingStateSnapshot,
+  writeChannelPairingStateSnapshot,
+  type PairingRequest,
+  type ChannelPairingState,
+} from "../../../pairing/pairing-store.js";
+import type { PairingChannel } from "../../../pairing/pairing-store.types.js";
+import { DEFAULT_ACCOUNT_ID } from "../../../routing/session-key.js";
+import { normalizeOptionalString } from "../../../shared/string-coerce.js";
+import {
+  readAllowFromFileWithExists,
+  resolveLegacyPairingCredentialsDir,
+} from "./channel-pairing-files.js";
+
+const LEGACY_PAIRING_SUFFIX = "-pairing.json";
+const LEGACY_ALLOW_FROM_SUFFIX = "-allowFrom.json";
+
+type PairingStore = {
+  version: 1;
+  requests: PairingRequest[];
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function normalizePairingRequest(value: unknown): PairingRequest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Partial<PairingRequest>;
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.code !== "string" ||
+    typeof candidate.createdAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id: candidate.id,
+    code: candidate.code,
+    createdAt: candidate.createdAt,
+    lastSeenAt:
+      typeof candidate.lastSeenAt === "string" ? candidate.lastSeenAt : candidate.createdAt,
+    ...(candidate.meta && typeof candidate.meta === "object" && !Array.isArray(candidate.meta)
+      ? { meta: candidate.meta }
+      : {}),
+  };
+}
+
+function normalizeAllowEntry(channel: PairingChannel, value: unknown): string {
+  const trimmed = String(value).trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed === "*") {
+    return "";
+  }
+  const adapter = getPairingAdapter(channel);
+  const normalized = adapter?.normalizeAllowEntry ? adapter.normalizeAllowEntry(trimmed) : trimmed;
+  return normalizeOptionalString(normalized) ?? "";
+}
+
+function normalizeAllowFromList(channel: PairingChannel, store: AllowFromStore): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of Array.isArray(store.allowFrom) ? store.allowFrom : []) {
+    const normalized = normalizeAllowEntry(channel, value);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      result.push(normalized);
+    }
+  }
+  return result;
+}
+
+function normalizeChannelPairingState(
+  channel: PairingChannel,
+  value: unknown,
+): ChannelPairingState {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const rawRequests = Array.isArray((record as { requests?: unknown }).requests)
+    ? (record as { requests: unknown[] }).requests
+    : [];
+  const requests = rawRequests.flatMap((entry) => {
+    const request = normalizePairingRequest(entry);
+    return request ? [request] : [];
+  });
+  const allowFrom: Record<string, string[]> = {};
+  const rawAllowFrom = (record as { allowFrom?: unknown }).allowFrom;
+  if (rawAllowFrom && typeof rawAllowFrom === "object" && !Array.isArray(rawAllowFrom)) {
+    for (const [accountId, entries] of Object.entries(rawAllowFrom)) {
+      allowFrom[resolveAllowFromAccountId(accountId)] = normalizeAllowFromList(channel, {
+        version: 1,
+        allowFrom: Array.isArray(entries) ? entries.map(String) : [],
+      });
+    }
+  }
+  return { version: 1, requests, allowFrom };
+}
+
+function mergePairingRequests(
+  current: readonly PairingRequest[],
+  legacy: readonly PairingRequest[],
+): { requests: PairingRequest[]; added: number } {
+  const merged = new Map<string, PairingRequest>();
+  for (const request of current) {
+    merged.set(request.id, request);
+  }
+
+  let added = 0;
+  for (const request of legacy) {
+    if (merged.has(request.id)) {
+      continue;
+    }
+    merged.set(request.id, request);
+    added += 1;
+  }
+
+  return { requests: [...merged.values()], added };
+}
+
+function readChannelPairingState(
+  channel: PairingChannel,
+  env: NodeJS.ProcessEnv,
+): ChannelPairingState {
+  return readChannelPairingStateSnapshot(channel, env);
+}
+
+function writeChannelPairingState(
+  channel: PairingChannel,
+  state: ChannelPairingState,
+  env: NodeJS.ProcessEnv,
+): void {
+  writeChannelPairingStateSnapshot(channel, state, env);
+}
+
+export async function legacyChannelPairingFilesExist(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  const dir = resolveLegacyPairingCredentialsDir(env);
+  const entries = await fs.readdir(dir).catch(() => []);
+  return entries.some(
+    (entry) => entry.endsWith(LEGACY_PAIRING_SUFFIX) || entry.endsWith(LEGACY_ALLOW_FROM_SUFFIX),
+  );
+}
+
+function parseAllowFromFilename(
+  filename: string,
+): { channel: PairingChannel; accountId: string } | null {
+  if (!filename.endsWith(LEGACY_ALLOW_FROM_SUFFIX)) {
+    return null;
+  }
+  const stem = filename.slice(0, -LEGACY_ALLOW_FROM_SUFFIX.length);
+  const knownChannel = [...CHANNEL_IDS]
+    .toSorted((left, right) => right.length - left.length)
+    .find((channel) => stem === channel || stem.startsWith(`${channel}-`));
+  if (!knownChannel) {
+    return { channel: stem as PairingChannel, accountId: DEFAULT_ACCOUNT_ID };
+  }
+  if (stem === knownChannel) {
+    return { channel: knownChannel, accountId: DEFAULT_ACCOUNT_ID };
+  }
+  const accountId = stem.slice(knownChannel.length + 1);
+  return {
+    channel: knownChannel,
+    accountId: accountId || DEFAULT_ACCOUNT_ID,
+  };
+}
+
+function parsePairingFilename(filename: string): PairingChannel | null {
+  if (!filename.endsWith(LEGACY_PAIRING_SUFFIX)) {
+    return null;
+  }
+  return filename.slice(0, -LEGACY_PAIRING_SUFFIX.length) as PairingChannel;
+}
+
+async function resolveConfiguredAccountIdByLegacyFileKey(
+  channel: PairingChannel,
+  env: NodeJS.ProcessEnv,
+): Promise<Map<string, string>> {
+  const accountIdsByFileKey = new Map<string, string>();
+  try {
+    const snapshot = await createConfigIO({
+      env,
+      pluginValidation: "skip",
+      logger: { error: () => undefined, warn: () => undefined },
+    }).readConfigFileSnapshot();
+    const channels = asRecord(snapshot.config.channels) ?? asRecord(snapshot.sourceConfig.channels);
+    const channelConfig = asRecord(channels?.[channel]);
+    const accounts = asRecord(channelConfig?.accounts);
+    if (!accounts) {
+      return accountIdsByFileKey;
+    }
+
+    const accountIds = Object.keys(accounts);
+    for (const accountId of accountIds) {
+      const resolved = resolveAllowFromAccountId(accountId);
+      if (safeAccountKey(resolved) === resolved) {
+        accountIdsByFileKey.set(resolved, resolved);
+      }
+    }
+    for (const accountId of accountIds) {
+      const resolved = resolveAllowFromAccountId(accountId);
+      const fileKey = safeAccountKey(resolved);
+      if (!accountIdsByFileKey.has(fileKey)) {
+        accountIdsByFileKey.set(fileKey, resolved);
+      }
+    }
+  } catch {
+    return accountIdsByFileKey;
+  }
+  return accountIdsByFileKey;
+}
+
+async function readLegacyPairingStore(filePath: string): Promise<PairingStore | null> {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return normalizeChannelPairingState("_legacy" as PairingChannel, JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+async function readAllowFromStateForPath(
+  channel: PairingChannel,
+  filePath: string,
+): Promise<string[]> {
+  return (
+    await readAllowFromFileWithExists({
+      cacheNamespace: "pairing-store-legacy-import",
+      filePath,
+      normalizeStore: (store) => normalizeAllowFromList(channel, store),
+    })
+  ).entries;
+}
+
+export async function importLegacyChannelPairingFilesToSqlite(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ files: number; requests: number; allowFrom: number }> {
+  const dir = resolveLegacyPairingCredentialsDir(env);
+  const entries = await fs.readdir(dir).catch(() => []);
+  const configuredAccountIdsByChannel = new Map<PairingChannel, Map<string, string>>();
+  let files = 0;
+  let requests = 0;
+  let allowFrom = 0;
+  for (const filename of entries) {
+    const filePath = path.join(dir, filename);
+    const pairingChannel = parsePairingFilename(filename);
+    if (pairingChannel) {
+      const legacy = await readLegacyPairingStore(filePath);
+      if (legacy) {
+        const state = readChannelPairingState(pairingChannel, env);
+        const merged = mergePairingRequests(state.requests ?? [], legacy.requests);
+        state.requests = merged.requests;
+        writeChannelPairingState(pairingChannel, state, env);
+        requests += merged.added;
+      }
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      files += 1;
+      continue;
+    }
+
+    const allowFromTarget = parseAllowFromFilename(filename);
+    if (allowFromTarget) {
+      const entries = await readAllowFromStateForPath(allowFromTarget.channel, filePath);
+      let accountId = allowFromTarget.accountId;
+      if (accountId !== DEFAULT_ACCOUNT_ID) {
+        let configuredAccountIds = configuredAccountIdsByChannel.get(allowFromTarget.channel);
+        if (!configuredAccountIds) {
+          configuredAccountIds = await resolveConfiguredAccountIdByLegacyFileKey(
+            allowFromTarget.channel,
+            env,
+          );
+          configuredAccountIdsByChannel.set(allowFromTarget.channel, configuredAccountIds);
+        }
+        accountId = configuredAccountIds.get(accountId) ?? accountId;
+      }
+      const state = readChannelPairingState(allowFromTarget.channel, env);
+      const resolvedAccountId = resolveAllowFromAccountId(accountId);
+      const existingEntries = state.allowFrom?.[resolvedAccountId] ?? [];
+      state.allowFrom ??= {};
+      state.allowFrom[resolvedAccountId] = normalizeAllowFromList(allowFromTarget.channel, {
+        version: 1,
+        allowFrom: [...existingEntries, ...entries],
+      });
+      writeChannelPairingState(allowFromTarget.channel, state, env);
+      allowFrom += entries.length;
+      await fs.rm(filePath, { force: true }).catch(() => undefined);
+      files += 1;
+    }
+  }
+  return { files, requests, allowFrom };
+}

@@ -49,6 +49,7 @@ import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
 import { createFastTestModelSelectionState, createModelSelectionState } from "./model-selection.js";
 import { sanitizePendingFinalDeliveryText } from "./pending-final-delivery.js";
 import { createReplyTimingTracker } from "./reply-timing-tracker.js";
+import { writeSessionEntryRow } from "./session-row-patch.js";
 import { initSessionState } from "./session.js";
 import {
   isStaleHeartbeatAutoFallbackOverride,
@@ -318,7 +319,8 @@ export async function getReplyFromConfig(
   );
   const resolvedOpts =
     mergedSkillFilter !== undefined ? { ...opts, skillFilter: mergedSkillFilter } : opts;
-  const agentCfg = cfg.agents?.defaults;
+  const agentDefaults = cfg.agents?.defaults;
+  const agentCfg = resolveAgentConfig(cfg, agentId) ?? agentDefaults;
   const sessionCfg = cfg.session;
   const { defaultProvider, defaultModel, aliasIndex } = resolverTiming.measureSync(
     "reply.resolve_default_model",
@@ -352,33 +354,20 @@ export async function getReplyFromConfig(
     }
   }
 
-  const { workspaceDirRaw, workspaceDirForNativeCommand, agentDir, timeoutMs } =
-    resolverTiming.measureSync("reply.resolve_workspace_agent_dir", () => {
-      const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, agentId) ?? DEFAULT_AGENT_WORKSPACE_DIR;
-      return {
-        workspaceDirRaw,
-        workspaceDirForNativeCommand: workspaceDirRaw,
-        agentDir: resolveAgentDir(cfg, agentId),
-        timeoutMs: resolveAgentTimeoutMs({
-          cfg,
-          overrideSeconds: opts?.timeoutOverrideSeconds,
-        }),
-      };
-    });
-  const typing = resolverTiming.measureSync("reply.create_typing_controller", () => {
-    const configuredTypingSeconds =
-      agentCfg?.typingIntervalSeconds ?? sessionCfg?.typingIntervalSeconds;
-    const typingIntervalSeconds =
-      typeof configuredTypingSeconds === "number" ? configuredTypingSeconds : 6;
-    const controller = createTypingController({
-      onReplyStart: opts?.onReplyStart,
-      onCleanup: opts?.onTypingCleanup,
-      typingIntervalSeconds,
-      silentToken: SILENT_REPLY_TOKEN,
-      log: defaultRuntime.log,
-    });
-    opts?.onTypingController?.(controller);
-    return controller;
+  const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, agentId) ?? DEFAULT_AGENT_WORKSPACE_DIR;
+  const workspaceDirForNativeCommand = workspaceDirRaw;
+  const agentDir = resolveAgentDir(cfg, agentId);
+  const timeoutMs = resolveAgentTimeoutMs({ cfg, overrideSeconds: opts?.timeoutOverrideSeconds });
+  const configuredTypingSeconds =
+    agentDefaults?.typingIntervalSeconds ?? sessionCfg?.typingIntervalSeconds;
+  const typingIntervalSeconds =
+    typeof configuredTypingSeconds === "number" ? configuredTypingSeconds : 6;
+  const typing = createTypingController({
+    onReplyStart: opts?.onReplyStart,
+    onCleanup: opts?.onTypingCleanup,
+    typingIntervalSeconds,
+    silentToken: SILENT_REPLY_TOKEN,
+    log: defaultRuntime.log,
   });
 
   const nativeSlashCommandFastReply = await traceGetReplyPhase(
@@ -412,8 +401,8 @@ export async function getReplyFromConfig(
       ? (await fs.mkdir(workspaceDirRaw, { recursive: true }), { dir: workspaceDirRaw })
       : await ensureAgentWorkspace({
           dir: workspaceDirRaw,
-          ensureBootstrapFiles: !agentCfg?.skipBootstrap && !isFastTestEnv,
-          skipOptionalBootstrapFiles: agentCfg?.skipOptionalBootstrapFiles,
+          ensureBootstrapFiles: !agentDefaults?.skipBootstrap && !isFastTestEnv,
+          skipOptionalBootstrapFiles: agentDefaults?.skipOptionalBootstrapFiles,
         }),
   );
   const workspaceDir = workspace.dir;
@@ -484,7 +473,6 @@ export async function getReplyFromConfig(
     isNewSession,
     resetTriggered,
     systemSent,
-    storePath,
     sessionScope,
     groupResolution,
     isGroup,
@@ -497,8 +485,9 @@ export async function getReplyFromConfig(
   if (sessionEntry?.pendingFinalDelivery && sessionEntry.pendingFinalDeliveryText) {
     const text = sanitizePendingFinalDeliveryText(sessionEntry.pendingFinalDeliveryText);
 
-    // Heartbeats may safely clear ack-only pending state, but must not replay
-    // user-facing pending finals through a different delivery target.
+    // If it's a heartbeat, we definitely want to try delivering the lost reply now.
+    // If it's a user message, we deliver the lost reply first, then continue.
+    // For now, let's just return the lost reply if it's a heartbeat.
     if (opts?.isHeartbeat) {
       const heartbeatPending = classifyHeartbeatPendingFinalDelivery(
         text,
@@ -515,14 +504,12 @@ export async function getReplyFromConfig(
         if (sessionKey && sessionStore) {
           sessionStore[sessionKey] = sessionEntry;
         }
-        if (sessionKey && storePath) {
-          const { applySessionStoreEntryPatch } = await import("../../config/sessions.js");
-          await applySessionStoreEntryPatch({
-            storePath,
+        if (sessionKey) {
+          await writeSessionEntryRow({
             sessionKey,
-            skipMaintenance: true,
-            takeCacheOwnership: true,
-            patch: {
+            fallbackEntry: sessionEntry,
+            sessionStore,
+            update: async () => ({
               pendingFinalDelivery: undefined,
               pendingFinalDeliveryText: undefined,
               pendingFinalDeliveryCreatedAt: undefined,
@@ -530,9 +517,37 @@ export async function getReplyFromConfig(
               pendingFinalDeliveryAttemptCount: undefined,
               pendingFinalDeliveryLastError: undefined,
               pendingFinalDeliveryContext: undefined,
-            },
+            }),
           });
         }
+      } else {
+        const updatedAt = Date.now();
+        const attemptCount = (sessionEntry.pendingFinalDeliveryAttemptCount ?? 0) + 1;
+        sessionEntry.pendingFinalDeliveryLastAttemptAt = updatedAt;
+        sessionEntry.pendingFinalDeliveryAttemptCount = attemptCount;
+        sessionEntry.pendingFinalDeliveryLastError = null;
+        const replayText = sanitizePendingFinalDeliveryText(heartbeatPending.replayText);
+        sessionEntry.pendingFinalDeliveryText = replayText;
+        sessionEntry.updatedAt = updatedAt;
+        if (sessionKey && sessionStore) {
+          sessionStore[sessionKey] = sessionEntry;
+        }
+        if (sessionKey) {
+          await writeSessionEntryRow({
+            sessionKey,
+            fallbackEntry: sessionEntry,
+            sessionStore,
+            update: async () => ({
+              pendingFinalDeliveryText: replayText,
+              pendingFinalDeliveryLastAttemptAt: updatedAt,
+              pendingFinalDeliveryAttemptCount: attemptCount,
+              pendingFinalDeliveryLastError: null,
+              updatedAt,
+            }),
+          });
+        }
+        logResolverTiming("completed", "pending_final_delivery_replay");
+        return { text: replayText };
       }
     }
   }
@@ -549,7 +564,6 @@ export async function getReplyFromConfig(
       sessionEntry,
       sessionStore,
       sessionKey,
-      storePath,
       defaultProvider,
       defaultModel,
       aliasIndex,
@@ -562,7 +576,6 @@ export async function getReplyFromConfig(
         channel:
           groupResolution?.channel ??
           sessionEntry.channel ??
-          sessionEntry.origin?.provider ??
           (typeof finalized.OriginatingChannel === "string"
             ? finalized.OriginatingChannel
             : undefined) ??
@@ -572,7 +585,7 @@ export async function getReplyFromConfig(
         groupChannel:
           sessionEntry.groupChannel ?? sessionCtx.GroupChannel ?? finalized.GroupChannel,
         groupSubject: sessionEntry.subject ?? sessionCtx.GroupSubject ?? finalized.GroupSubject,
-        parentSessionKey: sessionCtx.ModelParentSessionKey ?? sessionCtx.ParentSessionKey,
+        parentConversationId: finalized.ThreadParentId ?? sessionCtx.ThreadParentId,
       })
     : null;
   const resolvedChannelModelOverride =
@@ -699,6 +712,7 @@ export async function getReplyFromConfig(
         perMessageQueueOptions: undefined,
         typing,
         opts: resolvedOpts,
+        defaultProvider,
         defaultModel,
         timeoutMs,
         isNewSession,
@@ -708,7 +722,6 @@ export async function getReplyFromConfig(
         sessionStore,
         sessionKey,
         sessionId,
-        storePath,
         workspaceDir,
         abortedLastRun,
         autoFallbackPrimaryProbe,
@@ -730,7 +743,6 @@ export async function getReplyFromConfig(
       sessionEntry,
       sessionStore,
       sessionKey,
-      storePath,
       sessionScope,
       groupResolution,
       isGroup,
@@ -816,7 +828,6 @@ export async function getReplyFromConfig(
       previousSessionEntry,
       sessionStore,
       sessionKey,
-      storePath,
       sessionScope,
       workspaceDir,
       isGroup,
@@ -874,7 +885,6 @@ export async function getReplyFromConfig(
         sessionEntry.parentSessionKey ??
         sessionCtx.ModelParentSessionKey ??
         sessionCtx.ParentSessionKey,
-      storePath,
       defaultProvider,
       defaultModel,
       primaryProvider,
@@ -997,6 +1007,7 @@ export async function getReplyFromConfig(
       perMessageQueueOptions,
       typing,
       opts: resolvedOpts,
+      defaultProvider,
       defaultModel,
       timeoutMs,
       isNewSession,
@@ -1006,7 +1017,6 @@ export async function getReplyFromConfig(
       sessionStore,
       sessionKey,
       sessionId,
-      storePath,
       workspaceDir,
       abortedLastRun,
       autoFallbackPrimaryProbe: runAutoFallbackPrimaryProbe,

@@ -10,14 +10,20 @@ afterEach(() => {
 });
 
 describe("transcript events", () => {
-  it("emits trimmed session file updates", () => {
+  it("emits trimmed session-scope updates", () => {
     const listener = vi.fn();
     cleanup.push(onSessionTranscriptUpdate(listener));
 
-    emitSessionTranscriptUpdate("  /tmp/session.jsonl  ");
+    emitSessionTranscriptUpdate({
+      agentId: "  main  ",
+      sessionId: "  session  ",
+    });
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith({ sessionFile: "/tmp/session.jsonl" });
+    expect(listener).toHaveBeenCalledWith({
+      agentId: "main",
+      sessionId: "session",
+    });
   });
 
   it("includes optional session metadata when provided", () => {
@@ -25,21 +31,19 @@ describe("transcript events", () => {
     cleanup.push(onSessionTranscriptUpdate(listener));
 
     emitSessionTranscriptUpdate({
-      sessionFile: "  /tmp/session.jsonl  ",
-      sessionKey: "  agent:main:main  ",
       agentId: "  main  ",
+      sessionId: "  sess-1  ",
+      sessionKey: "  agent:main:main  ",
       message: { role: "assistant", content: "hi" },
       messageId: "  msg-1  ",
-      messageSeq: 2,
     });
 
     expect(listener).toHaveBeenCalledWith({
-      sessionFile: "/tmp/session.jsonl",
-      sessionKey: "agent:main:main",
       agentId: "main",
+      sessionId: "sess-1",
+      sessionKey: "agent:main:main",
       message: { role: "assistant", content: "hi" },
       messageId: "msg-1",
-      messageSeq: 2,
     });
   });
 
@@ -48,22 +52,22 @@ describe("transcript events", () => {
     cleanup.push(onSessionTranscriptUpdate(listener));
 
     emitSessionTranscriptUpdate({
-      sessionFile: "/tmp/session.jsonl",
+      sessionId: "session",
       messageSeq: 0,
     });
     emitSessionTranscriptUpdate({
-      sessionFile: "/tmp/session.jsonl",
+      sessionId: "session",
       messageSeq: 1.5,
     });
     emitSessionTranscriptUpdate({
-      sessionFile: "/tmp/session.jsonl",
+      sessionId: "session",
       messageSeq: Number.POSITIVE_INFINITY,
     });
 
     expect(listener).toHaveBeenCalledTimes(3);
-    expect(listener).toHaveBeenNthCalledWith(1, { sessionFile: "/tmp/session.jsonl" });
-    expect(listener).toHaveBeenNthCalledWith(2, { sessionFile: "/tmp/session.jsonl" });
-    expect(listener).toHaveBeenNthCalledWith(3, { sessionFile: "/tmp/session.jsonl" });
+    expect(listener).toHaveBeenNthCalledWith(1, { sessionId: "session" });
+    expect(listener).toHaveBeenNthCalledWith(2, { sessionId: "session" });
+    expect(listener).toHaveBeenNthCalledWith(3, { sessionId: "session" });
   });
 
   it("continues notifying other listeners when one throws", () => {
@@ -74,7 +78,12 @@ describe("transcript events", () => {
     cleanup.push(onSessionTranscriptUpdate(first));
     cleanup.push(onSessionTranscriptUpdate(second));
 
-    expect(emitSessionTranscriptUpdate("/tmp/session.jsonl")).toBeUndefined();
+    expect(
+      emitSessionTranscriptUpdate({
+        agentId: "main",
+        sessionId: "session",
+      }),
+    ).toBeUndefined();
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
   });

@@ -166,7 +166,7 @@ describe("image custom provider auth regression", () => {
         agentDir,
       });
       expect(auth.apiKey).toBe(CONFIG_API_KEY);
-      expect(auth.source).toContain("models.json");
+      expect(auth.source).toBe("stored model catalog");
 
       const tool = createImageTool({
         config: cfg,

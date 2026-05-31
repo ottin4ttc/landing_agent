@@ -1,7 +1,7 @@
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
-import type { ExtensionAPI, ExtensionContext } from "openclaw/plugin-sdk/agent-sessions";
-import type { ToolResultMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
+import type { ExtensionAPI, ExtensionContext } from "../agent-extension-contract.js";
+import type { ToolResultMessage } from "../pi-ai-contract.js";
 import {
   computeEffectiveSettings,
   default as contextPruningExtension,

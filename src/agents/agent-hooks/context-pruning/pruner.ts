@@ -1,8 +1,8 @@
-import type { ImageContent, TextContent, ToolResultMessage } from "../../../llm/types.js";
 import { CHARS_PER_TOKEN_ESTIMATE, estimateStringChars } from "../../../utils/cjk-chars.js";
+import type { AgentMessage } from "../../agent-core-contract.js";
+import type { ExtensionContext } from "../../agent-extension-contract.js";
 import { dropThinkingBlocks } from "../../embedded-agent-runner/thinking.js";
-import type { AgentMessage } from "../../runtime/index.js";
-import type { ExtensionContext } from "../../sessions/index.js";
+import type { ImageContent, TextContent, ToolResultMessage } from "../../pi-ai-contract.js";
 import type { EffectiveContextPruningSettings } from "./settings.js";
 import { makeToolPrunablePredicate } from "./tools.js";
 

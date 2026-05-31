@@ -26,9 +26,13 @@ import {
   type DiagnosticEventPayload,
 } from "../diagnostic-events.js";
 import { resolvePreferredOpenClawTmpDir } from "../tmp-openclaw-dir.js";
+import { OutboundDeliveryError } from "./deliver-types.js";
 
 const mocks = vi.hoisted(() => ({
-  appendAssistantMessageToSessionTranscript: vi.fn(async () => ({ ok: true, sessionFile: "x" })),
+  appendAssistantMessageToSessionTranscript: vi.fn(async () => ({
+    ok: true,
+    messageId: "mirror-message",
+  })),
 }));
 const hookMocks = vi.hoisted(() => ({
   runner: {
@@ -748,7 +752,7 @@ describe("deliverOutboundPayloads", () => {
       queuePolicy: "required",
     });
 
-    expect(results).toStrictEqual([]);
+    expect(results).toEqual([]);
     expect(sendMatrix).not.toHaveBeenCalled();
     expect(queueMocks.markDeliveryPlatformSendAttemptStarted).not.toHaveBeenCalled();
     expect(queueMocks.markDeliveryPlatformOutcomeUnknown).not.toHaveBeenCalled();
@@ -1035,6 +1039,43 @@ describe("deliverOutboundPayloads", () => {
     const failDeliveryCall = requireMockCall(queueMocks.failDelivery, "failDelivery");
     expect(failDeliveryCall[0]).toBe("mock-queue-id");
     expect(String(failDeliveryCall[1])).toContain("marker offline");
+    expect(queueMocks.ackDelivery).not.toHaveBeenCalled();
+  });
+
+  it("preserves partial results when required durable platform delivery fails", async () => {
+    const transportError = new Error("transport offline");
+    const sendMatrix = vi
+      .fn()
+      .mockResolvedValueOnce({ messageId: "m1" })
+      .mockRejectedValueOnce(transportError);
+
+    const error = await deliverOutboundPayloads({
+      cfg: {},
+      channel: "matrix",
+      to: "!room:example",
+      payloads: [{ text: "first" }, { text: "second" }],
+      deps: { matrix: sendMatrix },
+      queuePolicy: "required",
+    }).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(OutboundDeliveryError);
+    expect((error as OutboundDeliveryError).results).toEqual([
+      { channel: "matrix", messageId: "m1" },
+    ]);
+    expect((error as OutboundDeliveryError).payloadOutcomes).toMatchObject([
+      { index: 0, status: "sent" },
+      {
+        index: 1,
+        status: "failed",
+        error: transportError,
+        sentBeforeError: true,
+        stage: "platform_send",
+      },
+    ]);
+    expect(queueMocks.failDelivery).toHaveBeenCalledWith(
+      "mock-queue-id",
+      expect.stringContaining("transport offline"),
+    );
     expect(queueMocks.ackDelivery).not.toHaveBeenCalled();
   });
 
@@ -1540,7 +1581,7 @@ describe("deliverOutboundPayloads", () => {
       payloads: [{ text: "redact me" }],
     });
 
-    expect(results).toStrictEqual([]);
+    expect(results).toEqual([]);
     expect(sendText).not.toHaveBeenCalled();
   });
 
@@ -2384,7 +2425,7 @@ describe("deliverOutboundPayloads", () => {
     });
 
     expect(sendMatrix).not.toHaveBeenCalled();
-    expect(results).toStrictEqual([]);
+    expect(results).toEqual([]);
   });
 
   it("drops plugin HTML-only text payloads after sanitization", async () => {
@@ -2398,7 +2439,7 @@ describe("deliverOutboundPayloads", () => {
     });
 
     expect(sendMatrix).not.toHaveBeenCalled();
-    expect(results).toStrictEqual([]);
+    expect(results).toEqual([]);
   });
 
   it("preserves fenced blocks for markdown chunkers in newline mode", async () => {
@@ -2484,9 +2525,12 @@ describe("deliverOutboundPayloads", () => {
     });
 
     expect(chunker).toHaveBeenCalledWith("**bold**", 4000);
-    const sendTextParams = requireMockCallArg(sendText, "sendText");
-    expect(sendTextParams.text).toBe("<b>bold</b>");
-    expect(sendTextParams.formatting).toEqual({ parseMode: "HTML" });
+    expect(sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "<b>bold</b>",
+        formatting: { parseMode: "HTML" },
+      }),
+    );
   });
 
   it("passes config through for plugin media sends", async () => {
@@ -2973,7 +3017,7 @@ describe("deliverOutboundPayloads", () => {
       deps: { matrix: sendMatrix },
     });
 
-    expect(results).toStrictEqual([]);
+    expect(results).toEqual([]);
     expect(sendMatrix).not.toHaveBeenCalled();
     expect(queueMocks.ackDelivery).not.toHaveBeenCalled();
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
@@ -3428,7 +3472,7 @@ describe("deliverOutboundPayloads", () => {
       },
     });
 
-    expect(results).toStrictEqual([]);
+    expect(results).toEqual([]);
     expect(sendPayload).toHaveBeenCalledTimes(1);
     expect(sendText).not.toHaveBeenCalled();
     expect(hookMocks.runner.runMessageSent).not.toHaveBeenCalled();

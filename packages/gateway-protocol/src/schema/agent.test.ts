@@ -55,6 +55,17 @@ describe("AgentParamsSchema", () => {
     expect(Value.Check(AgentParamsSchema, params)).toBe(true);
   });
 
+  it("keeps disableMessageTool accepted for existing gateway clients", () => {
+    expect(
+      Value.Check(AgentParamsSchema, {
+        message: "Run without the message tool.",
+        sessionKey: "agent:main:test",
+        idempotencyKey: "disable-message-tool",
+        disableMessageTool: true,
+      }),
+    ).toBe(true);
+  });
+
   it("keeps task completion internal events strict", () => {
     const params = makeAgentParamsWithInternalEvent({
       ...musicCompletionEvent,

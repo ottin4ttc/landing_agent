@@ -1,19 +1,23 @@
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { readStringValue } from "@openclaw/normalization-core/string-coerce";
 import * as tar from "tar";
+import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { assertSqliteIntegrityOk } from "../infra/sqlite-integrity.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { isRecord, resolveUserPath } from "../utils.js";
 
 const WINDOWS_ABSOLUTE_ARCHIVE_PATH_RE = /^[A-Za-z]:[\\/]/;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 
-type BackupManifestAsset = {
+export type BackupManifestAsset = {
   kind: string;
   sourcePath: string;
   archivePath: string;
 };
 
-type BackupManifest = {
+export type BackupManifest = {
   schemaVersion: number;
   createdAt: string;
   archiveRoot: string;
@@ -30,6 +34,11 @@ type BackupManifest = {
     workspaceDirs?: string[];
   };
   assets: BackupManifestAsset[];
+  databaseSnapshots?: Array<{
+    sourcePath: string;
+    archivePath: string;
+    integrity?: string;
+  }>;
   skipped?: Array<{
     kind?: string;
     sourcePath?: string;
@@ -53,10 +62,15 @@ export type BackupVerifyResult = {
   entryCount: number;
 };
 
-type ArchiveEntry = {
+export type VerifiedBackupArchiveEntry = {
   path: string;
-  linkpath?: string;
-  type?: string;
+  type: string;
+};
+
+export type VerifiedBackupArchive = {
+  result: BackupVerifyResult;
+  manifest: BackupManifest;
+  entries: VerifiedBackupArchiveEntry[];
 };
 
 function stripTrailingSlashes(value: string): string {
@@ -169,22 +183,50 @@ function parseManifest(raw: string): BackupManifest {
         }
       : undefined,
     assets,
+    databaseSnapshots: Array.isArray(parsed.databaseSnapshots)
+      ? parsed.databaseSnapshots.flatMap((snapshot) => {
+          if (!isRecord(snapshot)) {
+            return [];
+          }
+          const sourcePath = readStringValue(snapshot.sourcePath);
+          const archivePath = readStringValue(snapshot.archivePath);
+          if (!sourcePath || !archivePath) {
+            return [];
+          }
+          return [
+            {
+              sourcePath,
+              archivePath,
+              integrity: readStringValue(snapshot.integrity),
+            },
+          ];
+        })
+      : undefined,
     skipped: Array.isArray(parsed.skipped) ? parsed.skipped : undefined,
   };
 }
 
-async function listArchiveEntries(archivePath: string): Promise<ArchiveEntry[]> {
-  const entries: ArchiveEntry[] = [];
+type BackupArchiveEntry = {
+  path: string;
+  type: string;
+};
+
+function archiveEntryType(entry: unknown): string {
+  const type = (entry as { type?: unknown }).type;
+  return typeof type === "string" ? type : "";
+}
+
+function isUnsafeBackupArchiveEntryType(type: string): boolean {
+  return type === "SymbolicLink" || type === "Link";
+}
+
+async function listArchiveEntries(archivePath: string): Promise<BackupArchiveEntry[]> {
+  const entries: BackupArchiveEntry[] = [];
   await tar.t({
     file: archivePath,
     gzip: true,
     onentry: (entry) => {
-      entries.push({
-        path: entry.path,
-        ...(entry.linkpath ? { linkpath: entry.linkpath } : {}),
-        ...(entry.type ? { type: entry.type } : {}),
-      });
-      entry.resume();
+      entries.push({ path: entry.path, type: archiveEntryType(entry) });
     },
   });
   return entries;
@@ -262,7 +304,10 @@ function isRootManifestEntry(entryPath: string): boolean {
   return parts.length === 2 && parts[0] !== "" && parts[1] === "manifest.json";
 }
 
-function verifyManifestAgainstEntries(manifest: BackupManifest, entries: Set<string>): void {
+function verifyManifestAgainstEntries(
+  manifest: BackupManifest,
+  entries: Set<string>,
+): BackupManifest {
   const archiveRoot = normalizeArchiveRoot(manifest.archiveRoot);
   const manifestEntryPath = path.posix.join(archiveRoot, "manifest.json");
   const normalizedEntries = [...entries];
@@ -279,6 +324,7 @@ function verifyManifestAgainstEntries(manifest: BackupManifest, entries: Set<str
   }
 
   const payloadRoot = path.posix.join(archiveRoot, "payload");
+  const assets: BackupManifestAsset[] = [];
   for (const asset of manifest.assets) {
     const assetArchivePath = normalizeArchivePath(asset.archivePath, "Backup manifest asset path");
     if (!isArchivePathWithin(assetArchivePath, payloadRoot)) {
@@ -291,26 +337,71 @@ function verifyManifestAgainstEntries(manifest: BackupManifest, entries: Set<str
     if (!exact && !nested) {
       throw new Error(`Archive is missing payload for manifest asset: ${assetArchivePath}`);
     }
+    assets.push({ ...asset, archivePath: assetArchivePath });
   }
+
+  const databaseSnapshots: BackupManifest["databaseSnapshots"] = [];
+  for (const snapshot of manifest.databaseSnapshots ?? []) {
+    const snapshotArchivePath = normalizeArchivePath(
+      snapshot.archivePath,
+      "Backup manifest database snapshot path",
+    );
+    if (!isArchivePathWithin(snapshotArchivePath, payloadRoot)) {
+      throw new Error(
+        `Manifest database snapshot path is outside payload root: ${snapshot.archivePath}`,
+      );
+    }
+    if (!normalizedEntrySet.has(snapshotArchivePath)) {
+      throw new Error(`Archive is missing database snapshot: ${snapshotArchivePath}`);
+    }
+    databaseSnapshots.push({ ...snapshot, archivePath: snapshotArchivePath });
+  }
+
+  return {
+    ...manifest,
+    archiveRoot,
+    assets,
+    databaseSnapshots,
+  };
 }
 
-function verifyHardlinkTargetsAgainstArchiveRoot(
-  hardlinkTargets: Array<{ entryPath: string; normalized: string }>,
-  archiveRoot: string,
-  entries: Set<string>,
-): void {
-  const normalizedRoot = normalizeArchiveRoot(archiveRoot);
-  for (const target of hardlinkTargets) {
-    if (!isArchivePathWithin(target.normalized, normalizedRoot)) {
-      throw new Error(
-        `Archive hardlink target is outside the declared archive root: ${target.entryPath} -> ${target.normalized}`,
-      );
+async function verifyDatabaseSnapshots(params: {
+  archivePath: string;
+  manifest: BackupManifest;
+}): Promise<void> {
+  const snapshots = params.manifest.databaseSnapshots ?? [];
+  if (snapshots.length === 0) {
+    return;
+  }
+  const snapshotPaths = new Set(
+    snapshots.map((snapshot) =>
+      normalizeArchivePath(snapshot.archivePath, "Backup manifest database snapshot path"),
+    ),
+  );
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-backup-verify-"));
+  try {
+    await tar.x({
+      file: params.archivePath,
+      gzip: true,
+      cwd: tempDir,
+      filter: (entryPath) =>
+        snapshotPaths.has(normalizeArchivePath(entryPath, "Archive database snapshot entry")),
+    });
+    const sqlite = requireNodeSqlite();
+    for (const snapshotPath of snapshotPaths) {
+      const extractedPath = path.join(tempDir, ...snapshotPath.split("/"));
+      const db = new sqlite.DatabaseSync(extractedPath, { readOnly: true });
+      try {
+        assertSqliteIntegrityOk(
+          db,
+          `SQLite integrity check failed for backup snapshot: ${snapshotPath}`,
+        );
+      } finally {
+        db.close();
+      }
     }
-    if (!entries.has(target.normalized)) {
-      throw new Error(
-        `Archive hardlink target is missing from archive entries: ${target.entryPath} -> ${target.normalized}`,
-      );
-    }
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -338,10 +429,9 @@ function findDuplicateNormalizedEntryPath(
   return undefined;
 }
 
-export async function backupVerifyCommand(
-  runtime: RuntimeEnv,
-  opts: BackupVerifyOptions,
-): Promise<BackupVerifyResult> {
+export async function verifyBackupArchive(opts: {
+  archive: string;
+}): Promise<VerifiedBackupArchive> {
   const archivePath = resolveUserPath(opts.archive);
   const rawEntries = await listArchiveEntries(archivePath);
   if (rawEntries.length === 0) {
@@ -351,16 +441,14 @@ export async function backupVerifyCommand(
   const entries = rawEntries.map((entry) => ({
     raw: entry.path,
     normalized: normalizeArchivePath(entry.path, "Archive entry"),
+    type: entry.type,
   }));
-  const hardlinkTargets = rawEntries
-    .filter((entry) => entry.type === "Link" && entry.linkpath)
-    .map((entry) => ({
-      entryPath: entry.path,
-      normalized: normalizeArchivePath(
-        entry.linkpath ?? "",
-        `Archive hardlink target for ${entry.path}`,
-      ),
-    }));
+  const unsafeEntry = entries.find((entry) => isUnsafeBackupArchiveEntryType(entry.type));
+  if (unsafeEntry) {
+    throw new Error(
+      `Archive entry uses unsupported link type ${unsafeEntry.type}: ${unsafeEntry.normalized}`,
+    );
+  }
   const normalizedEntrySet = new Set(entries.map((entry) => entry.normalized));
 
   const manifestMatches = entries.filter((entry) => isRootManifestEntry(entry.normalized));
@@ -377,13 +465,8 @@ export async function backupVerifyCommand(
   }
 
   const manifestRaw = await extractManifest({ archivePath, manifestEntryPath });
-  const manifest = parseManifest(manifestRaw);
-  verifyManifestAgainstEntries(manifest, normalizedEntrySet);
-  verifyHardlinkTargetsAgainstArchiveRoot(
-    hardlinkTargets,
-    manifest.archiveRoot,
-    normalizedEntrySet,
-  );
+  const manifest = verifyManifestAgainstEntries(parseManifest(manifestRaw), normalizedEntrySet);
+  await verifyDatabaseSnapshots({ archivePath, manifest });
 
   const result: BackupVerifyResult = {
     ok: true,
@@ -394,6 +477,19 @@ export async function backupVerifyCommand(
     assetCount: manifest.assets.length,
     entryCount: rawEntries.length,
   };
+
+  return {
+    result,
+    manifest,
+    entries: rawEntries.map((entry) => ({ path: entry.path, type: entry.type })),
+  };
+}
+
+export async function backupVerifyCommand(
+  runtime: RuntimeEnv,
+  opts: BackupVerifyOptions,
+): Promise<BackupVerifyResult> {
+  const { result } = await verifyBackupArchive({ archive: opts.archive });
 
   if (opts.json) {
     writeRuntimeJson(runtime, result);

@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getHomeDir,
-  getQQBotDataPath,
   getQQBotMediaPath,
   resolveQQBotLocalMediaPath,
   resolveQQBotPayloadLocalFilePath,
@@ -232,14 +231,11 @@ describe("qqbot media path resolution honors OPENCLAW_HOME (#83562)", () => {
     }
   });
 
-  it("keeps persisted QQ Bot data anchored on the OS home (compatibility)", () => {
+  it("keeps QQ Bot media under the effective OpenClaw home", () => {
     const fakeOpenclawHome = makeFakeOpenclawHome();
     vi.stubEnv("OPENCLAW_HOME", fakeOpenclawHome);
 
-    // Persisted state (sessions, known users, refs) must NOT migrate when an
-    // operator adds OPENCLAW_HOME — otherwise existing deployments would lose
-    // their session state. Only the media root follows OPENCLAW_HOME.
-    expect(getQQBotDataPath()).toBe(path.join(realOsHome, ".openclaw", "qqbot"));
+    expect(getQQBotMediaPath()).toBe(path.join(fakeOpenclawHome, ".openclaw", "media", "qqbot"));
   });
 
   it("rejects files that live under HOME tree when OPENCLAW_HOME is the active root", () => {

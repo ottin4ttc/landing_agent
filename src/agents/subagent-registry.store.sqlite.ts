@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import type { Insertable, Selectable, Updateable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
@@ -8,10 +7,6 @@ import {
 } from "../state/openclaw-state-db.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
-import {
-  loadSubagentRegistryFromDisk,
-  resolveSubagentRegistryPath,
-} from "./subagent-registry.store.js";
 import type {
   PendingFinalDeliveryPayload,
   SubagentCompletionDeliveryState,
@@ -254,17 +249,7 @@ function readSubagentRegistryRows(): SubagentRunSqliteRow[] {
   ).rows;
 }
 
-function removeLegacySubagentRegistryFile(): void {
-  try {
-    fs.unlinkSync(resolveSubagentRegistryPath());
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-}
-
-function loadSubagentRegistryFromSqliteOnly(): Map<string, SubagentRunRecord> {
+export function loadSubagentRegistryFromSqlite(): Map<string, SubagentRunRecord> {
   const runs = new Map<string, SubagentRunRecord>();
   for (const row of readSubagentRegistryRows()) {
     const entry = rowToSubagentRunRecord(row);
@@ -273,20 +258,6 @@ function loadSubagentRegistryFromSqliteOnly(): Map<string, SubagentRunRecord> {
     }
   }
   return runs;
-}
-
-export function loadSubagentRegistryFromSqlite(): Map<string, SubagentRunRecord> {
-  const runs = loadSubagentRegistryFromSqliteOnly();
-  if (runs.size > 0) {
-    return runs;
-  }
-  const legacyRuns = loadSubagentRegistryFromDisk();
-  if (legacyRuns.size === 0) {
-    return runs;
-  }
-  saveSubagentRegistryToSqlite(legacyRuns);
-  removeLegacySubagentRegistryFile();
-  return loadSubagentRegistryFromSqliteOnly();
 }
 
 export function saveSubagentRegistryToSqlite(runs: Map<string, SubagentRunRecord>): void {

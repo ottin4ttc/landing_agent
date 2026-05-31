@@ -16,7 +16,7 @@ import {
 } from "./image-sanitization.js";
 import type { AgentToolResult } from "./runtime/index.js";
 
-type ToolContentBlock = AgentToolResult<unknown>["content"][number];
+type ToolContentBlock = AgentToolResult["content"][number];
 type ImageContentBlock = Extract<ToolContentBlock, { type: "image" }>;
 type TextContentBlock = Extract<ToolContentBlock, { type: "text" }>;
 
@@ -344,10 +344,10 @@ export async function sanitizeImageBlocks(
 }
 
 export async function sanitizeToolResultImages(
-  result: AgentToolResult<unknown>,
+  result: AgentToolResult,
   label: string,
   opts: ImageSanitizationLimits = {},
-): Promise<AgentToolResult<unknown>> {
+): Promise<AgentToolResult> {
   const content = Array.isArray(result.content) ? result.content : [];
   if (!content.some((b) => isImageBlock(b) || isTextBlock(b))) {
     return result;

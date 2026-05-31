@@ -7,12 +7,12 @@ import {
 } from "../../../auto-reply/tokens.js";
 import type { EmbeddedAgentExecutionContract } from "../../../config/types.agent-defaults.js";
 import { hasAcceptedSessionSpawn } from "../../accepted-session-spawn.js";
+import type { AgentMessage } from "../../agent-core-contract.js";
 import { collectTextContentBlocks } from "../../content-blocks.js";
 import {
   isStrictAgenticSupportedProviderModel,
   stripProviderPrefix,
 } from "../../execution-contract.js";
-import type { AgentMessage } from "../../runtime/index.js";
 import { isLikelyMutatingToolName } from "../../tool-mutation.js";
 import {
   hasCommittedMessagingToolDeliveryEvidence,
@@ -29,9 +29,10 @@ type ReplayMetadataAttempt = Pick<
   | "didSendViaMessagingTool"
   | "messagingToolSentTexts"
   | "messagingToolSentMediaUrls"
+  | "acceptedSessionSpawns"
   | "successfulCronAdds"
 > &
-  Partial<Pick<EmbeddedRunAttemptResult, "messagingToolSentTargets" | "acceptedSessionSpawns">>;
+  Partial<Pick<EmbeddedRunAttemptResult, "messagingToolSentTargets">>;
 
 type IncompleteTurnAttempt = Pick<
   EmbeddedRunAttemptResult,
@@ -44,6 +45,7 @@ type IncompleteTurnAttempt = Pick<
   | "messagingToolSentTexts"
   | "messagingToolSentMediaUrls"
   | "messagingToolSentTargets"
+  | "acceptedSessionSpawns"
   | "lastToolError"
   | "lastAssistant"
   | "itemLifecycle"
@@ -51,8 +53,7 @@ type IncompleteTurnAttempt = Pick<
   | "promptErrorSource"
   | "timedOutDuringCompaction"
   | "toolMetas"
-> &
-  Partial<Pick<EmbeddedRunAttemptResult, "acceptedSessionSpawns">>;
+>;
 
 type PlanningOnlyAttempt = Pick<
   EmbeddedRunAttemptResult,
@@ -570,7 +571,6 @@ function shouldSkipPlanningOnlyRetry(params: {
     params.attempt.yieldDetected ||
     params.attempt.didSendDeterministicApprovalPrompt ||
     params.attempt.lastToolError ||
-    hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
     resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects,
   );
 }

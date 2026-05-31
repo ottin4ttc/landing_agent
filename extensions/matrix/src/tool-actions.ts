@@ -147,7 +147,7 @@ export async function handleMatrixAction(
   params: Record<string, unknown>,
   cfg: CoreConfig,
   opts: { mediaLocalRoots?: readonly string[] } = {},
-): Promise<AgentToolResult<unknown>> {
+): Promise<AgentToolResult> {
   const action = readStringParam(params, "action", { required: true });
   const accountId = readStringParam(params, "accountId") ?? undefined;
   const isActionEnabled = createActionGate(resolveMatrixAccountConfig({ cfg, accountId }).actions);

@@ -8,6 +8,7 @@ import {
   formatSessionGoalStatus,
   getSessionEntry,
   getSessionGoal,
+  resolveAgentIdFromSessionKey,
   updateSessionGoalStatus,
 } from "../../config/sessions.js";
 import { rejectUnauthorizedCommand } from "./command-gates.js";
@@ -62,7 +63,10 @@ function syncGoalSessionEntry(params: HandleCommandsParams): void {
   if (!params.sessionStore || !params.sessionKey) {
     return;
   }
-  const entry = getSessionEntry({ sessionKey: params.sessionKey, storePath: params.storePath });
+  const entry = getSessionEntry({
+    sessionKey: params.sessionKey,
+    agentId: resolveAgentIdFromSessionKey(params.sessionKey),
+  });
   if (!entry) {
     return;
   }
@@ -158,12 +162,13 @@ export const handleGoalCommand: CommandHandler = async (params, allowTextCommand
     return unauthorized;
   }
 
+  const agentId = resolveAgentIdFromSessionKey(params.sessionKey);
   try {
     switch (parsed.action) {
       case "status": {
         const snapshot = await getSessionGoal({
           sessionKey: params.sessionKey,
-          storePath: params.storePath,
+          agentId,
         });
         syncGoalSessionEntry(params);
         return goalReply(formatSessionGoalStatus(snapshot.goal));
@@ -177,7 +182,7 @@ export const handleGoalCommand: CommandHandler = async (params, allowTextCommand
         }
         const goal = await createSessionGoal({
           sessionKey: params.sessionKey,
-          storePath: params.storePath,
+          agentId,
           objective,
           fallbackEntry: params.sessionEntry,
         });
@@ -188,7 +193,7 @@ export const handleGoalCommand: CommandHandler = async (params, allowTextCommand
       case "pause": {
         const goal = await updateSessionGoalStatus({
           sessionKey: params.sessionKey,
-          storePath: params.storePath,
+          agentId,
           status: "paused",
           ...(parsed.text ? { note: parsed.text } : {}),
         });
@@ -198,7 +203,7 @@ export const handleGoalCommand: CommandHandler = async (params, allowTextCommand
       case "resume": {
         await updateSessionGoalStatus({
           sessionKey: params.sessionKey,
-          storePath: params.storePath,
+          agentId,
           status: "active",
           ...(parsed.text ? { note: parsed.text } : {}),
         });
@@ -211,7 +216,7 @@ export const handleGoalCommand: CommandHandler = async (params, allowTextCommand
       case "done": {
         const goal = await updateSessionGoalStatus({
           sessionKey: params.sessionKey,
-          storePath: params.storePath,
+          agentId,
           status: "complete",
           ...(parsed.text ? { note: parsed.text } : {}),
         });
@@ -222,7 +227,7 @@ export const handleGoalCommand: CommandHandler = async (params, allowTextCommand
       case "blocked": {
         const goal = await updateSessionGoalStatus({
           sessionKey: params.sessionKey,
-          storePath: params.storePath,
+          agentId,
           status: "blocked",
           ...(parsed.text ? { note: parsed.text } : {}),
         });
@@ -232,7 +237,7 @@ export const handleGoalCommand: CommandHandler = async (params, allowTextCommand
       case "clear": {
         const removed = await clearSessionGoal({
           sessionKey: params.sessionKey,
-          storePath: params.storePath,
+          agentId,
         });
         syncGoalSessionEntry(params);
         return goalReply(removed ? "Goal cleared." : "No goal to clear.");

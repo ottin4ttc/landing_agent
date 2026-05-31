@@ -20,7 +20,6 @@ function createAttemptParams(): AgentHarnessAttemptParams {
     sessionId: "session-1",
     sessionKey: "session-key",
     runId: "run-1",
-    sessionFile: "/tmp/session.jsonl",
     workspaceDir: "/tmp/workspace",
     timeoutMs: 5_000,
     provider: "codex",
@@ -599,7 +598,6 @@ describe("AgentHarness V2 compatibility adapter", () => {
     await expect(
       v2.compact?.({
         sessionId: "session-1",
-        sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
       }),
     ).resolves.toHaveProperty("compacted", true);

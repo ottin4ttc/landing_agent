@@ -816,7 +816,7 @@ export async function runSetupWizard(
   });
   const { logConfigUpdated } = await loadConfigLoggingModule();
   logConfigUpdated(runtime);
-  await onboardHelpers.ensureWorkspaceAndSessions(workspaceDir, runtime, {
+  await onboardHelpers.ensureWorkspaceReady(workspaceDir, runtime, {
     skipBootstrap: Boolean(nextConfig.agents?.defaults?.skipBootstrap),
     skipOptionalBootstrapFiles: nextConfig.agents?.defaults?.skipOptionalBootstrapFiles,
   });

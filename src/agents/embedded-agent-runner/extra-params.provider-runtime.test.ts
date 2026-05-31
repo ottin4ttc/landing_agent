@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLlmStreamSimpleMock } from "../../../test/helpers/agents/llm-stream-simple-mock.js";
-import type { Model } from "../../llm/types.js";
+import type { Model } from "../pi-ai-contract.js";
 import {
   testing as extraParamsTesting,
   resolveAgentTransportOverride,
@@ -8,7 +8,7 @@ import {
 } from "./extra-params.js";
 import { runExtraParamsCase } from "./extra-params.test-support.js";
 
-vi.mock("../../llm/stream.js", () => createLlmStreamSimpleMock());
+vi.mock("../pi-ai-contract.js", () => createLlmStreamSimpleMock());
 
 beforeEach(() => {
   extraParamsTesting.setProviderRuntimeDepsForTest({

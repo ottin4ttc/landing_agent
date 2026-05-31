@@ -184,14 +184,20 @@ describe("runPreparedCliAgent context engine lifecycle", () => {
     expect(bootstrap).toHaveBeenCalledWith({
       sessionId: "openclaw-session-1",
       sessionKey: "agent:main:main",
-      sessionFile: "session.jsonl",
+      transcriptScope: {
+        agentId: "main",
+        sessionId: "openclaw-session-1",
+      },
     });
     expect(afterTurn).toHaveBeenCalledTimes(1);
     const afterTurnParams = afterTurn.mock.calls[0]?.[0];
     expect(afterTurnParams).toMatchObject({
       sessionId: "openclaw-session-1",
       sessionKey: "agent:main:main",
-      sessionFile: "session.jsonl",
+      transcriptScope: {
+        agentId: "main",
+        sessionId: "openclaw-session-1",
+      },
       prePromptMessageCount: 2,
       tokenBudget: undefined,
       runtimeContext: undefined,
@@ -213,7 +219,10 @@ describe("runPreparedCliAgent context engine lifecycle", () => {
     expect(maintain.mock.calls[1]?.[0]).toMatchObject({
       sessionId: "openclaw-session-1",
       sessionKey: "agent:main:main",
-      sessionFile: "session.jsonl",
+      transcriptScope: {
+        agentId: "main",
+        sessionId: "openclaw-session-1",
+      },
       runtimeContext: {
         rewriteTranscriptEntries: expect.any(Function),
         llm: { complete: expect.any(Function) },

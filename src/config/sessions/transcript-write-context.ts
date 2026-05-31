@@ -1,8 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import path from "node:path";
 
 type OwnedSessionTranscriptWriteContext = {
-  sessionFile?: string;
   sessionKey?: string;
   withSessionWriteLock: <T>(
     run: () => Promise<T> | T,
@@ -12,22 +10,10 @@ type OwnedSessionTranscriptWriteContext = {
 
 const ownedTranscriptWriteContext = new AsyncLocalStorage<OwnedSessionTranscriptWriteContext>();
 
-function normalizePathForCompare(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? path.resolve(trimmed) : undefined;
-}
-
 function contextMatches(params: {
   context: OwnedSessionTranscriptWriteContext;
-  sessionFile?: string;
   sessionKey?: string;
 }): boolean {
-  const contextSessionFile = normalizePathForCompare(params.context.sessionFile);
-  const sessionFile = normalizePathForCompare(params.sessionFile);
-  if (contextSessionFile && sessionFile) {
-    return contextSessionFile === sessionFile;
-  }
-
   const contextSessionKey = params.context.sessionKey?.trim();
   const sessionKey = params.sessionKey?.trim();
   return Boolean(contextSessionKey && sessionKey && contextSessionKey === sessionKey);
@@ -49,7 +35,6 @@ export function bindOwnedSessionTranscriptWrites<TArgs extends unknown[], TResul
 
 export async function runWithOwnedSessionTranscriptWriteLock<T>(
   params: {
-    sessionFile?: string;
     sessionKey?: string;
   },
   run: () => Promise<T> | T,
@@ -59,7 +44,6 @@ export async function runWithOwnedSessionTranscriptWriteLock<T>(
 
 export async function runWithOwnedSessionTranscriptWritePublication<T>(
   params: {
-    sessionFile?: string;
     sessionKey?: string;
   },
   run: () => Promise<T> | T,
@@ -70,7 +54,6 @@ export async function runWithOwnedSessionTranscriptWritePublication<T>(
 }
 
 export function resolveOwnedSessionTranscriptWriteLockRunner(params: {
-  sessionFile?: string;
   sessionKey?: string;
 }): OwnedSessionTranscriptWriteContext["withSessionWriteLock"] | undefined {
   const context = ownedTranscriptWriteContext.getStore();
@@ -82,7 +65,6 @@ export function resolveOwnedSessionTranscriptWriteLockRunner(params: {
 
 async function runWithOwnedSessionTranscriptWriteContext<T>(
   params: {
-    sessionFile?: string;
     sessionKey?: string;
   },
   run: () => Promise<T> | T,

@@ -409,14 +409,14 @@ async function readLockPayload(lockPath: string): Promise<LockFilePayload | null
   }
 }
 
-async function resolveNormalizedSessionFile(sessionFile: string): Promise<string> {
-  const resolvedSessionFile = path.resolve(sessionFile);
-  const sessionDir = path.dirname(resolvedSessionFile);
+async function resolveNormalizedSessionRef(sessionRef: string): Promise<string> {
+  const resolvedSessionRef = path.resolve(sessionRef);
+  const sessionDir = path.dirname(resolvedSessionRef);
   try {
     const normalizedDir = await fs.realpath(sessionDir);
-    return path.join(normalizedDir, path.basename(resolvedSessionFile));
+    return path.join(normalizedDir, path.basename(resolvedSessionRef));
   } catch {
-    return resolvedSessionFile;
+    return resolvedSessionRef;
   }
 }
 
@@ -733,7 +733,7 @@ export async function cleanStaleLockFiles(params: {
   const locks: SessionLockInspection[] = [];
   const cleaned: SessionLockInspection[] = [];
   const lockEntries = entries
-    .filter((entry) => entry.name.endsWith(".jsonl.lock"))
+    .filter((entry) => entry.name.endsWith(".sqlite-session.lock"))
     .toSorted((a, b) => a.name.localeCompare(b.name));
 
   for (const entry of lockEntries) {
@@ -774,7 +774,7 @@ export async function cleanStaleLockFiles(params: {
 }
 
 export async function acquireSessionWriteLock(params: {
-  sessionFile: string;
+  sessionRef: string;
   timeoutMs?: number;
   staleMs?: number;
   maxHoldMs?: number;
@@ -791,15 +791,15 @@ export async function acquireSessionWriteLock(params: {
   const staleMs = resolvePositiveMs(params.staleMs, defaultOptions.staleMs);
   const maxHoldMs = resolvePositiveMs(params.maxHoldMs, defaultOptions.maxHoldMs);
   const orphanPayloadGraceMs = resolveOrphanLockPayloadGraceMs(timeoutMs);
-  const sessionFile = path.resolve(params.sessionFile);
-  const sessionDir = path.dirname(sessionFile);
-  const normalizedSessionFile = await resolveNormalizedSessionFile(sessionFile);
-  const lockPath = `${normalizedSessionFile}.lock`;
+  const sessionRef = path.resolve(params.sessionRef);
+  const sessionDir = path.dirname(sessionRef);
+  const normalizedSessionRef = await resolveNormalizedSessionRef(sessionRef);
+  const lockPath = `${normalizedSessionRef}.lock`;
   await fs.mkdir(sessionDir, { recursive: true });
 
   while (true) {
     try {
-      const lock = await SESSION_LOCKS.acquire(sessionFile, {
+      const lock = await SESSION_LOCKS.acquire(sessionRef, {
         staleMs,
         timeoutMs,
         retry: { minTimeout: 50, maxTimeout: 1000, factor: 1 },

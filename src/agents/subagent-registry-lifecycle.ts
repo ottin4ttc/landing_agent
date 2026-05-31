@@ -1,6 +1,7 @@
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { cleanupBrowserSessionsForLifecycleEnd } from "../browser-lifecycle-cleanup.js";
+import { resolveAgentIdFromSessionKey } from "../config/sessions.js";
 import type { callGateway as defaultCallGateway } from "../gateway/call.js";
 import { formatErrorMessage, readErrorName } from "../infra/errors.js";
 import { defaultRuntime } from "../runtime.js";
@@ -50,7 +51,6 @@ import {
   MIN_ANNOUNCE_RETRY_DELAY_MS,
   persistSubagentSessionTiming,
   resolveAnnounceRetryDelayMs,
-  safeRemoveAttachmentsDir,
 } from "./subagent-registry-helpers.js";
 import type { PendingFinalDeliveryPayload, SubagentRunRecord } from "./subagent-registry.types.js";
 import { resolveSubagentRunDeadlineMs } from "./subagent-run-timeout.js";
@@ -401,7 +401,7 @@ export function createSubagentRegistryLifecycleController(params: {
       const captured = await params.captureSubagentCompletionReply(entry.childSessionKey, {
         waitForReply: entry.expectsCompletionMessage === true,
         outcome,
-        sessionFile: entry.execution?.transcriptFile,
+        transcriptSessionId: entry.execution?.transcriptSessionId,
       });
       completion.resultText = captured?.trim() ? capFrozenResultText(captured) : null;
     } catch {
@@ -643,14 +643,8 @@ export function createSubagentRegistryLifecycleController(params: {
       reason: deliveryError,
     });
     giveUpParams.entry.wakeOnDescendantSettle = undefined;
-    const completion = ensureCompletionState(giveUpParams.entry);
-    completion.fallbackResultText = undefined;
-    completion.fallbackCapturedAt = undefined;
-    const shouldDeleteAttachments =
-      giveUpParams.entry.cleanup === "delete" || !giveUpParams.entry.retainAttachmentsOnKeep;
-    if (shouldDeleteAttachments) {
-      await safeRemoveAttachmentsDir(giveUpParams.entry);
-    }
+    giveUpParams.entry.fallbackFrozenResultText = undefined;
+    giveUpParams.entry.fallbackFrozenResultCapturedAt = undefined;
     const completionReason = resolveCleanupCompletionReason(giveUpParams.entry);
     logAnnounceGiveUp(giveUpParams.entry, giveUpParams.reason);
     // Retry-limit / expiry give-up should not leave cleanup stuck behind the
@@ -728,7 +722,10 @@ export function createSubagentRegistryLifecycleController(params: {
     cleanup: "delete" | "keep";
     completedAt: number;
   }) => {
-    void removeInternalSessionEffectsTranscript(cleanupParams.entry.execution?.transcriptFile);
+    void removeInternalSessionEffectsTranscript({
+      agentId: resolveAgentIdFromSessionKey(cleanupParams.entry.childSessionKey),
+      sessionId: cleanupParams.entry.execution?.transcriptSessionId,
+    });
     if (cleanupParams.entry.spawnMode !== "session") {
       void retireSessionMcpRuntimeForSessionKey({
         sessionKey: cleanupParams.entry.childSessionKey,
@@ -831,10 +828,6 @@ export function createSubagentRegistryLifecycleController(params: {
       completion.fallbackCapturedAt = undefined;
       const completionReason = resolveCleanupCompletionReason(entry);
       await emitCompletionEndedHookIfNeeded(entry, completionReason);
-      const shouldDeleteAttachments = cleanup === "delete" || !entry.retainAttachmentsOnKeep;
-      if (shouldDeleteAttachments) {
-        await safeRemoveAttachmentsDir(entry);
-      }
       if (cleanup === "delete") {
         completion.resultText = undefined;
         completion.capturedAt = undefined;
@@ -900,13 +893,8 @@ export function createSubagentRegistryLifecycleController(params: {
         reason: deliveryError,
       });
       entry.wakeOnDescendantSettle = undefined;
-      const completion = ensureCompletionState(entry);
-      completion.fallbackResultText = undefined;
-      completion.fallbackCapturedAt = undefined;
-      const shouldDeleteAttachments = cleanup === "delete" || !entry.retainAttachmentsOnKeep;
-      if (shouldDeleteAttachments) {
-        await safeRemoveAttachmentsDir(entry);
-      }
+      entry.fallbackFrozenResultText = undefined;
+      entry.fallbackFrozenResultCapturedAt = undefined;
       const completionReason = resolveCleanupCompletionReason(entry);
       logAnnounceGiveUp(entry, deferredDecision.reason);
       // Giving up on announce delivery is terminal for cleanup even if the

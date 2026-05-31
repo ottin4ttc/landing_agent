@@ -516,17 +516,14 @@ export type PluginManifestProviderAuthChoice = {
   assistantPriority?: number;
   /** Keep the choice out of interactive assistant pickers while preserving manual CLI support. */
   assistantVisibility?: "visible" | "manual-only";
+  /** Feature this choice in onboarding auth selection flows. */
+  onboardingFeatured?: boolean;
   /** Legacy choice ids that should point users at this replacement choice. */
   deprecatedChoiceIds?: string[];
   /** Optional grouping metadata for auth-choice pickers. */
   groupId?: string;
   groupLabel?: string;
   groupHint?: string;
-  /**
-   * Surface this group in the featured tier of the interactive onboarding
-   * picker. Featured groups appear before the "More…" entry.
-   */
-  onboardingFeatured?: boolean;
   /** Optional CLI flag metadata for one-flag auth flows such as API keys. */
   optionKey?: string;
   cliFlag?: string;
@@ -1527,11 +1524,11 @@ function normalizeProviderAuthChoices(
       entry.assistantVisibility === "manual-only" || entry.assistantVisibility === "visible"
         ? entry.assistantVisibility
         : undefined;
+    const onboardingFeatured = entry.onboardingFeatured === true;
     const deprecatedChoiceIds = normalizeTrimmedStringList(entry.deprecatedChoiceIds);
     const groupId = normalizeOptionalString(entry.groupId) ?? "";
     const groupLabel = normalizeOptionalString(entry.groupLabel) ?? "";
     const groupHint = normalizeOptionalString(entry.groupHint) ?? "";
-    const onboardingFeatured = entry.onboardingFeatured === true;
     const optionKey = normalizeOptionalString(entry.optionKey) ?? "";
     const cliFlag = normalizeOptionalString(entry.cliFlag) ?? "";
     const cliOption = normalizeOptionalString(entry.cliOption) ?? "";
@@ -1548,11 +1545,11 @@ function normalizeProviderAuthChoices(
       ...(choiceHint ? { choiceHint } : {}),
       ...(assistantPriority !== undefined ? { assistantPriority } : {}),
       ...(assistantVisibility ? { assistantVisibility } : {}),
+      ...(onboardingFeatured ? { onboardingFeatured: true } : {}),
       ...(deprecatedChoiceIds.length > 0 ? { deprecatedChoiceIds } : {}),
       ...(groupId ? { groupId } : {}),
       ...(groupLabel ? { groupLabel } : {}),
       ...(groupHint ? { groupHint } : {}),
-      ...(onboardingFeatured ? { onboardingFeatured: true } : {}),
       ...(optionKey ? { optionKey } : {}),
       ...(cliFlag ? { cliFlag } : {}),
       ...(cliOption ? { cliOption } : {}),

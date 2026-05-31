@@ -559,9 +559,6 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
       route.agentId,
     ).responsePrefix;
     const humanDelay = core.channel.reply.resolveHumanDelayConfig(cfg, route.agentId);
-    const storePath = core.channel.session.resolveStorePath(cfg.session?.store, {
-      agentId: route.agentId,
-    });
     const deliveryTarget = isGroup ? groupChannel : senderShip;
 
     const prepareReplyPayload = (payload: ReplyPayload): ReplyPayload => {
@@ -596,12 +593,12 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts = {}): Promise<v
     };
 
     await core.channel.inbound.dispatchReply({
+      cfg,
       channel: "tlon",
       accountId: route.accountId,
-      cfg,
       agentId: route.agentId,
       routeSessionKey: route.sessionKey,
-      storePath,
+      messageId,
       ctxPayload,
       recordInboundSession: core.channel.session.recordInboundSession,
       dispatchReplyWithBufferedBlockDispatcher:

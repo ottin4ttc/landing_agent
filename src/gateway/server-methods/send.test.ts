@@ -9,7 +9,7 @@ type ResolveOutboundTarget = typeof import("../../infra/outbound/targets.js").re
 
 const mocks = vi.hoisted(() => ({
   deliverOutboundPayloads: vi.fn(),
-  appendAssistantMessageToSessionTranscript: vi.fn(async () => ({ ok: true, sessionFile: "x" })),
+  appendAssistantMessageToSessionTranscript: vi.fn(async () => ({ ok: true, messageId: "m1" })),
   recordSessionMetaFromInbound: vi.fn(async () => ({ ok: true })),
   resolveOutboundTarget: vi.fn<ResolveOutboundTarget>(() => ({ ok: true, to: "resolved" })),
   resolveOutboundSessionRoute: vi.fn(),
@@ -1280,10 +1280,13 @@ describe("gateway send mirroring", () => {
       idempotencyKey: "idem-send-options",
     });
 
-    const options = mocks.deliverOutboundPayloads.mock.calls.at(0)?.[0];
-    expect(options?.forceDocument).toBe(true);
-    expect(options?.silent).toBe(true);
-    expect(options?.formatting).toEqual({ parseMode: "HTML" });
+    expect(mocks.deliverOutboundPayloads).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forceDocument: true,
+        silent: true,
+        formatting: { parseMode: "HTML" },
+      }),
+    );
   });
 
   it("updates mirror session keys and delivery thread ids when Slack routing derives a thread", async () => {
@@ -1743,7 +1746,7 @@ describe("gateway send mirroring", () => {
         handleAction: async () => jsonResult({ ok: true, messageId: "tg-async-1" }),
       },
     };
-    const mirrorDeferred = createDeferred<{ ok: boolean; sessionFile: string }>();
+    const mirrorDeferred = createDeferred<{ ok: boolean; messageId: string }>();
     mocks.getChannelPlugin.mockReturnValue(telegramPlugin);
     setActivePluginRegistry(
       createTestRegistry([{ pluginId: "telegram", source: "test", plugin: telegramPlugin }]),
@@ -1783,7 +1786,7 @@ describe("gateway send mirroring", () => {
     });
     expect(respond).not.toHaveBeenCalled();
 
-    mirrorDeferred.resolve({ ok: true, sessionFile: "x" });
+    mirrorDeferred.resolve({ ok: true, messageId: "x" });
     await request;
 
     expect(firstRespondCall(respond)[0]).toBe(true);
@@ -1811,7 +1814,7 @@ describe("gateway send mirroring", () => {
         handleAction: async () => jsonResult({ ok: true, messageId: "tg-ordered" }),
       },
     };
-    const firstMirrorDeferred = createDeferred<{ ok: boolean; sessionFile: string }>();
+    const firstMirrorDeferred = createDeferred<{ ok: boolean; messageId: string }>();
     mocks.getChannelPlugin.mockReturnValue(telegramPlugin);
     setActivePluginRegistry(
       createTestRegistry([{ pluginId: "telegram", source: "test", plugin: telegramPlugin }]),
@@ -1822,7 +1825,7 @@ describe("gateway send mirroring", () => {
     );
     mocks.appendAssistantMessageToSessionTranscript
       .mockReturnValueOnce(firstMirrorDeferred.promise)
-      .mockResolvedValueOnce({ ok: true, sessionFile: "x" });
+      .mockResolvedValueOnce({ ok: true, messageId: "x" });
 
     const firstRespond = vi.fn();
     const secondRespond = vi.fn();
@@ -1881,7 +1884,7 @@ describe("gateway send mirroring", () => {
       expect.objectContaining({ text: "first visible reply" }),
     );
 
-    firstMirrorDeferred.resolve({ ok: true, sessionFile: "x" });
+    firstMirrorDeferred.resolve({ ok: true, messageId: "x" });
     await first;
     await second;
 

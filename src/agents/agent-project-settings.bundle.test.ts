@@ -112,6 +112,7 @@ vi.mock("../plugins/plugin-metadata-snapshot.js", () => {
     isPluginMetadataSnapshotCompatible:
       pluginMetadataSnapshotMocks.isPluginMetadataSnapshotCompatible,
     loadPluginMetadataSnapshot: pluginMetadataSnapshotMocks.loadPluginMetadataSnapshot,
+    resolvePluginMetadataSnapshot: pluginMetadataSnapshotMocks.loadPluginMetadataSnapshot,
   };
 });
 

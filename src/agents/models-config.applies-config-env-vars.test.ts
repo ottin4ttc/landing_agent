@@ -4,8 +4,8 @@ import { createConfigRuntimeEnv } from "../config/env-vars.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { unsetEnv, withTempEnv } from "./models-config.e2e-harness.js";
 import {
-  planOpenClawModelsJsonWithDeps,
-  resolveProvidersForModelsJsonWithDeps,
+  planOpenClawModelCatalogWithDeps,
+  resolveProvidersForModelCatalogWithDeps,
 } from "./models-config.plan.js";
 import type { ProviderConfig } from "./models-config.providers.secrets.js";
 import { encodePluginModelCatalogRelativePath } from "./plugin-model-catalog.js";
@@ -55,7 +55,7 @@ async function resolveProvidersForConfigEnvTest(params: {
   onResolveImplicitProviders: (env: NodeJS.ProcessEnv) => void;
 }) {
   const env = createConfigRuntimeEnv(params.cfg);
-  return await resolveProvidersForModelsJsonWithDeps(
+  return await resolveProvidersForModelCatalogWithDeps(
     {
       cfg: params.cfg,
       agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -95,11 +95,11 @@ async function resolveProvidersAndCaptureDiscoveryEnv(cfg: OpenClawConfig) {
   return { discoveryEnv, providers };
 }
 
-let unauthenticatedProviderWritePlan: Awaited<ReturnType<typeof planOpenClawModelsJsonWithDeps>>;
+let unauthenticatedProviderWritePlan: Awaited<ReturnType<typeof planOpenClawModelCatalogWithDeps>>;
 let unauthenticatedProviderParsed: { providers?: Record<string, unknown> };
 
 beforeAll(async () => {
-  unauthenticatedProviderWritePlan = await planOpenClawModelsJsonWithDeps(
+  unauthenticatedProviderWritePlan = await planOpenClawModelCatalogWithDeps(
     {
       cfg: { models: { providers: {} } },
       agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -119,7 +119,7 @@ beforeAll(async () => {
     },
   );
   if (unauthenticatedProviderWritePlan.action !== "write") {
-    throw new Error("Expected models.json write plan");
+    throw new Error("Expected stored model catalog write plan");
   }
   unauthenticatedProviderParsed = JSON.parse(unauthenticatedProviderWritePlan.contents) as {
     providers?: Record<string, unknown>;
@@ -138,7 +138,7 @@ describe("models-config", () => {
       | Pick<PluginMetadataSnapshot, "index" | "manifestRegistry" | "owners">
       | undefined;
 
-    await resolveProvidersForModelsJsonWithDeps(
+    await resolveProvidersForModelCatalogWithDeps(
       {
         cfg: { models: { providers: {} } },
         agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -159,7 +159,7 @@ describe("models-config", () => {
   it("threads workspace scope into implicit provider discovery", async () => {
     let observedWorkspaceDir: string | undefined;
 
-    await resolveProvidersForModelsJsonWithDeps(
+    await resolveProvidersForModelCatalogWithDeps(
       {
         cfg: { models: { providers: {} } },
         agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -182,7 +182,7 @@ describe("models-config", () => {
     let observedEntriesOnly: boolean | undefined;
     let observedTimeoutMs: number | undefined;
 
-    await resolveProvidersForModelsJsonWithDeps(
+    await resolveProvidersForModelCatalogWithDeps(
       {
         cfg: { models: { providers: {} } },
         agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -210,7 +210,7 @@ describe("models-config", () => {
     expect(observedTimeoutMs).toBe(5000);
   });
 
-  it("threads plugin metadata snapshots through models.json planning", async () => {
+  it("threads plugin metadata snapshots through model catalog planning", async () => {
     const pluginMetadataSnapshot = {
       index: { plugins: [{ pluginId: "zai", enabled: true }] },
       normalizePluginId: (pluginId: string) => pluginId,
@@ -221,7 +221,7 @@ describe("models-config", () => {
       | Pick<PluginMetadataSnapshot, "index" | "manifestRegistry" | "owners">
       | undefined;
 
-    await planOpenClawModelsJsonWithDeps(
+    await planOpenClawModelCatalogWithDeps(
       {
         cfg: { models: { providers: {} } },
         agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -248,7 +248,7 @@ describe("models-config", () => {
   });
 
   it("treats empty replace-mode provider sets as authoritative", async () => {
-    const plan = await planOpenClawModelsJsonWithDeps(
+    const plan = await planOpenClawModelCatalogWithDeps(
       {
         cfg: { models: { mode: "replace", providers: {} } },
         agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -263,13 +263,13 @@ describe("models-config", () => {
 
     expect(plan.action).toBe("write");
     if (plan.action !== "write") {
-      throw new Error("Expected models.json write plan");
+      throw new Error("Expected stored model catalog write plan");
     }
     expect(JSON.parse(plan.contents)).toEqual({ providers: {} });
     expect(plan.pluginCatalogWrites).toEqual({});
   });
 
-  it("moves plugin-owned provider catalogs into plugin-scoped files", async () => {
+  it("moves plugin-owned provider catalogs into plugin-scoped catalog rows", async () => {
     const pluginMetadataSnapshot = {
       index: { plugins: [{ pluginId: "zai", enabled: true }] },
       normalizePluginId: (pluginId: string) => pluginId,
@@ -280,7 +280,7 @@ describe("models-config", () => {
         setupProviders: new Map(),
       },
     } as unknown as Pick<PluginMetadataSnapshot, "index" | "manifestRegistry" | "owners">;
-    const plan = await planOpenClawModelsJsonWithDeps(
+    const plan = await planOpenClawModelCatalogWithDeps(
       {
         cfg: { models: { providers: {} } },
         agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -305,7 +305,7 @@ describe("models-config", () => {
 
     expect(plan.action).toBe("write");
     if (plan.action !== "write") {
-      throw new Error("Expected models.json write plan");
+      throw new Error("Expected stored model catalog write plan");
     }
     const root = JSON.parse(plan.contents) as {
       providers?: Record<string, unknown>;
@@ -320,7 +320,7 @@ describe("models-config", () => {
   });
 
   it("falls back to canonical env markers when provider runtime has no api-key policy", async () => {
-    const plan = await planOpenClawModelsJsonWithDeps(
+    const plan = await planOpenClawModelCatalogWithDeps(
       {
         cfg: { models: { providers: {} } },
         agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -337,7 +337,7 @@ describe("models-config", () => {
 
     expect(plan.action).toBe("write");
     if (plan.action !== "write") {
-      throw new Error("Expected models.json write plan");
+      throw new Error("Expected stored model catalog write plan");
     }
     const parsed = JSON.parse(plan.contents) as {
       providers?: Record<string, { apiKey?: string }>;
@@ -345,8 +345,8 @@ describe("models-config", () => {
     expect(parsed.providers?.openai?.apiKey).toBe("OPENAI_API_KEY");
   });
 
-  it("normalizes retired Gemini ids preserved from existing models.json rows", async () => {
-    const plan = await planOpenClawModelsJsonWithDeps(
+  it("normalizes retired Gemini ids preserved from stored catalog rows", async () => {
+    const plan = await planOpenClawModelCatalogWithDeps(
       {
         cfg: { models: { mode: "merge", providers: {} } },
         agentDir: "/tmp/openclaw-models-config-env-vars-test",
@@ -393,7 +393,7 @@ describe("models-config", () => {
 
     expect(plan.action).toBe("write");
     if (plan.action !== "write") {
-      throw new Error("Expected models.json write plan");
+      throw new Error("Expected stored model catalog write plan");
     }
     const parsed = JSON.parse(plan.contents) as {
       providers?: Record<string, { models?: Array<{ id?: string }> }>;
@@ -418,7 +418,7 @@ describe("models-config", () => {
     });
   });
 
-  it("does not overwrite already-set host env vars while ensuring models.json", async () => {
+  it("does not overwrite already-set host env vars while ensuring the model catalog", async () => {
     await withTempEnv(["OPENROUTER_API_KEY", TEST_ENV_VAR], async () => {
       process.env.OPENROUTER_API_KEY = "from-host"; // pragma: allowlist secret
       process.env[TEST_ENV_VAR] = "from-host";

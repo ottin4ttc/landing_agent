@@ -175,7 +175,7 @@ describe("commitment extraction runtime", () => {
     expect(firstBatchItem.itemId).not.toContain("telegram");
     expect(firstBatchItem.itemId).not.toContain("15551234567");
     expect(firstBatchItem.itemId).not.toContain("m1");
-    expect(store.commitments.map((commitment) => commitment.dedupeKey)).toEqual([
+    expect(store.commitments.map((commitment) => commitment.dedupeKey).toSorted()).toEqual([
       "event:1",
       "event:2",
     ]);
@@ -295,6 +295,10 @@ describe("commitment extraction runtime", () => {
 
   it("uses the queued item timestamp for terminal failure cooldowns", async () => {
     const cfg = await createConfig();
+    // Initialize the SQLite state store before stubbing Date.now() so schema
+    // metadata (created_at) is written with a real timestamp. The NaN stub only
+    // probes the cooldown path, which must use the queued item timestamp.
+    await loadCommitmentStore();
     const extractBatch = vi.fn(async () => {
       throw new Error("OAuth token refresh failed");
     });

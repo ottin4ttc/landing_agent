@@ -43,8 +43,8 @@ let onSessionTranscriptUpdate: typeof import("../../sessions/transcript-events.j
 
 const TEST_SESSION_ID = "session-1";
 const TEST_SESSION_KEY = "agent:main:session-1";
-const TEST_SESSION_FILE = "/tmp/session.jsonl";
-const TEST_WORKSPACE_DIR = "/tmp";
+const TEST_ROTATED_SESSION_ID = "rotated-session";
+const TEST_WORKSPACE_DIR = "/tmp/openclaw-compact-hooks-workspace";
 const TEST_CUSTOM_INSTRUCTIONS = "focus on decisions";
 type SessionHookEvent = {
   type?: string;
@@ -54,7 +54,7 @@ type SessionHookEvent = {
 };
 type PostCompactionSyncParams = {
   reason: string;
-  sessionFiles: string[];
+  sessionTranscriptScopes: Array<{ agentId: string; sessionId: string }>;
 };
 type PostCompactionSync = (params?: unknown) => Promise<void>;
 type Deferred<T> = {
@@ -126,7 +126,6 @@ function wrappedCompactionArgs(overrides: Record<string, unknown> = {}) {
   return {
     sessionId: TEST_SESSION_ID,
     sessionKey: TEST_SESSION_KEY,
-    sessionFile: TEST_SESSION_FILE,
     workspaceDir: TEST_WORKSPACE_DIR,
     customInstructions: TEST_CUSTOM_INSTRUCTIONS,
     enqueue: async <T>(task: () => Promise<T> | T) => await task(),
@@ -170,7 +169,6 @@ async function runCompactionHooks(params: { sessionKey?: string; messageProvider
     messageCountAfter: 1,
     tokensAfter: 10,
     compactedCount: 1,
-    sessionFile: TEST_SESSION_FILE,
     summaryLength: "summary".length,
     tokensBefore: 120,
     firstKeptEntryId: "entry-1",
@@ -219,7 +217,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
 
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
-      sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
     });
 
@@ -241,7 +238,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
 
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
-      sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       allowGatewaySubagentBinding: true,
     });
@@ -258,7 +254,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       sessionId: "session-1",
       sessionKey: "agent:main:main",
       sandboxSessionKey: "agent:main:telegram:default:direct:12345",
-      sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
     });
 
@@ -273,7 +268,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: "agent:main:subagent:worker",
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
     });
 
@@ -293,7 +288,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: "agent:codex:acp:worker",
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
     });
 
@@ -315,7 +310,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: "agent:main:session-1",
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
     });
 
@@ -396,7 +391,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
   it("preserves full sender identity when building compaction tools", async () => {
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
-      sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       senderId: "sender-1",
       senderName: "Alice",
@@ -415,7 +409,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
   it("uses cwd for compaction runtime tools while preserving workspace bootstrap root", async () => {
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       cwd: "/tmp/task-repo",
     });
@@ -431,10 +425,67 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     });
   });
 
+  it("uses the session model fallback chain when implicit compaction fails", async () => {
+    resolveModelMock.mockImplementation((provider = "openai", modelId = "fake") => ({
+      model: { provider, api: "responses", id: modelId, input: [] },
+      error: null,
+      authStorage: { setRuntimeApiKey: vi.fn() },
+      modelRegistry: {},
+    }));
+    sessionCompactImpl
+      .mockRejectedValueOnce(
+        Object.assign(
+          new Error(
+            "400 The response was filtered due to the prompt triggering Azure OpenAI's content management policy.",
+          ),
+          { status: 400 },
+        ),
+      )
+      .mockResolvedValueOnce({
+        summary: "fallback summary",
+        firstKeptEntryId: "entry-fallback",
+        tokensBefore: 120,
+        details: { ok: true },
+      });
+
+    const result = await compactEmbeddedAgentSessionDirect({
+      sessionId: "session-1",
+      sessionKey: TEST_SESSION_KEY,
+      workspaceDir: "/tmp/workspace",
+      provider: "openai",
+      model: "gpt-primary",
+      config: {
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai/gpt-primary",
+              fallbacks: ["anthropic/claude-fallback"],
+            },
+          },
+        },
+      } as never,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.result?.summary).toBe("fallback summary");
+    expect(resolveModelMock).toHaveBeenCalledWith(
+      "openai",
+      "gpt-primary",
+      expect.any(String),
+      expect.anything(),
+    );
+    expect(resolveModelMock).toHaveBeenCalledWith(
+      "anthropic",
+      "claude-fallback",
+      expect.any(String),
+      expect.anything(),
+    );
+  });
+
   it("uses the caller context token budget during runtime compaction", async () => {
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       contextTokenBudget: 64_000,
     });
@@ -484,7 +535,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: "agent:main:session-1",
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       runId: "run-tool-schema-quarantine",
     });
@@ -501,7 +552,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
 
     await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       contextTokenBudget: 64_000,
     });
@@ -535,7 +586,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-primary",
@@ -597,7 +647,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-primary",
@@ -643,7 +693,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-5.5",
@@ -687,7 +737,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       config: {
         models: {
@@ -721,7 +771,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-5.5",
@@ -757,7 +807,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-5.5",
@@ -788,7 +838,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-5.5",
@@ -831,7 +881,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
+      path: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-5.5",
@@ -896,7 +946,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-primary",
@@ -938,7 +987,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-primary",
@@ -984,7 +1032,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     const result = await compactEmbeddedAgentSessionDirect({
       sessionId: "session-1",
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp/workspace",
       provider: "openai",
       model: "gpt-primary",
@@ -1054,7 +1101,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
         messageCount: 1,
         tokenCount: 10,
         compactedCount: 1,
-        sessionFile: "/tmp/session.jsonl",
       },
       expectRecordFields(mockCallArg(hookRunner.runAfterCompaction, 0, 1), {
         sessionKey: "agent:main:session-1",
@@ -1139,7 +1185,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       messageCountAfter: 1,
       tokensAfter: 10,
       compactedCount: 1,
-      sessionFile: "/tmp/session.jsonl",
       onHookMessages,
     });
 
@@ -1162,13 +1207,15 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
 
     try {
       await compactTesting.runPostCompactionSideEffects({
+        agentId: "main",
+        sessionId: TEST_SESSION_ID,
         sessionKey: "agent:main:session-1",
-        sessionFile: "  /tmp/session.jsonl  ",
       });
 
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener).toHaveBeenCalledWith({
-        sessionFile: "/tmp/session.jsonl",
+        agentId: "main",
+        sessionId: TEST_SESSION_ID,
         sessionKey: "agent:main:session-1",
       });
     } finally {
@@ -1183,8 +1230,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     getMemorySearchManagerMock.mockResolvedValue({ manager: { sync } });
     rotateTranscriptAfterCompactionMock.mockResolvedValueOnce({
       rotated: true,
-      sessionId: "rotated-session",
-      sessionFile: "/tmp/rotated-session.jsonl",
+      sessionId: TEST_ROTATED_SESSION_ID,
       leafId: "rotated-leaf",
     });
 
@@ -1192,12 +1238,12 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       const result = await compactEmbeddedAgentSessionDirect({
         sessionId: "session-1",
         sessionKey: TEST_SESSION_KEY,
-        sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
         config: {
           agents: {
             defaults: {
               compaction: {
+                rotateAfterCompaction: true,
                 truncateAfterCompaction: true,
                 postIndexSync: "await",
               },
@@ -1210,13 +1256,13 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener).toHaveBeenCalledWith({
         agentId: "main",
-        sessionFile: "/tmp/rotated-session.jsonl",
+        sessionId: TEST_ROTATED_SESSION_ID,
         sessionKey: TEST_SESSION_KEY,
       });
       expect(sync).toHaveBeenCalledTimes(1);
       expect(sync).toHaveBeenCalledWith({
         reason: "post-compaction",
-        sessionFiles: ["/tmp/rotated-session.jsonl"],
+        sessionTranscriptScopes: [{ agentId: "main", sessionId: TEST_ROTATED_SESSION_ID }],
       });
     } finally {
       cleanup();
@@ -1284,13 +1330,12 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
 
     await compactTesting.runPostCompactionSideEffects({
       config: compactionConfig("await"),
+      agentId: "main",
+      sessionId: TEST_SESSION_ID,
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: TEST_SESSION_FILE,
     });
 
-    const resolveAgentArg = mockCallArg(resolveSessionAgentIdMock) as Record<string, unknown>;
-    expectRecordFields(resolveAgentArg, { sessionKey: TEST_SESSION_KEY });
-    expect(resolveAgentArg.config).toBeTypeOf("object");
+    expect(resolveSessionAgentIdMock).not.toHaveBeenCalled();
     expect(getMemorySearchManagerMock).not.toHaveBeenCalled();
     expect(sync).not.toHaveBeenCalled();
   });
@@ -1307,8 +1352,9 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
 
     const resultPromise = compactTesting.runPostCompactionSideEffects({
       config: compactionConfig("await"),
+      agentId: "main",
+      sessionId: TEST_SESSION_ID,
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: TEST_SESSION_FILE,
     });
 
     void resultPromise.then(() => {
@@ -1316,7 +1362,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     });
     await expect(syncStarted.promise).resolves.toEqual({
       reason: "post-compaction",
-      sessionFiles: [TEST_SESSION_FILE],
+      sessionTranscriptScopes: [{ agentId: "main", sessionId: TEST_SESSION_ID }],
     });
     expect(settled).toBe(false);
     syncRelease.resolve(undefined);
@@ -1330,8 +1376,9 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
 
     await compactTesting.runPostCompactionSideEffects({
       config: compactionConfig("off"),
+      agentId: "main",
+      sessionId: TEST_SESSION_ID,
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: TEST_SESSION_FILE,
     });
 
     expect(resolveSessionAgentIdMock).not.toHaveBeenCalled();
@@ -1355,8 +1402,9 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
 
     const resultPromise = compactTesting.runPostCompactionSideEffects({
       config: compactionConfig("async"),
+      agentId: "main",
+      sessionId: TEST_SESSION_ID,
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: TEST_SESSION_FILE,
     });
 
     await managerRequested.promise;
@@ -1370,7 +1418,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     managerGate.resolve({ manager: { sync } });
     await expect(syncStarted.promise).resolves.toEqual({
       reason: "post-compaction",
-      sessionFiles: [TEST_SESSION_FILE],
+      sessionTranscriptScopes: [{ agentId: "main", sessionId: TEST_SESSION_ID }],
     });
   });
 
@@ -1615,30 +1663,29 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     expect(result.ok).toBe(true);
     expect(result.compacted).toBe(true);
 
-    expect(mockCallArg(hookRunner.runBeforeCompaction)).toEqual({
-      messageCount: -1,
-      sessionFile: TEST_SESSION_FILE,
-    });
-    expectRecordFields(mockCallArg(hookRunner.runBeforeCompaction, 0, 1), {
-      sessionKey: TEST_SESSION_KEY,
-      messageProvider: "telegram",
-    });
-    expect(mockCallArg(hookRunner.runAfterCompaction)).toEqual({
-      messageCount: -1,
-      compactedCount: -1,
-      tokenCount: 50,
-      sessionFile: TEST_SESSION_FILE,
-    });
-    expectRecordFields(mockCallArg(hookRunner.runAfterCompaction, 0, 1), {
-      sessionKey: TEST_SESSION_KEY,
-      messageProvider: "telegram",
-    });
+    expect(hookRunner.runBeforeCompaction).toHaveBeenCalledWith(
+      { messageCount: -1 },
+      expect.objectContaining({
+        sessionKey: TEST_SESSION_KEY,
+        messageProvider: "telegram",
+      }),
+    );
+    expect(hookRunner.runAfterCompaction).toHaveBeenCalledWith(
+      {
+        messageCount: -1,
+        compactedCount: -1,
+        tokenCount: 50,
+      },
+      expect.objectContaining({
+        sessionKey: TEST_SESSION_KEY,
+        messageProvider: "telegram",
+      }),
+    );
   });
 
   it("passes the rotated session id to engine-owned after_compaction hooks", async () => {
     hookRunner.hasHooks.mockReturnValue(true);
-    const rotatedSessionId = "rotated-session";
-    const rotatedSessionFile = "/tmp/rotated-session.jsonl";
+    const rotatedSessionId = TEST_ROTATED_SESSION_ID;
     contextEngineCompactMock.mockResolvedValue({
       ok: true,
       compacted: true,
@@ -1649,22 +1696,19 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         tokensBefore: 120,
         tokensAfter: 50,
         sessionId: rotatedSessionId,
-        sessionFile: rotatedSessionFile,
       },
     } as never);
 
-    const result = await compactEmbeddedAgentSession(
-      wrappedCompactionArgs({ cwd: "/tmp/task-repo" }),
-    );
+    const result = await compactEmbeddedAgentSession(wrappedCompactionArgs());
 
     expect(result.ok).toBe(true);
-    expectRecordFields(mockCallArg(hookRunner.runAfterCompaction), {
-      sessionFile: rotatedSessionFile,
-    });
-    expectRecordFields(mockCallArg(hookRunner.runAfterCompaction, 0, 1), {
-      sessionId: rotatedSessionId,
-      sessionKey: TEST_SESSION_KEY,
-    });
+    expect(hookRunner.runAfterCompaction).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        sessionId: rotatedSessionId,
+        sessionKey: TEST_SESSION_KEY,
+      }),
+    );
   });
 
   it("emits a transcript update and post-compaction memory sync on the engine-owned path", async () => {
@@ -1676,7 +1720,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     try {
       const result = await compactEmbeddedAgentSession(
         wrappedCompactionArgs({
-          sessionFile: `  ${TEST_SESSION_FILE}  `,
           config: compactionConfig("await"),
         }),
       );
@@ -1685,12 +1728,12 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       expect(listener).toHaveBeenCalledTimes(1);
       expect(listener).toHaveBeenCalledWith({
         agentId: "main",
-        sessionFile: TEST_SESSION_FILE,
+        sessionId: TEST_SESSION_ID,
         sessionKey: TEST_SESSION_KEY,
       });
       expect(sync).toHaveBeenCalledWith({
         reason: "post-compaction",
-        sessionFiles: [TEST_SESSION_FILE],
+        sessionTranscriptScopes: [{ agentId: "main", sessionId: TEST_SESSION_ID }],
       });
     } finally {
       cleanup();
@@ -1709,20 +1752,26 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       maintain,
     } as never);
 
-    const result = await compactEmbeddedAgentSession(
-      wrappedCompactionArgs({ cwd: "/tmp/task-repo" }),
-    );
+    const result = await compactEmbeddedAgentSession(wrappedCompactionArgs());
 
     expect(result.ok).toBe(true);
+    expect(maintain).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: TEST_SESSION_ID,
+        sessionKey: TEST_SESSION_KEY,
+        transcriptScope: { agentId: "main", sessionId: TEST_SESSION_ID },
+        runtimeContext: expect.objectContaining({
+          workspaceDir: TEST_WORKSPACE_DIR,
+        }),
+      }),
+    );
     const runtimeContext = (
       maintain.mock.calls.at(0)?.[0] as { runtimeContext?: Record<string, unknown> } | undefined
     )?.runtimeContext;
     expectRecordFields(mockCallArg(maintain), {
       sessionKey: TEST_SESSION_KEY,
-      sessionFile: TEST_SESSION_FILE,
     });
     expect(runtimeContext?.workspaceDir).toBe(TEST_WORKSPACE_DIR);
-    expect(runtimeContext?.cwd).toBe("/tmp/task-repo");
     expect(runtimeContext?.rewriteTranscriptEntries).toBeTypeOf("function");
   });
 
@@ -2208,7 +2257,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
       rewrittenEntries: 0,
     }));
     const delegatedSessionId = "delegated-session";
-    const delegatedSessionFile = "/tmp/delegated-session.jsonl";
     resolveContextEngineMock.mockResolvedValue({
       info: { ownsCompaction: false },
       compact: contextEngineCompactMock,
@@ -2224,7 +2272,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         tokensBefore: 120,
         tokensAfter: 50,
         sessionId: delegatedSessionId,
-        sessionFile: delegatedSessionFile,
       },
     } as never);
 
@@ -2244,11 +2291,12 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
 
     expect(result.ok).toBe(true);
     expect(result.result?.sessionId).toBe(delegatedSessionId);
-    expect(result.result?.sessionFile).toBe(delegatedSessionFile);
-    expectRecordFields(mockCallArg(maintain), {
-      sessionId: delegatedSessionId,
-      sessionFile: delegatedSessionFile,
-    });
+    expect(maintain).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: delegatedSessionId,
+        transcriptScope: { agentId: "main", sessionId: delegatedSessionId },
+      }),
+    );
   });
 
   it("keeps a delegated result that echoes the current transcript on the active transcript", async () => {
@@ -2272,7 +2320,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
         tokensBefore: 120,
         tokensAfter: 50,
         sessionId: TEST_SESSION_ID,
-        sessionFile: TEST_SESSION_FILE,
       },
     } as never);
     const result = await compactEmbeddedAgentSession(
@@ -2292,11 +2339,12 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     expect(result.ok).toBe(true);
     expect(rotateTranscriptAfterCompactionMock).not.toHaveBeenCalled();
     expect(result.result?.sessionId).toBeUndefined();
-    expect(result.result?.sessionFile).toBeUndefined();
-    expectRecordFields(mockCallArg(maintain), {
-      sessionId: TEST_SESSION_ID,
-      sessionFile: TEST_SESSION_FILE,
-    });
+    expect(maintain).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: TEST_SESSION_ID,
+        transcriptScope: { agentId: "main", sessionId: TEST_SESSION_ID },
+      }),
+    );
   });
 
   it("catches and logs hook exceptions without aborting compaction", async () => {

@@ -145,7 +145,6 @@ describe("preemptive-compaction", () => {
       unwindowedMessageCount: 3,
       contextTokenBudget: 10_000,
       reserveTokens: 1_000,
-      sessionFile: "sessions/session-1.json",
     });
 
     expect(line).toContain("[context-overflow-precheck] pre-prompt check");

@@ -20,6 +20,7 @@ type OAuthCredentials = {
   refresh: string;
   access: string;
   expires: number;
+  email?: string;
   [key: string]: unknown;
 };
 

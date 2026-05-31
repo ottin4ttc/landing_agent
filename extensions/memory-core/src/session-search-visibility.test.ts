@@ -7,41 +7,40 @@ import { asOpenClawConfig } from "./tools.test-helpers.js";
 type TestSessionEntry = {
   sessionId: string;
   updatedAt: number;
-  sessionFile: string;
+  sessionFile?: string;
 };
 
 const crossAgentStore: Record<string, TestSessionEntry> = {
   "agent:peer:only": {
     sessionId: "w1",
     updatedAt: 1,
-    sessionFile: "/tmp/sessions/w1.jsonl",
   },
 };
-let combinedSessionStore: Record<string, TestSessionEntry> = crossAgentStore;
+let combinedSessionEntries: Record<string, TestSessionEntry> = crossAgentStore;
 
 vi.mock("openclaw/plugin-sdk/session-transcript-hit", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("openclaw/plugin-sdk/session-transcript-hit")>();
   return {
     ...actual,
-    loadCombinedSessionStoreForGateway: vi.fn(() => ({
-      storePath: "(test)",
-      store: combinedSessionStore,
+    loadCombinedSessionEntriesForGateway: vi.fn(() => ({
+      databasePath: "(test)",
+      entries: combinedSessionEntries,
     })),
   };
 });
 
 describe("filterMemorySearchHitsBySessionVisibility", () => {
   afterEach(() => {
-    vi.mocked(sessionTranscriptHit.loadCombinedSessionStoreForGateway).mockClear();
-    combinedSessionStore = crossAgentStore;
+    vi.mocked(sessionTranscriptHit.loadCombinedSessionEntriesForGateway).mockClear();
+    combinedSessionEntries = crossAgentStore;
   });
 
   it("drops sessions-sourced hits when requester key is missing (fail closed)", async () => {
     const cfg = asOpenClawConfig({ tools: { sessions: { visibility: "all" } } });
     const hits: MemorySearchResult[] = [
       {
-        path: "sessions/u1.jsonl",
+        path: "transcript:main:u1",
         source: "sessions",
         score: 1,
         snippet: "x",
@@ -55,7 +54,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
       sandboxed: false,
       hits,
     });
-    expect(filtered).toStrictEqual([]);
+    expect(filtered).toEqual([]);
   });
 
   it("keeps non-session hits unchanged", async () => {
@@ -79,11 +78,11 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
     expect(filtered).toEqual(hits);
   });
 
-  it("loads the combined session store once per filter pass", async () => {
+  it("loads the combined session entries once per filter pass", async () => {
     const cfg = asOpenClawConfig({ tools: { sessions: { visibility: "all" } } });
     const hits: MemorySearchResult[] = [
       {
-        path: "sessions/w1.jsonl",
+        path: "transcript:peer:w1",
         source: "sessions",
         score: 1,
         snippet: "a",
@@ -91,7 +90,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
         endLine: 2,
       },
       {
-        path: "sessions/w1.jsonl",
+        path: "transcript:peer:w1",
         source: "sessions",
         score: 0.9,
         snippet: "b",
@@ -105,22 +104,21 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
       sandboxed: false,
       hits,
     });
-    expect(sessionTranscriptHit.loadCombinedSessionStoreForGateway).toHaveBeenCalledTimes(1);
-    expect(sessionTranscriptHit.loadCombinedSessionStoreForGateway).toHaveBeenCalledWith(cfg, {
+    expect(sessionTranscriptHit.loadCombinedSessionEntriesForGateway).toHaveBeenCalledTimes(1);
+    expect(sessionTranscriptHit.loadCombinedSessionEntriesForGateway).toHaveBeenCalledWith(cfg, {
       agentId: "main",
     });
   });
 
   it("keeps same-agent session hits when visibility=all and agent-to-agent is enabled", async () => {
-    combinedSessionStore = {
+    combinedSessionEntries = {
       "agent:main:only": {
         sessionId: "w1",
         updatedAt: 1,
-        sessionFile: "/tmp/sessions/w1.jsonl",
       },
     };
     const hit: MemorySearchResult = {
-      path: "sessions/w1.jsonl",
+      path: "transcript:main:w1",
       source: "sessions",
       score: 1,
       snippet: "x",
@@ -143,15 +141,14 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
   });
 
   it("keeps global-scope session hits for non-default agents", async () => {
-    combinedSessionStore = {
+    combinedSessionEntries = {
       global: {
         sessionId: "w1",
         updatedAt: 1,
-        sessionFile: "/tmp/sessions/w1.jsonl",
       },
     };
     const hit: MemorySearchResult = {
-      path: "sessions/w1.jsonl",
+      path: "transcript:secondary:w1",
       source: "sessions",
       score: 1,
       snippet: "x",
@@ -175,10 +172,10 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
     expect(filtered).toEqual([hit]);
   });
 
-  it("does not keep cross-agent session hits outside the scoped store", async () => {
-    combinedSessionStore = {};
+  it("does not keep cross-agent session hits outside the scoped entries", async () => {
+    combinedSessionEntries = crossAgentStore;
     const hit: MemorySearchResult = {
-      path: "sessions/w1.jsonl",
+      path: "transcript:peer:w1",
       source: "sessions",
       score: 1,
       snippet: "x",
@@ -197,68 +194,12 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
       sandboxed: false,
       hits: [hit],
     });
-    expect(filtered).toStrictEqual([]);
-  });
-
-  it("does not keep cross-agent session hits when a shared store returns out-of-scope keys", async () => {
-    combinedSessionStore = crossAgentStore;
-    const hit: MemorySearchResult = {
-      path: "sessions/w1.jsonl",
-      source: "sessions",
-      score: 1,
-      snippet: "x",
-      startLine: 1,
-      endLine: 2,
-    };
-    const cfg = asOpenClawConfig({
-      tools: {
-        sessions: { visibility: "all" },
-        agentToAgent: { enabled: true, allow: ["*"] },
-      },
-    });
-    const filtered = await filterMemorySearchHitsBySessionVisibility({
-      cfg,
-      requesterSessionKey: "agent:main:main",
-      sandboxed: false,
-      hits: [hit],
-    });
-    expect(filtered).toStrictEqual([]);
-  });
-
-  it("does not keep owner-qualified cross-agent hits that collide with a scoped stem", async () => {
-    combinedSessionStore = {
-      "agent:main:main": {
-        sessionId: "main",
-        updatedAt: 1,
-        sessionFile: "/tmp/sessions/main.jsonl",
-      },
-    };
-    const hit: MemorySearchResult = {
-      path: "sessions/peer/main.jsonl",
-      source: "sessions",
-      score: 1,
-      snippet: "x",
-      startLine: 1,
-      endLine: 2,
-    };
-    const cfg = asOpenClawConfig({
-      tools: {
-        sessions: { visibility: "all" },
-        agentToAgent: { enabled: true, allow: ["*"] },
-      },
-    });
-    const filtered = await filterMemorySearchHitsBySessionVisibility({
-      cfg,
-      requesterSessionKey: "agent:main:main",
-      sandboxed: false,
-      hits: [hit],
-    });
-    expect(filtered).toStrictEqual([]);
+    expect(filtered).toEqual([]);
   });
 
   it("denies cross-agent session hits when agent-to-agent is disabled", async () => {
     const hit: MemorySearchResult = {
-      path: "sessions/w1.jsonl",
+      path: "transcript:peer:w1",
       source: "sessions",
       score: 1,
       snippet: "x",
@@ -277,91 +218,11 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
       sandboxed: false,
       hits: [hit],
     });
-    expect(filtered).toStrictEqual([]);
-  });
-
-  it("keeps same-agent deleted archive hits using owner metadata when the live store entry is gone", async () => {
-    combinedSessionStore = {};
-    const hit: MemorySearchResult = {
-      path: "sessions/main/deleted-stem.jsonl.deleted.2026-02-16T22-27-33.000Z",
-      source: "sessions",
-      score: 1,
-      snippet: "x",
-      startLine: 1,
-      endLine: 2,
-    };
-    const cfg = asOpenClawConfig({
-      tools: {
-        sessions: { visibility: "agent" },
-      },
-    });
-
-    const filtered = await filterMemorySearchHitsBySessionVisibility({
-      cfg,
-      requesterSessionKey: "agent:main:main",
-      sandboxed: false,
-      hits: [hit],
-    });
-
-    expect(filtered).toEqual([hit]);
-  });
-
-  it("still denies cross-agent deleted archive hits resolved from owner metadata when a2a is disabled", async () => {
-    combinedSessionStore = {};
-    const hit: MemorySearchResult = {
-      path: "sessions/peer/deleted-stem.jsonl.deleted.2026-02-16T22-27-33.000Z",
-      source: "sessions",
-      score: 1,
-      snippet: "x",
-      startLine: 1,
-      endLine: 2,
-    };
-    const cfg = asOpenClawConfig({
-      tools: {
-        sessions: { visibility: "all" },
-        agentToAgent: { enabled: false },
-      },
-    });
-
-    const filtered = await filterMemorySearchHitsBySessionVisibility({
-      cfg,
-      requesterSessionKey: "agent:main:main",
-      sandboxed: false,
-      hits: [hit],
-    });
-
-    expect(filtered).toStrictEqual([]);
-  });
-
-  it("does not keep cross-agent deleted archive hits outside the scoped store when a2a is allowed", async () => {
-    combinedSessionStore = {};
-    const hit: MemorySearchResult = {
-      path: "sessions/peer/deleted-stem.jsonl.deleted.2026-02-16T22-27-33.000Z",
-      source: "sessions",
-      score: 1,
-      snippet: "x",
-      startLine: 1,
-      endLine: 2,
-    };
-    const cfg = asOpenClawConfig({
-      tools: {
-        sessions: { visibility: "all" },
-        agentToAgent: { enabled: true, allow: ["*"] },
-      },
-    });
-
-    const filtered = await filterMemorySearchHitsBySessionVisibility({
-      cfg,
-      requesterSessionKey: "agent:main:main",
-      sandboxed: false,
-      hits: [hit],
-    });
-
-    expect(filtered).toStrictEqual([]);
+    expect(filtered).toEqual([]);
   });
 
   it("keeps same-agent QMD-normalized archived reset .md hits when the store has a matching entry", async () => {
-    combinedSessionStore = {
+    combinedSessionEntries = {
       "agent:main:abc-uuid": {
         sessionId: "abc-uuid",
         updatedAt: 1,
@@ -394,7 +255,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
 
   it("keeps QMD .md hits whose live session id looks like an archive name", async () => {
     const sessionId = "foo.jsonl.deleted.2026-02-16T22-27-33.000Z";
-    combinedSessionStore = {
+    combinedSessionEntries = {
       "agent:main:archive-looking": {
         sessionId,
         updatedAt: 1,
@@ -426,7 +287,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
   });
 
   it("does not authorize QMD archived .md hits through lossy slug fallback", async () => {
-    combinedSessionStore = {
+    combinedSessionEntries = {
       "agent:main:foo_bar": {
         sessionId: "foo_bar",
         updatedAt: 1,
@@ -458,7 +319,7 @@ describe("filterMemorySearchHitsBySessionVisibility", () => {
   });
 
   it("keeps same-agent QMD archived deleted .md hits when no store entry remains", async () => {
-    combinedSessionStore = {};
+    combinedSessionEntries = {};
     const hit: MemorySearchResult = {
       path: "qmd/sessions-main/abc-uuid-jsonl-deleted-2026-02-16t22-26-33-000z.md",
       source: "sessions",

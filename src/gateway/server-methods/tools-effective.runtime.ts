@@ -21,4 +21,8 @@ export {
   getActivePluginRegistryVersion,
 } from "../../plugins/runtime.js";
 export { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
+export {
+  readSqliteSessionDeliveryContext,
+  readSqliteSessionRoutingInfo,
+} from "../../config/sessions/session-entries.sqlite.js";
 export { loadSessionEntry, resolveSessionModelRef } from "../session-utils.js";

@@ -1,50 +1,46 @@
-import { promises as fs } from "node:fs";
-import path from "node:path";
-import { resolveStateDir } from "../config/paths.js";
+import {
+  deleteSqliteSessionTranscript,
+  loadSqliteSessionTranscriptEvents,
+  mergeSqliteSessionTranscriptEvents,
+} from "../config/sessions/transcript-store.sqlite.js";
 
-export function resolveInternalSessionEffectsTranscriptPath(runId: string): string {
+/** Resolve the synthetic SQLite session id used for a hidden internal run transcript. */
+export function resolveInternalSessionEffectsTranscriptSessionId(runId: string): string {
   const safeRunId = runId.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "run";
-  return path.join(resolveStateDir(), "internal-agent-runs", `${safeRunId}.jsonl`);
+  return `internal-agent-runs:${safeRunId}`;
 }
 
+/** Create a private SQLite transcript for internal session effects and copy source history into it. */
 export async function prepareInternalSessionEffectsTranscript(params: {
-  sessionFile?: string;
+  agentId: string;
   runId: string;
-}): Promise<string> {
-  // Callers must persist this path in an owning lifecycle record and invoke
+  sourceSessionId?: string;
+}): Promise<{ agentId: string; sessionId: string }> {
+  // Callers must persist this id in an owning lifecycle record and invoke
   // removeInternalSessionEffectsTranscript once the recovered output is no longer needed.
-  const sessionFile = resolveInternalSessionEffectsTranscriptPath(params.runId);
-  await fs.mkdir(path.dirname(sessionFile), { recursive: true, mode: 0o700 });
-  if (!params.sessionFile) {
-    await fs.writeFile(sessionFile, "", { mode: 0o600 });
-    await fs.chmod(sessionFile, 0o600);
-    return sessionFile;
-  }
-  try {
-    const contents = await fs.readFile(params.sessionFile);
-    await fs.writeFile(sessionFile, contents, { mode: 0o600 });
-    await fs.chmod(sessionFile, 0o600);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-    await fs.writeFile(sessionFile, "", { mode: 0o600 });
-    await fs.chmod(sessionFile, 0o600);
-  }
-  return sessionFile;
+  const sessionId = resolveInternalSessionEffectsTranscriptSessionId(params.runId);
+  deleteSqliteSessionTranscript({ agentId: params.agentId, sessionId });
+  const events = params.sourceSessionId
+    ? loadSqliteSessionTranscriptEvents({
+        agentId: params.agentId,
+        sessionId: params.sourceSessionId,
+      }).map((entry) => entry.event)
+    : [];
+  mergeSqliteSessionTranscriptEvents({
+    agentId: params.agentId,
+    sessionId,
+    events,
+  });
+  return { agentId: params.agentId, sessionId };
 }
 
-export async function removeInternalSessionEffectsTranscript(
-  sessionFile: string | undefined,
-): Promise<void> {
-  const dir = path.join(resolveStateDir(), "internal-agent-runs");
-  const resolved = sessionFile ? path.resolve(sessionFile) : "";
-  if (!resolved || path.dirname(resolved) !== path.resolve(dir)) {
+/** Delete a private SQLite transcript created for internal session effects. */
+export async function removeInternalSessionEffectsTranscript(params: {
+  agentId: string;
+  sessionId: string | undefined;
+}): Promise<void> {
+  if (!params.sessionId?.startsWith("internal-agent-runs:")) {
     return;
   }
-  try {
-    await fs.rm(resolved, { force: true });
-  } catch {
-    // Best-effort privacy/disk cleanup; run cleanup must not fail on temp-file races.
-  }
+  deleteSqliteSessionTranscript({ agentId: params.agentId, sessionId: params.sessionId });
 }

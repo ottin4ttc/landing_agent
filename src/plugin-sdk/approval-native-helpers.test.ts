@@ -11,9 +11,7 @@ import {
 import type { OpenClawConfig } from "./config-runtime.js";
 
 const EMPTY_SESSION_CFG = {
-  session: {
-    store: ".artifacts/test/approval-native-helpers-empty-sessions.json",
-  },
+  session: {},
 } satisfies OpenClawConfig;
 
 function createMatrixRouteGates(options?: {

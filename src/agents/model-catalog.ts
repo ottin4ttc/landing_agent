@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import {
   normalizeLowercaseStringOrEmpty,
@@ -32,10 +30,11 @@ import {
   buildConfiguredModelCatalog,
   hasConfiguredProviderModelRows,
 } from "./model-selection-shared.js";
-import { ensureOpenClawModelsJson } from "./models-config.js";
+import { listStoredPluginModelCatalogs, readStoredModelsConfigRaw } from "./models-config-store.js";
+import { ensureOpenClawModelCatalog } from "./models-config.js";
 import {
+  decodePluginModelCatalogRelativePathPluginId,
   filterGeneratedPluginModelCatalogProviders,
-  listPluginModelCatalogFiles,
   type PluginModelCatalogMetadataSnapshot,
 } from "./plugin-model-catalog.js";
 
@@ -327,23 +326,26 @@ async function loadReadOnlyPersistedProviderRows(
   agentDir: string,
   getPluginMetadataSnapshot: () => PluginModelCatalogMetadataSnapshot,
 ): Promise<Record<string, Record<string, unknown>>> {
-  const raw = await readFile(join(agentDir, "models.json"), "utf8");
-  const providers = { ...readProviderCatalogRows(JSON.parse(raw) as unknown) };
-  for (const catalogFile of listPluginModelCatalogFiles(agentDir)) {
-    const catalogRaw = await readFile(catalogFile.path, "utf8").catch(() => undefined);
-    if (!catalogRaw) {
+  const stored = readStoredModelsConfigRaw(agentDir);
+  if (!stored) {
+    throw new Error("persisted model catalog missing");
+  }
+  const providers = { ...readProviderCatalogRows(JSON.parse(stored.raw) as unknown) };
+  for (const catalogRow of listStoredPluginModelCatalogs(agentDir)) {
+    const catalogPluginId = decodePluginModelCatalogRelativePathPluginId(catalogRow.relativePath);
+    if (!catalogPluginId) {
       continue;
     }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(catalogRaw) as unknown;
+      parsed = JSON.parse(catalogRow.raw) as unknown;
     } catch {
       continue;
     }
     Object.assign(
       providers,
       filterGeneratedPluginModelCatalogProviders({
-        catalogPluginId: catalogFile.pluginId,
+        catalogPluginId,
         parsedCatalog: parsed,
         pluginMetadataSnapshot: getPluginMetadataSnapshot(),
         providers: readProviderCatalogRows(parsed),
@@ -526,8 +528,8 @@ export async function loadModelCatalog(params?: {
         return manifestPlugins;
       };
       if (!readOnly) {
-        await ensureOpenClawModelsJson(cfg);
-        logStage("models-json-ready");
+        await ensureOpenClawModelCatalog(cfg);
+        logStage("model-catalog-ready");
       }
       // Keep discovery inside try/catch so transient filesystem/config failures do not poison
       // the shared catalog cache until restart.

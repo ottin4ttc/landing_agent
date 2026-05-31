@@ -21,7 +21,7 @@ import {
   wrapToolWithBeforeToolCallHook,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
-import type { ImageContent, TextContent } from "openclaw/plugin-sdk/llm";
+import type { ImageContent, TextContent } from "openclaw/plugin-sdk/provider-ai";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
   asOptionalRecord as readRecord,
@@ -435,8 +435,8 @@ function composeAbortSignals(...signals: Array<AbortSignal | undefined>): AbortS
 function collectToolTelemetry(params: {
   toolName: string;
   args: Record<string, unknown>;
-  result: AgentToolResult<unknown> | undefined;
-  mediaTrustResult?: AgentToolResult<unknown>;
+  result: AgentToolResult | undefined;
+  mediaTrustResult?: AgentToolResult;
   telemetry: CodexDynamicToolBridge["telemetry"];
   isError: boolean;
 }): void {
@@ -543,7 +543,7 @@ function readPositiveInteger(value: unknown): number | undefined {
   return Math.floor(value);
 }
 
-function isToolResultError(result: AgentToolResult<unknown>): boolean {
+function isToolResultError(result: AgentToolResult): boolean {
   const details = result.details;
   if (!isRecord(details)) {
     return false;
@@ -572,7 +572,7 @@ function isToolResultError(result: AgentToolResult<unknown>): boolean {
   );
 }
 
-function isToolResultYield(result: AgentToolResult<unknown>): boolean {
+function isToolResultYield(result: AgentToolResult): boolean {
   const details = result.details;
   if (!isRecord(details) || typeof details.status !== "string") {
     return false;
@@ -580,13 +580,13 @@ function isToolResultYield(result: AgentToolResult<unknown>): boolean {
   return details.status.trim().toLowerCase() === "yielded";
 }
 
-function isAsyncStartedToolResult(result: AgentToolResult<unknown>): boolean {
+function isAsyncStartedToolResult(result: AgentToolResult): boolean {
   const details = result.details;
   return isRecord(details) && details.async === true && details.status === "started";
 }
 
 function inferToolResultDiagnosticTerminalType(
-  result: AgentToolResult<unknown>,
+  result: AgentToolResult,
   isError: boolean,
 ): CodexDynamicToolDiagnosticTerminalType {
   const details = result.details;

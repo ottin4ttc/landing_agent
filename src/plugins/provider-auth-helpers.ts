@@ -19,7 +19,6 @@ import { normalizeSecretInput } from "../utils/normalize-secret-input.js";
 import type { SecretInputMode } from "./provider-auth-types.js";
 
 const ENV_REF_PATTERN = /^\$\{([A-Z][A-Z0-9_]*)\}$/;
-type UpsertAuthProfileParams = Parameters<typeof upsertAuthProfileWithLock>[0];
 
 const resolveAuthAgentDir = (agentDir?: string, config?: OpenClawConfig) =>
   agentDir ?? resolveDefaultAgentDir(config ?? {});
@@ -133,15 +132,6 @@ export function upsertApiKeyProfile(params: {
     agentDir: resolveAuthAgentDir(params.agentDir, params.options?.config),
   });
   return profileId;
-}
-
-async function upsertAuthProfileWithLockOrThrow(params: UpsertAuthProfileParams): Promise<void> {
-  const updated = await upsertAuthProfileWithLock(params);
-  if (!updated) {
-    throw new Error(
-      "Failed to update auth profile store; the auth store lock may be busy. Wait a moment and retry.",
-    );
-  }
 }
 
 export function applyAuthProfileConfig(
@@ -272,7 +262,7 @@ function resolveSiblingAgentDirs(primaryAgentDir: string): string[] {
     const real = safeRealpathSync(dir);
     if (real && !seen.has(real)) {
       seen.add(real);
-      result.push(real);
+      result.push(dir);
     }
   }
   return result;
@@ -302,7 +292,7 @@ export async function writeOAuthCredentials(
     ...(options?.displayName ? { displayName: options.displayName } : {}),
   };
 
-  await upsertAuthProfileWithLockOrThrow({
+  await upsertAuthProfileWithLock({
     profileId,
     credential,
     agentDir: resolvedAgentDir,

@@ -2,17 +2,23 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import * as tar from "tar";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { backupVerifyCommand } from "../commands/backup-verify.js";
 import type { RuntimeEnv } from "../runtime.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
-  testApi as backupCreateInternals,
   buildExtensionsNodeModulesFilter,
   createBackupArchive,
   formatBackupCreateSummary,
   type BackupCreateResult,
 } from "./backup-create.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
+import { requireNodeSqlite } from "./node-sqlite.js";
 
 function makeResult(overrides: Partial<BackupCreateResult> = {}): BackupCreateResult {
   return {
@@ -30,6 +36,11 @@ function makeResult(overrides: Partial<BackupCreateResult> = {}): BackupCreateRe
   };
 }
 
+type BackupCreateTestDatabase = Pick<
+  OpenClawStateKyselyDatabase,
+  "diagnostic_events" | "backup_runs" | "delivery_queue_entries"
+>;
+
 async function listArchiveEntries(archivePath: string): Promise<string[]> {
   const entries: string[] = [];
   await tar.t({
@@ -43,24 +54,48 @@ async function listArchiveEntries(archivePath: string): Promise<string[]> {
   return entries;
 }
 
-async function listArchiveEntryDetails(
+async function listArchiveEntryTypes(
   archivePath: string,
-): Promise<Array<{ path: string; linkpath?: string; type?: string }>> {
-  const entries: Array<{ path: string; linkpath?: string; type?: string }> = [];
+): Promise<Array<{ path: string; type: string }>> {
+  const entries: Array<{ path: string; type: string }> = [];
   await tar.t({
     file: archivePath,
     gzip: true,
     onentry: (entry) => {
-      entries.push({
-        path: entry.path,
-        ...(entry.linkpath ? { linkpath: entry.linkpath } : {}),
-        ...(entry.type ? { type: entry.type } : {}),
-      });
+      entries.push({ path: entry.path, type: entry.type });
       entry.resume();
     },
   });
   return entries;
 }
+
+async function extractArchiveToTemp(archivePath: string): Promise<string> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-backup-test-extract-"));
+  await tar.x({
+    file: archivePath,
+    gzip: true,
+    cwd: tempDir,
+  });
+  return tempDir;
+}
+
+function countDeliveryQueueRows(sqlitePath: string): number {
+  const sqlite = requireNodeSqlite();
+  const db = new sqlite.DatabaseSync(sqlitePath, { readOnly: true });
+  try {
+    const row = db.prepare("SELECT COUNT(*) AS count FROM delivery_queue_entries").get() as
+      | { count?: number | bigint }
+      | undefined;
+    const count = row?.count ?? 0;
+    return typeof count === "bigint" ? Number(count) : count;
+  } finally {
+    db.close();
+  }
+}
+
+afterEach(() => {
+  closeOpenClawStateDatabaseForTest();
+});
 
 describe("formatBackupCreateSummary", () => {
   const backupArchiveLine = "Backup archive: /tmp/openclaw-backup.tar.gz";
@@ -127,159 +162,6 @@ describe("formatBackupCreateSummary", () => {
     },
   ])("$name", ({ result, expected }) => {
     expect(formatBackupCreateSummary(result)).toEqual(expected);
-  });
-
-  it("surfaces the volatile skip count in the summary", () => {
-    expect(
-      formatBackupCreateSummary(
-        makeResult({
-          assets: [
-            {
-              kind: "state",
-              sourcePath: "/state",
-              archivePath: "archive/state",
-              displayPath: "~/.openclaw",
-            },
-          ],
-          skippedVolatileCount: 3,
-        }),
-      ),
-    ).toEqual([
-      "Backup archive: /tmp/openclaw-backup.tar.gz",
-      "Included 1 path:",
-      "- state: ~/.openclaw",
-      "Created /tmp/openclaw-backup.tar.gz",
-      "Skipped 3 volatile files (live sessions, cron logs, queues, sockets, pid/tmp).",
-    ]);
-  });
-});
-
-describe("isTarEofRaceError", () => {
-  const { isTarEofRaceError } = backupCreateInternals;
-
-  it.each([
-    "did not encounter expected EOF",
-    "encountered unexpected EOF",
-    "TAR_BAD_ARCHIVE: Unrecognized archive format",
-    "Truncated input (needed 512 more bytes, only 0 available) (TAR_BAD_ARCHIVE)",
-  ])("matches tar-specific EOF-class error: %s", (message) => {
-    expect(isTarEofRaceError(new Error(message))).toBe(true);
-  });
-
-  it("matches errors by code even when the message is empty", () => {
-    expect(isTarEofRaceError(Object.assign(new Error(""), { code: "EOF" }))).toBe(true);
-  });
-
-  it.each([
-    "EOF occurred in violation of protocol",
-    "unexpected eof while reading",
-    "ran out of EOF markers",
-    "permission denied",
-    "",
-  ])("does not match unrelated errors: %s", (message) => {
-    expect(isTarEofRaceError(new Error(message))).toBe(false);
-  });
-
-  it("rejects non-object inputs", () => {
-    expect(isTarEofRaceError(null)).toBe(false);
-    expect(isTarEofRaceError(undefined)).toBe(false);
-    expect(isTarEofRaceError("did not encounter expected EOF")).toBe(false);
-  });
-});
-
-describe("writeTarArchiveWithRetry", () => {
-  it("retries on EOF-class errors and eventually succeeds", async () => {
-    const eofErr = Object.assign(new Error("did not encounter expected EOF"), {
-      path: "/state/sessions/s-abc/transcript.jsonl",
-    });
-    const runTar = vi
-      .fn<() => Promise<void>>()
-      .mockRejectedValueOnce(eofErr)
-      .mockRejectedValueOnce(eofErr)
-      .mockResolvedValueOnce(undefined);
-    const log = vi.fn();
-    const sleep = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
-
-    await backupCreateInternals.writeTarArchiveWithRetry({
-      tempArchivePath: "/tmp/backup.tar.gz.tmp",
-      runTar,
-      log,
-      sleepMs: sleep,
-    });
-
-    expect(runTar).toHaveBeenCalledTimes(3);
-    expect(sleep).toHaveBeenNthCalledWith(1, 10_000);
-    expect(sleep).toHaveBeenNthCalledWith(2, 20_000);
-    expect(log).toHaveBeenCalledTimes(2);
-  });
-
-  it("surfaces the offending path and attempt count after exhausting retries", async () => {
-    const eofErr = Object.assign(new Error("did not encounter expected EOF"), {
-      path: "/state/logs/gateway.jsonl",
-    });
-    const runTar = vi.fn<() => Promise<void>>().mockRejectedValue(eofErr);
-    const sleep = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
-
-    await expect(
-      backupCreateInternals.writeTarArchiveWithRetry({
-        tempArchivePath: "/tmp/backup.tar.gz.tmp",
-        runTar,
-        sleepMs: sleep,
-      }),
-    ).rejects.toThrow(/last offending path: \/state\/logs\/gateway\.jsonl, after 3 attempts/);
-    expect(runTar).toHaveBeenCalledTimes(3);
-  });
-
-  it("lets callers reset per-attempt counters so retries report the final attempt's count, not a running sum", async () => {
-    // Simulate the caller's pattern: a closure counter populated by a filter
-    // that tar.c invokes while walking the tree. Each attempt re-walks the
-    // same tree, so the runTar closure must reset the counter before calling
-    // tar.c -- otherwise the reported count accumulates across attempts.
-    let skippedVolatileCount = 0;
-    const volatileFilesSeenPerAttempt = 5;
-    let attempt = 0;
-
-    const eofErr = Object.assign(new Error("did not encounter expected EOF"), {
-      path: "/state/sessions/s-abc/transcript.jsonl",
-    });
-
-    const runTar = vi.fn<() => Promise<void>>().mockImplementation(async () => {
-      attempt += 1;
-      skippedVolatileCount = 0;
-      for (let i = 0; i < volatileFilesSeenPerAttempt; i += 1) {
-        skippedVolatileCount += 1;
-      }
-      if (attempt < 3) {
-        throw eofErr;
-      }
-    });
-    const sleep = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
-
-    await backupCreateInternals.writeTarArchiveWithRetry({
-      tempArchivePath: "/tmp/backup.tar.gz.tmp",
-      runTar,
-      sleepMs: sleep,
-    });
-
-    expect(runTar).toHaveBeenCalledTimes(3);
-    // Without the reset, this would be 15 (5 * 3 attempts). With the reset,
-    // it equals the count from the final (successful) attempt.
-    expect(skippedVolatileCount).toBe(volatileFilesSeenPerAttempt);
-  });
-
-  it("does not retry on non-EOF errors", async () => {
-    const runTar = vi.fn<() => Promise<void>>().mockRejectedValue(new Error("permission denied"));
-    const sleep = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
-
-    await expect(
-      backupCreateInternals.writeTarArchiveWithRetry({
-        tempArchivePath: "/tmp/backup.tar.gz.tmp",
-        runTar,
-        sleepMs: sleep,
-      }),
-    ).rejects.toThrow(/permission denied/);
-    expect(runTar).toHaveBeenCalledTimes(1);
-    expect(sleep).not.toHaveBeenCalled();
   });
 });
 
@@ -366,65 +248,6 @@ describe("createBackupArchive", () => {
     );
   });
 
-  it("skips current live volatile state files while preserving workspace locks", async () => {
-    await withOpenClawTestState(
-      {
-        layout: "split",
-        prefix: "openclaw-backup-volatile-",
-        scenario: "minimal",
-      },
-      async (state) => {
-        const outputDir = state.path("backups");
-        await state.writeConfig({
-          agents: {
-            list: [{ id: "main", default: true, workspace: state.workspaceDir }],
-          },
-        });
-        await fs.mkdir(outputDir, { recursive: true });
-        await fs.writeFile(path.join(state.workspaceDir, "Cargo.lock"), "workspace lock\n", "utf8");
-        await fs.writeFile(
-          path.join(state.workspaceDir, "pending.tmp"),
-          "workspace temp fixture\n",
-          "utf8",
-        );
-        await state.writeText("agents/main/sessions/live-session.jsonl", "session\n");
-        await state.writeText("sessions/legacy-session.jsonl", "legacy session\n");
-        await state.writeText("cron/runs/nightly.jsonl", "cron\n");
-        await state.writeText("logs/gateway.log", "log\n");
-        await state.writeJson("delivery-queue/message.json", { id: "delivery" });
-        await state.writeJson("session-delivery-queue/message.json", { id: "session-delivery" });
-        await state.writeText("tmp/staged.tmp", "tmp\n");
-        await state.writeText("gateway.pid", "123\n");
-
-        const result = await createBackupArchive({
-          output: outputDir,
-          includeWorkspace: true,
-          nowMs: Date.UTC(2026, 4, 9, 8, 0, 0),
-        });
-        const entries = await listArchiveEntries(result.archivePath);
-
-        expect(entries.some((entry) => entry.endsWith("/workspace/Cargo.lock"))).toBe(true);
-        expect(entries.some((entry) => entry.endsWith("/workspace/pending.tmp"))).toBe(true);
-        for (const suffix of [
-          "/state/agents/main/sessions/live-session.jsonl",
-          "/state/sessions/legacy-session.jsonl",
-          "/state/cron/runs/nightly.jsonl",
-          "/state/logs/gateway.log",
-          "/state/delivery-queue/message.json",
-          "/state/session-delivery-queue/message.json",
-          "/state/tmp/staged.tmp",
-          "/state/gateway.pid",
-        ]) {
-          expect(
-            entries.some((entry) => entry.endsWith(suffix)),
-            suffix,
-          ).toBe(false);
-        }
-        expect(result.skippedVolatileCount).toBe(8);
-      },
-    );
-  });
-
   it("omits installed plugin node_modules from the real archive while keeping plugin files", async () => {
     await withOpenClawTestState(
       {
@@ -461,6 +284,17 @@ describe("createBackupArchive", () => {
           "utf8",
         );
         await fs.mkdir(outputDir, { recursive: true });
+        const database = openOpenClawStateDatabase();
+        const db = getNodeSqliteKysely<BackupCreateTestDatabase>(database.db);
+        executeSqliteQuerySync(
+          database.db,
+          db.insertInto("diagnostic_events").values({
+            scope: "backup-test",
+            event_key: "seed",
+            payload_json: "{}",
+            created_at: 1,
+          }),
+        );
 
         const result = await createBackupArchive({
           output: outputDir,
@@ -476,7 +310,35 @@ describe("createBackupArchive", () => {
         const pluginNodeModuleEntries = entries.filter((entry) =>
           entry.includes("/state/extensions/demo/node_modules/"),
         );
-        expect(pluginNodeModuleEntries).toStrictEqual([]);
+        expect(pluginNodeModuleEntries).toEqual([]);
+        expect(
+          entries.some((entry) => entry.endsWith("/state/node_modules/root-dep/index.js")),
+        ).toBe(true);
+        expect(entries.some((entry) => entry.endsWith("/state/state/openclaw.sqlite"))).toBe(true);
+
+        const backupRuns = executeSqliteQuerySync(
+          database.db,
+          db.selectFrom("backup_runs").selectAll(),
+        ).rows;
+        expect(backupRuns).toHaveLength(1);
+        expect(backupRuns[0]?.archive_path).toBe(result.archivePath);
+        expect(backupRuns[0]?.status).toBe("completed");
+        const manifest = JSON.parse(backupRuns[0]?.manifest_json ?? "{}") as {
+          databaseSnapshots?: Array<{
+            role?: string;
+            archivePath?: string;
+            integrity?: string;
+          }>;
+        };
+        expect(manifest.databaseSnapshots).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              role: "global",
+              integrity: "ok",
+              archivePath: expect.stringContaining("/state/state/openclaw.sqlite"),
+            }),
+          ]),
+        );
 
         const runtime: RuntimeEnv = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
         const verification = await backupVerifyCommand(runtime, { archive: result.archivePath });
@@ -485,41 +347,184 @@ describe("createBackupArchive", () => {
     );
   });
 
-  it("dereferences hardlinks instead of emitting restore-hostile Link entries", async () => {
+  it.runIf(process.platform !== "win32")(
+    "stores hardlinked workspace files as regular files so verification accepts the archive",
+    async () => {
+      await withOpenClawTestState(
+        {
+          layout: "split",
+          prefix: "openclaw-backup-hardlink-",
+          scenario: "minimal",
+        },
+        async (state) => {
+          await state.writeConfig({
+            agents: { defaults: { workspace: state.workspaceDir } },
+          });
+          const outputDir = state.path("backups");
+          await fs.mkdir(outputDir, { recursive: true });
+          const sourcePath = path.join(state.workspaceDir, "source.txt");
+          const linkedPath = path.join(state.workspaceDir, "linked.txt");
+          await fs.writeFile(sourcePath, "same inode\n", "utf8");
+          await fs.link(sourcePath, linkedPath);
+
+          const result = await createBackupArchive({
+            output: outputDir,
+            includeWorkspace: true,
+            nowMs: Date.UTC(2026, 4, 12, 12, 0, 0),
+          });
+          const entries = await listArchiveEntryTypes(result.archivePath);
+          const hardlinkedEntries = entries.filter(
+            (entry) =>
+              entry.path.endsWith("/workspace/source.txt") ||
+              entry.path.endsWith("/workspace/linked.txt"),
+          );
+          expect(hardlinkedEntries).toHaveLength(2);
+          expect(hardlinkedEntries.map((entry) => entry.type)).toEqual(["File", "File"]);
+
+          const runtime: RuntimeEnv = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+          const verification = await backupVerifyCommand(runtime, { archive: result.archivePath });
+          expect(verification.ok).toBe(true);
+        },
+      );
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "omits symlinks from state and workspace archives so verification accepts the archive",
+    async () => {
+      await withOpenClawTestState(
+        {
+          layout: "split",
+          prefix: "openclaw-backup-symlink-skip-",
+          scenario: "minimal",
+        },
+        async (state) => {
+          await state.writeConfig({
+            agents: { defaults: { workspace: state.workspaceDir } },
+          });
+          const outputDir = state.path("backups");
+          await fs.mkdir(outputDir, { recursive: true });
+
+          const workspaceTarget = path.join(state.workspaceDir, "source.txt");
+          const workspaceLink = path.join(state.workspaceDir, "linked.txt");
+          await fs.writeFile(workspaceTarget, "workspace target\n", "utf8");
+          await fs.symlink(workspaceTarget, workspaceLink);
+
+          const stateTarget = path.join(state.stateDir, "state-target.txt");
+          const stateLink = path.join(state.stateDir, "state-link.txt");
+          await fs.writeFile(stateTarget, "state target\n", "utf8");
+          await fs.symlink(stateTarget, stateLink);
+
+          const result = await createBackupArchive({
+            output: outputDir,
+            includeWorkspace: true,
+            nowMs: Date.UTC(2026, 4, 13, 12, 0, 0),
+          });
+          const entries = await listArchiveEntryTypes(result.archivePath);
+          expect(
+            entries.filter((entry) => entry.type === "SymbolicLink" || entry.type === "Link"),
+          ).toEqual([]);
+          expect(entries.some((entry) => entry.path.endsWith("/workspace/linked.txt"))).toBe(false);
+          expect(entries.some((entry) => entry.path.endsWith("/state/state-link.txt"))).toBe(false);
+
+          const runtime: RuntimeEnv = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
+          const verification = await backupVerifyCommand(runtime, { archive: result.archivePath });
+          expect(verification.ok).toBe(true);
+        },
+      );
+    },
+  );
+
+  it("omits volatile live state files from the staged archive", async () => {
     await withOpenClawTestState(
       {
         layout: "state-only",
-        prefix: "openclaw-backup-hardlink-",
+        prefix: "openclaw-backup-volatile-",
         scenario: "minimal",
       },
       async (state) => {
-        const stateDir = state.stateDir;
         const outputDir = state.path("backups");
-        const sourcePath = path.join(stateDir, "workspace-adx", "openclaw-src", "node_modules");
-        const targetPath = path.join(sourcePath, "esbuild", "bin", "esbuild");
-        const hardlinkPath = path.join(sourcePath, "@esbuild", "darwin-arm64", "bin", "esbuild");
-        await fs.mkdir(path.dirname(targetPath), { recursive: true });
-        await fs.mkdir(path.dirname(hardlinkPath), { recursive: true });
-        await fs.writeFile(targetPath, "binary fixture\n", "utf8");
-        await fs.link(targetPath, hardlinkPath);
+        await fs.mkdir(path.join(state.stateDir, "logs", "nested"), { recursive: true });
+        await fs.mkdir(path.join(state.stateDir, "delivery-queue"), { recursive: true });
+        await fs.mkdir(path.join(state.stateDir, "sessions", "s-abc"), { recursive: true });
+        await fs.writeFile(path.join(state.stateDir, "logs", "nested", "gateway.log"), "tail\n");
+        await fs.writeFile(path.join(state.stateDir, "gateway.pid"), "123\n");
+        await fs.writeFile(path.join(state.stateDir, "ipc.sock"), "");
+        await fs.writeFile(path.join(state.stateDir, "delivery-queue", "pending.json"), "{}\n");
+        await fs.writeFile(path.join(state.stateDir, "sessions", "s-abc", "meta.json"), "{}\n");
         await fs.mkdir(outputDir, { recursive: true });
 
         const result = await createBackupArchive({
           output: outputDir,
           includeWorkspace: false,
-          nowMs: Date.UTC(2026, 3, 29, 12, 0, 0),
+          nowMs: Date.UTC(2026, 4, 10, 12, 0, 0),
         });
-        const entries = await listArchiveEntryDetails(result.archivePath);
+        const entries = await listArchiveEntries(result.archivePath);
 
-        expect(entries.filter((entry) => entry.type === "Link")).toStrictEqual([]);
-        expect(entries.some((entry) => entry.path.endsWith("/esbuild/bin/esbuild"))).toBe(true);
-        expect(
-          entries.some((entry) => entry.path.endsWith("/@esbuild/darwin-arm64/bin/esbuild")),
-        ).toBe(true);
+        expect(entries.some((entry) => entry.endsWith("/state/logs/nested/gateway.log"))).toBe(
+          false,
+        );
+        expect(entries.some((entry) => entry.endsWith("/state/gateway.pid"))).toBe(false);
+        expect(entries.some((entry) => entry.endsWith("/state/ipc.sock"))).toBe(false);
+        expect(entries.some((entry) => entry.endsWith("/state/delivery-queue/pending.json"))).toBe(
+          false,
+        );
+        expect(entries.some((entry) => entry.endsWith("/state/sessions/s-abc/meta.json"))).toBe(
+          true,
+        );
+        expect(result.skippedVolatileCount).toBe(4);
+      },
+    );
+  });
 
-        const runtime: RuntimeEnv = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
-        const verification = await backupVerifyCommand(runtime, { archive: result.archivePath });
-        expect(verification.ok).toBe(true);
+  it("scrubs volatile delivery queue rows from SQLite snapshots", async () => {
+    await withOpenClawTestState(
+      {
+        layout: "state-only",
+        prefix: "openclaw-backup-queue-scrub-",
+        scenario: "minimal",
+      },
+      async (state) => {
+        const outputDir = state.path("backups");
+        await fs.mkdir(outputDir, { recursive: true });
+        const database = openOpenClawStateDatabase();
+        const db = getNodeSqliteKysely<BackupCreateTestDatabase>(database.db);
+        executeSqliteQuerySync(
+          database.db,
+          db.insertInto("delivery_queue_entries").values({
+            queue_name: "outbound",
+            id: "queued-send",
+            status: "pending",
+            entry_kind: "message",
+            session_key: "session-1",
+            channel: "telegram",
+            target: "chat-1",
+            account_id: null,
+            entry_json: JSON.stringify({ text: "do not replay" }),
+            enqueued_at: 1,
+            updated_at: 1,
+          }),
+        );
+
+        const result = await createBackupArchive({
+          output: outputDir,
+          includeWorkspace: false,
+          nowMs: Date.UTC(2026, 4, 11, 12, 0, 0),
+        });
+        const stateAsset = result.assets.find((asset) => asset.kind === "state");
+        expect(stateAsset).toBeDefined();
+        const extractDir = await extractArchiveToTemp(result.archivePath);
+        try {
+          const archivedStateDb = path.join(
+            extractDir,
+            stateAsset!.archivePath,
+            "state",
+            "openclaw.sqlite",
+          );
+          expect(countDeliveryQueueRows(archivedStateDb)).toBe(0);
+        } finally {
+          await fs.rm(extractDir, { recursive: true, force: true });
+        }
       },
     );
   });

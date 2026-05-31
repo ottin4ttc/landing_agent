@@ -1,6 +1,6 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import type { ModelRegistry } from "../../agents/model-registry-contract.js";
 import { parseModelRef } from "../../agents/model-selection.js";
-import type { ModelRegistry } from "../../llm/model-registry.js";
 import type { Model } from "../../llm/types.js";
 import { loadManifestMetadataSnapshot } from "../../plugins/manifest-contract-eligibility.js";
 import type { RuntimeEnv } from "../../runtime.js";

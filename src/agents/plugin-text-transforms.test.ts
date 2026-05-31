@@ -1,11 +1,11 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { describe, expect, it } from "vitest";
 import {
   createAssistantMessageEventStream,
   type AssistantMessage,
   type Context,
   type Model,
-} from "openclaw/plugin-sdk/llm";
-import { describe, expect, it } from "vitest";
+} from "./pi-ai-contract.js";
 import {
   applyPluginTextReplacements,
   mergePluginTextTransforms,

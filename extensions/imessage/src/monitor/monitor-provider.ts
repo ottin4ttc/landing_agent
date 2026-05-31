@@ -37,7 +37,7 @@ import {
   warnMissingProviderGroupPolicyFallbackOnce,
 } from "openclaw/plugin-sdk/runtime-group-policy";
 import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/security-runtime";
-import { readSessionUpdatedAt, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
+import { readSessionUpdatedAt } from "openclaw/plugin-sdk/session-store-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { waitForTransportReady } from "openclaw/plugin-sdk/transport-ready-runtime";
 import { resolveIMessageAccount } from "../accounts.js";
@@ -690,26 +690,26 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       return;
     }
 
-    const storePath = resolveStorePath(cfg.session?.store, {
-      agentId: decision.route.agentId,
-    });
-    const stagedAttachments = remoteHost
+    const dispatchDecision = decision;
+
+    const stagedMediaAttachments = remoteHost
       ? []
       : await stageIMessageAttachments(validAttachments, {
           maxBytes: mediaMaxBytes,
           allowedRoots: effectiveAttachmentRoots,
-          deps: { logVerbose },
+          deps: {
+            logVerbose,
+          },
         });
-    const mediaAttachments = remoteHost ? rawMediaAttachments : stagedAttachments;
-    const firstAttachment = mediaAttachments[0];
-    const mediaPath = firstAttachment?.path ?? undefined;
-    const mediaType = firstAttachment?.contentType ?? undefined;
-    // Build arrays for all attachments (for multi-image support)
-    const mediaPaths = mediaAttachments.map((a) => a.path).filter(Boolean);
-    const mediaTypes = mediaAttachments.map((a) => a.contentType ?? undefined);
+    const mediaAttachments =
+      stagedMediaAttachments.length > 0 ? stagedMediaAttachments : rawMediaAttachments;
+    const mediaPath = mediaAttachments[0]?.path;
+    const mediaType = mediaAttachments[0]?.contentType;
+    const mediaPaths = mediaAttachments.map((entry) => entry.path);
+    const mediaTypes = mediaAttachments.map((entry) => entry.contentType ?? "");
     const previousTimestamp = readSessionUpdatedAt({
-      storePath,
-      sessionKey: decision.route.sessionKey,
+      agentId: dispatchDecision.route.agentId,
+      sessionKey: dispatchDecision.route.sessionKey,
     });
     const dmHistoryLimit = !decision.isGroup
       ? resolveIMessageDmHistoryLimit({
@@ -731,7 +731,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
         : undefined;
     const { ctxPayload, chatTarget, imessageTo } = await buildIMessageInboundContext({
       cfg,
-      decision,
+      decision: dispatchDecision,
       message,
       previousTimestamp,
       remoteHost,
@@ -790,9 +790,9 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
 
     const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
       cfg,
-      agentId: decision.route.agentId,
+      agentId: dispatchDecision.route.agentId,
       channel: "imessage",
-      accountId: decision.route.accountId,
+      accountId: dispatchDecision.route.accountId,
       typing:
         supportsTyping && typingTarget
           ? {
@@ -838,7 +838,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       markDispatchIdle,
     } = createReplyDispatcherWithTyping({
       ...replyPipeline,
-      humanDelay: resolveHumanDelayConfig(cfg, decision.route.agentId),
+      humanDelay: resolveHumanDelayConfig(cfg, dispatchDecision.route.agentId),
       deliver: async (payload, info) => {
         const target = ctxPayload.To;
         if (!target) {
@@ -849,7 +849,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
           cfg,
           channel: "imessage",
           accountId: accountInfo.accountId,
-          agentId: decision.route.agentId,
+          agentId: dispatchDecision.route.agentId,
           ctxPayload,
           payload,
           info,
@@ -891,8 +891,8 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
 
     await runChannelInboundEvent({
       channel: "imessage",
-      accountId: decision.route.accountId,
-      raw: decision,
+      accountId: dispatchDecision.route.accountId,
+      raw: dispatchDecision,
       adapter: {
         ingest: () => ({
           id: ctxPayload.MessageSid ?? `${ctxPayload.From}:${Date.now()}`,
@@ -900,30 +900,30 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
           rawText: ctxPayload.RawBody ?? "",
           textForAgent: ctxPayload.BodyForAgent,
           textForCommands: ctxPayload.CommandBody,
-          raw: decision,
+          raw: dispatchDecision,
         }),
         resolveTurn: () => ({
           channel: "imessage",
-          accountId: decision.route.accountId,
-          routeSessionKey: decision.route.sessionKey,
-          storePath,
+          accountId: dispatchDecision.route.accountId,
+          agentId: dispatchDecision.route.agentId,
+          routeSessionKey: dispatchDecision.route.sessionKey,
           ctxPayload,
           recordInboundSession,
           record: {
             updateLastRoute:
-              !decision.isGroup && updateTarget
+              !dispatchDecision.isGroup && updateTarget
                 ? {
                     sessionKey: inboundLastRouteSessionKey,
                     channel: "imessage",
                     to: updateTarget,
-                    accountId: decision.route.accountId,
+                    accountId: dispatchDecision.route.accountId,
                     mainDmOwnerPin:
-                      inboundLastRouteSessionKey === decision.route.mainSessionKey &&
+                      inboundLastRouteSessionKey === dispatchDecision.route.mainSessionKey &&
                       pinnedMainDmOwner &&
-                      decision.senderNormalized
+                      dispatchDecision.senderNormalized
                         ? {
                             ownerRecipient: pinnedMainDmOwner,
-                            senderRecipient: decision.senderNormalized,
+                            senderRecipient: dispatchDecision.senderNormalized,
                             onSkip: ({ ownerRecipient, senderRecipient }) => {
                               logVerbose(
                                 `imessage: skip main-session last route for ${senderRecipient} (pinned owner ${ownerRecipient})`,
@@ -938,8 +938,8 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
             },
           },
           history: {
-            isGroup: decision.isGroup,
-            historyKey: decision.historyKey,
+            isGroup: dispatchDecision.isGroup,
+            historyKey: dispatchDecision.historyKey,
             historyMap: groupHistories,
             limit: historyLimit,
           },

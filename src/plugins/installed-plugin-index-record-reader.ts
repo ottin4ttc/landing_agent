@@ -2,12 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
-import { tryReadJson, tryReadJsonSync } from "../infra/json-files.js";
+import { tryReadJsonSync } from "../infra/json-files.js";
 import { resolveDefaultPluginNpmDir, validatePluginId } from "./install-paths.js";
 import {
-  resolveInstalledPluginIndexStorePath,
-  type InstalledPluginIndexStoreOptions,
-} from "./installed-plugin-index-store-path.js";
+  readPersistedInstalledPluginIndex,
+  readPersistedInstalledPluginIndexSync,
+} from "./installed-plugin-index-persisted-read.js";
+import { type InstalledPluginIndexStoreOptions } from "./installed-plugin-index-store-options.js";
+import { resolveInstalledPluginIndexStorePath } from "./installed-plugin-index-store-path.js";
 import { listManagedPluginNpmProjectRootsSync } from "./npm-project-roots.js";
 
 function cloneInstallRecords(
@@ -231,15 +233,17 @@ function extractPluginInstallRecordsFromPersistedInstalledPluginIndex(
 export async function readPersistedInstalledPluginIndexInstallRecords(
   options: InstalledPluginIndexStoreOptions = {},
 ): Promise<Record<string, PluginInstallRecord> | null> {
-  const parsed = await tryReadJson<unknown>(resolveInstalledPluginIndexStorePath(options));
-  return extractPluginInstallRecordsFromPersistedInstalledPluginIndex(parsed);
+  return extractPluginInstallRecordsFromPersistedInstalledPluginIndex(
+    await readPersistedInstalledPluginIndex(options),
+  );
 }
 
 export function readPersistedInstalledPluginIndexInstallRecordsSync(
   options: InstalledPluginIndexStoreOptions = {},
 ): Record<string, PluginInstallRecord> | null {
-  const parsed = tryReadJsonSync(resolveInstalledPluginIndexStorePath(options));
-  return extractPluginInstallRecordsFromPersistedInstalledPluginIndex(parsed);
+  return extractPluginInstallRecordsFromPersistedInstalledPluginIndex(
+    readPersistedInstalledPluginIndexSync(options),
+  );
 }
 
 type InstallRecordsCacheEntry = {

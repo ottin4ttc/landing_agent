@@ -167,6 +167,18 @@ function ensureAgentSchema(db: DatabaseSync, agentId: string, pathname: string):
   );
 }
 
+export function ensureOpenClawAgentDatabaseSchema(
+  db: DatabaseSync,
+  options: OpenClawAgentDatabaseOptions & { register?: boolean },
+): void {
+  const agentId = normalizeAgentId(options.agentId);
+  const pathname = resolveOpenClawAgentSqlitePath({ ...options, agentId });
+  ensureAgentSchema(db, agentId, pathname);
+  if (options.register === true) {
+    registerAgentDatabase({ agentId, path: pathname, env: options.env });
+  }
+}
+
 function registerAgentDatabase(params: {
   agentId: string;
   path: string;

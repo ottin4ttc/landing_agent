@@ -1,6 +1,3 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { VoiceCallConfig } from "./config.js";
@@ -16,9 +13,11 @@ import {
   speakInitialMessage as speakInitialMessageWithContext,
 } from "./manager/outbound.js";
 import {
+  createMemoryCallRecordStore,
   getCallHistoryFromStore,
   loadActiveCallsFromStore,
   persistCallRecord,
+  type VoiceCallRecordStore,
 } from "./manager/store.js";
 import { resolveVoiceCallSecondsTimerDelayMs } from "./manager/timer-delays.js";
 import { startMaxDurationTimer } from "./manager/timers.js";
@@ -30,7 +29,6 @@ import {
   type NormalizedEvent,
   type OutboundCallOptions,
 } from "./types.js";
-import { resolveUserPath } from "./utils.js";
 
 function markRestoredCallSkipped(call: CallRecord, endReason: "completed" | "timeout"): void {
   call.endedAt = Date.now();
@@ -46,23 +44,14 @@ function incrementRestoreStatusCount(
   counts.set(key, (counts.get(key) ?? 0) + 1);
 }
 
-function resolveDefaultStoreBase(config: VoiceCallConfig, storePath?: string): string {
-  const rawOverride = storePath?.trim() || config.store?.trim();
-  if (rawOverride) {
-    return resolveUserPath(rawOverride);
-  }
-  const preferred = path.join(os.homedir(), ".openclaw", "voice-calls");
-  const candidates = [preferred].map((dir) => resolveUserPath(dir));
-  const existing =
-    candidates.find((dir) => {
-      try {
-        return fs.existsSync(path.join(dir, "calls.jsonl")) || fs.existsSync(dir);
-      } catch {
-        return false;
-      }
-    }) ?? resolveUserPath(preferred);
-  return existing;
+function resolveDefaultStoreKey(_config: VoiceCallConfig, storeKey?: string): string {
+  return storeKey?.trim() || "voice-call";
 }
+
+type CallManagerStoreOptions = {
+  storeKey?: string;
+  callStore?: VoiceCallRecordStore;
+};
 
 /**
  * Manages voice calls: state ownership and delegation to manager helper modules.
@@ -74,7 +63,8 @@ export class CallManager {
   private rejectedProviderCallIds = new Set<string>();
   private provider: VoiceCallProvider | null = null;
   private config: VoiceCallConfig;
-  private storePath: string;
+  private storeKey: string;
+  private callStore: VoiceCallRecordStore;
   private webhookUrl: string | null = null;
   private activeTurnCalls = new Set<CallId>();
   private transcriptWaiters = new Map<
@@ -87,17 +77,16 @@ export class CallManager {
   >();
   private maxDurationTimers = new Map<CallId, NodeJS.Timeout>();
   private initialMessageInFlight = new Set<CallId>();
+  streamSessionIssuer?: StreamSessionIssuer;
 
-  /**
-   * Carrier-side stream session issuer. Wired by the runtime when realtime is
-   * enabled so the manager can pre-issue stream URLs for providers (e.g.
-   * Telnyx) that attach Media Streaming at dial or answer time.
-   */
-  streamSessionIssuer: StreamSessionIssuer | undefined;
-
-  constructor(config: VoiceCallConfig, storePath?: string) {
+  constructor(config: VoiceCallConfig, options?: string | CallManagerStoreOptions) {
     this.config = config;
-    this.storePath = resolveDefaultStoreBase(config, storePath);
+    const storeKey = typeof options === "string" ? options : options?.storeKey;
+    this.storeKey = resolveDefaultStoreKey(config, storeKey);
+    this.callStore =
+      typeof options === "string"
+        ? createMemoryCallRecordStore(this.storeKey)
+        : (options?.callStore ?? createMemoryCallRecordStore(this.storeKey));
   }
 
   /**
@@ -108,9 +97,7 @@ export class CallManager {
     this.provider = provider;
     this.webhookUrl = webhookUrl;
 
-    fs.mkdirSync(this.storePath, { recursive: true });
-
-    const persisted = loadActiveCallsFromStore(this.storePath);
+    const persisted = await loadActiveCallsFromStore(this.callStore);
     this.processedEventIds = persisted.processedEventIds;
     this.rejectedProviderCallIds = persisted.rejectedProviderCallIds;
 
@@ -197,7 +184,7 @@ export class CallManager {
       if (now - call.startedAt > maxAgeMs) {
         skippedOlderThanMaxDuration += 1;
         markRestoredCallSkipped(call, "timeout");
-        persistCallRecord(this.storePath, call);
+        persistCallRecord(this.callStore, call);
         await provider
           .hangupCall({
             callId,
@@ -222,7 +209,7 @@ export class CallManager {
             if (result.isTerminal) {
               incrementRestoreStatusCount(skippedTerminalStatuses, result.status);
               markRestoredCallSkipped(call, "completed");
-              persistCallRecord(this.storePath, call);
+              persistCallRecord(this.callStore, call);
             } else if (result.isUnknown) {
               keptUnknownProviderStatus += 1;
               verified.set(callId, call);
@@ -338,7 +325,7 @@ export class CallManager {
       rejectedProviderCallIds: this.rejectedProviderCallIds,
       provider: this.provider,
       config: this.config,
-      storePath: this.storePath,
+      callStore: this.callStore,
       webhookUrl: this.webhookUrl,
       activeTurnCalls: this.activeTurnCalls,
       transcriptWaiters: this.transcriptWaiters,
@@ -437,6 +424,6 @@ export class CallManager {
    * Get call history (from persisted logs).
    */
   async getCallHistory(limit = 50): Promise<CallRecord[]> {
-    return getCallHistoryFromStore(this.storePath, limit);
+    return getCallHistoryFromStore(this.callStore, limit);
   }
 }

@@ -1,4 +1,10 @@
-type SubagentDeliveryPath = "steered" | "direct" | "none";
+type SubagentDeliveryPath =
+  | "queued"
+  | "steered"
+  | "direct"
+  | "direct-fallback"
+  | "direct-thread-fallback"
+  | "none";
 export type SubagentAnnounceDeliveryFailureReason =
   | "completion_handoff_pending"
   | "generated_media_missing"

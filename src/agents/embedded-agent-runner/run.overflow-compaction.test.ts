@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { getSessionEntry, upsertSessionEntry } from "../../config/sessions.js";
 import type { AgentHarness } from "../harness/types.js";
 import type { AgentInternalEvent } from "../internal-events.js";
 import type { AgentRuntimePlan } from "../runtime-plan/types.js";
@@ -239,7 +240,6 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     await runEmbeddedAgent({
       sessionId: "test-session",
       sessionKey: "test-key",
-      sessionFile: "/tmp/session.json",
       workspaceDir: "/tmp/workspace",
       prompt: "hello",
       timeoutMs: 30000,
@@ -1636,10 +1636,7 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
         forwardedAuthProfileId: "openai:personal",
       },
     });
-    const harnessParams = mockCallArg(pluginRunAttempt) as {
-      runtimePlan?: unknown;
-      authProfileStore?: { profiles?: Record<string, unknown> };
-    };
+    const harnessParams = pluginRunAttempt.mock.calls[0]?.[0];
     expect(harnessParams?.runtimePlan).toBe(runtimePlan);
     const authProfileStore = expectRecordFields(harnessParams.authProfileStore, {});
     const authProfiles = expectRecordFields(authProfileStore.profiles, {});
@@ -1782,7 +1779,6 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     expect(Object.keys(firstAuthProfiles)).toEqual(["openai:sub", "openai:backup"]);
     expect(secondAttempt.authProfileStore).toBe(firstAttempt.authProfileStore);
   });
-
   it("blocks undersized models before dispatching a provider attempt", async () => {
     mockedResolveContextWindowInfo.mockReturnValue({
       tokens: 800,
@@ -1818,14 +1814,16 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     await runEmbeddedAgent(overflowBaseRunParams);
 
     expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
-    const compactParams = expectMockCallFields(mockedCompactDirect, {
-      sessionId: "test-session",
-      sessionFile: "/tmp/session.json",
-    });
-    expectRecordFields(compactParams.runtimeContext, {
-      trigger: "overflow",
-      authProfileId: "test-profile",
-    });
+    expect(mockedCompactDirect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "test-session",
+        transcriptScope: { agentId: "main", sessionId: "test-session" },
+        runtimeContext: expect.objectContaining({
+          trigger: "overflow",
+          authProfileId: "test-profile",
+        }),
+      }),
+    );
   });
 
   it("threads prompt-cache runtime context into overflow compaction", async () => {
@@ -1880,42 +1878,41 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
 
   it("recovers preflight compaction when stale tokens point at an empty transcript", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-empty-preflight-"));
-    const storePath = path.join(dir, "sessions.json");
-    await fs.writeFile(
-      storePath,
-      JSON.stringify({
-        "test-key": {
-          sessionId: "test-session",
+    const storePath = path.join(dir, "sessions.sqlite");
+    upsertSessionEntry({
+      agentId: "main",
+      path: storePath,
+      sessionKey: "test-key",
+      entry: {
+        sessionId: "test-session",
+        updatedAt: 1,
+        totalTokens: 1_500_000,
+        totalTokensFresh: true,
+        inputTokens: 20,
+        outputTokens: 10_855,
+        cacheRead: 1_761_324,
+        cacheWrite: 33_047,
+        contextBudgetStatus: {
+          schemaVersion: 1,
+          source: "pre-prompt-estimate",
           updatedAt: 1,
-          totalTokens: 1_500_000,
-          totalTokensFresh: true,
-          inputTokens: 20,
-          outputTokens: 10_855,
-          cacheRead: 1_761_324,
-          cacheWrite: 33_047,
-          contextBudgetStatus: {
-            schemaVersion: 1,
-            source: "pre-prompt-estimate",
-            updatedAt: 1,
-            provider: "claude-cli",
-            model: "claude-opus-4-7",
-            route: "compact_only",
-            shouldCompact: true,
-            estimatedPromptTokens: 1_794_391,
-            contextTokenBudget: 1_048_576,
-            promptBudgetBeforeReserve: 1_044_480,
-            reserveTokens: 4_096,
-            effectiveReserveTokens: 4_096,
-            remainingPromptBudgetTokens: 0,
-            overflowTokens: 749_911,
-            toolResultReducibleChars: 0,
-            messageCount: 0,
-            unwindowedMessageCount: 0,
-          },
+          provider: "claude-cli",
+          model: "claude-opus-4-7",
+          route: "compact_only",
+          shouldCompact: true,
+          estimatedPromptTokens: 1_794_391,
+          contextTokenBudget: 1_048_576,
+          promptBudgetBeforeReserve: 1_044_480,
+          reserveTokens: 4_096,
+          effectiveReserveTokens: 4_096,
+          remainingPromptBudgetTokens: 0,
+          overflowTokens: 749_911,
+          toolResultReducibleChars: 0,
+          messageCount: 0,
+          unwindowedMessageCount: 0,
         },
-      }),
-      "utf8",
-    );
+      },
+    });
 
     mockedRunEmbeddedAttempt
       .mockResolvedValueOnce(
@@ -1955,6 +1952,7 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
     try {
       const result = await runEmbeddedAgent({
         ...overflowBaseRunParams,
+        path: storePath,
         config: {
           session: {
             store: storePath,
@@ -1967,7 +1965,14 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       expect(result.meta.error).toBeUndefined();
       expect(result.meta.agentMeta?.compactionTokensAfter).toBeUndefined();
       expect(result.meta.agentMeta?.contextBudgetStatus).toBeUndefined();
-      const stored = JSON.parse(await fs.readFile(storePath, "utf8"))["test-key"];
+      const stored = getSessionEntry({
+        agentId: "main",
+        path: storePath,
+        sessionKey: "test-key",
+      });
+      if (!stored) {
+        throw new Error("expected SQLite session entry to exist");
+      }
       expect(stored.totalTokens).toBe(0);
       expect(stored.totalTokensFresh).toBe(true);
       expect(stored.inputTokens).toBeUndefined();
@@ -2132,22 +2137,22 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
 
     await runEmbeddedAgent(overflowBaseRunParams);
 
-    expectRecordFields(mockCallArg(mockedGlobalHookRunner.runBeforeCompaction), {
-      messageCount: -1,
-      sessionFile: "/tmp/session.json",
-    });
-    expectRecordFields(mockCallArg(mockedGlobalHookRunner.runBeforeCompaction, 0, 1), {
-      sessionKey: "test-key",
-    });
-    expectRecordFields(mockCallArg(mockedGlobalHookRunner.runAfterCompaction), {
-      messageCount: -1,
-      compactedCount: -1,
-      tokenCount: 50,
-      sessionFile: "/tmp/session.json",
-    });
-    expectRecordFields(mockCallArg(mockedGlobalHookRunner.runAfterCompaction, 0, 1), {
-      sessionKey: "test-key",
-    });
+    expect(mockedGlobalHookRunner.runBeforeCompaction).toHaveBeenCalledWith(
+      { messageCount: -1 },
+      expect.objectContaining({
+        sessionKey: "test-key",
+      }),
+    );
+    expect(mockedGlobalHookRunner.runAfterCompaction).toHaveBeenCalledWith(
+      {
+        messageCount: -1,
+        compactedCount: -1,
+        tokenCount: 50,
+      },
+      expect.objectContaining({
+        sessionKey: "test-key",
+      }),
+    );
   });
 
   it("runs maintenance after successful overflow-recovery compaction", async () => {
@@ -2166,17 +2171,19 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
 
     await runEmbeddedAgent(overflowBaseRunParams);
 
-    const maintenanceParams = expectMockCallFields(mockedRunContextEngineMaintenance, {
-      contextEngine: mockedContextEngine,
-      sessionId: "test-session",
-      sessionKey: "test-key",
-      sessionFile: "/tmp/session.json",
-      reason: "compaction",
-    });
-    expectRecordFields(maintenanceParams.runtimeContext, {
-      trigger: "overflow",
-      authProfileId: "test-profile",
-    });
+    expect(mockedRunContextEngineMaintenance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextEngine: mockedContextEngine,
+        sessionId: "test-session",
+        sessionKey: "test-key",
+        transcriptScope: { agentId: "main", sessionId: "test-session" },
+        reason: "compaction",
+        runtimeContext: expect.objectContaining({
+          trigger: "overflow",
+          authProfileId: "test-profile",
+        }),
+      }),
+    );
   });
 
   it("retries overflow recovery against the rotated compacted transcript", async () => {
@@ -2186,7 +2193,6 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
         makeAttemptResult({
           promptError: null,
           sessionIdUsed: "rotated-session",
-          sessionFileUsed: "/tmp/rotated-session.json",
         }),
       );
     mockedCompactDirect.mockResolvedValueOnce(
@@ -2194,7 +2200,6 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
         summary: "rotated overflow compaction",
         tokensAfter: 50,
         sessionId: "rotated-session",
-        sessionFile: "/tmp/rotated-session.json",
       }),
     );
 
@@ -2204,14 +2209,15 @@ describe("runEmbeddedAgent overflow compaction trigger routing", () => {
       mockedRunEmbeddedAttempt,
       {
         sessionId: "rotated-session",
-        sessionFile: "/tmp/rotated-session.json",
       },
       1,
     );
-    expectMockCallFields(mockedRunContextEngineMaintenance, {
-      sessionId: "rotated-session",
-      sessionFile: "/tmp/rotated-session.json",
-    });
+    expect(mockedRunContextEngineMaintenance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "rotated-session",
+        transcriptScope: { agentId: "main", sessionId: "rotated-session" },
+      }),
+    );
   });
 
   it("guards thrown engine-owned overflow compaction attempts", async () => {

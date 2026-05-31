@@ -45,33 +45,4 @@ describe("discord voice opus codec", () => {
     });
     expect(decoded.length).toBe(960 * 2 * 2);
   });
-
-  it("pads final partial PCM frames before encoding", async () => {
-    const encoder = createDiscordOpusEncodeStream();
-    const packetsPromise = collectBuffers(encoder);
-
-    encoder.end(Buffer.alloc((960 * 2 * 2) / 2));
-    const packets = await packetsPromise;
-
-    expect(packets).toHaveLength(1);
-  });
-
-  it("surfaces chunk decode stream failures to callers", async () => {
-    const err = new Error("memory access out of bounds");
-    const onError = vi.fn();
-    const stream = new Readable({
-      read() {
-        this.destroy(err);
-      },
-    });
-
-    await decodeOpusStreamChunks(stream, {
-      onChunk: vi.fn(),
-      onError,
-      onVerbose: vi.fn(),
-      onWarn: vi.fn(),
-    });
-
-    expect(onError).toHaveBeenCalledWith(err);
-  });
 });

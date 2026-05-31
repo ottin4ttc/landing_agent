@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { SessionEntry } from "../../config/sessions.js";
+
 const TEST_WORKSPACE_DIR = "/tmp/workspace";
 
 const {
@@ -53,9 +55,12 @@ vi.mock("../../skills/runtime/refresh-state.js", () => ({
 }));
 
 vi.mock("../../config/sessions.js", () => ({
-  updateSessionStore: vi.fn(),
-  resolveSessionFilePath: vi.fn(),
-  resolveSessionFilePathOptions: vi.fn(),
+  getSessionEntry: vi.fn(() => undefined),
+  mergeSessionEntry: (existing: SessionEntry | undefined, patch: Partial<SessionEntry>) => ({
+    ...existing,
+    ...patch,
+  }),
+  upsertSessionEntry: vi.fn(),
 }));
 
 vi.mock("../../routing/session-key.js", () => ({

@@ -16,20 +16,20 @@ import type {
   PluginHookBeforeMessageWriteResult,
 } from "../plugins/types.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import type { AgentMessage } from "./agent-core-contract.js";
 import { formatContextLimitTruncationNotice } from "./embedded-agent-runner/context-truncation-notice.js";
 import {
   DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS,
   truncateToolResultMessage,
 } from "./embedded-agent-runner/tool-result-truncation.js";
-import type { AgentMessage } from "./runtime/index.js";
 import {
   getRawSessionAppendMessage,
   setRawSessionAppendMessage,
 } from "./session-raw-append-message.js";
 import { createPendingToolCallState } from "./session-tool-result-state.js";
 import { makeMissingToolResult, sanitizeToolCallInputs } from "./session-transcript-repair.js";
-import type { SessionManager } from "./sessions/index.js";
 import { extractToolCallsFromAssistant, extractToolResultId } from "./tool-call-id.js";
+import type { SessionManager } from "./transcript/session-transcript-contract.js";
 
 /**
  * Truncate oversized text content blocks in a tool result message.
@@ -105,8 +105,8 @@ function resolveAppendedMessageSeq(params: {
 }
 
 // `details` is runtime/UI metadata, not model-visible tool output. Keep the
-// session JSONL useful for debugging without letting metadata blobs dominate
-// disk, replay repair, transcript broadcasts, or future tooling that reads raw
+// transcript useful for debugging without letting metadata blobs dominate
+// replay repair, transcript broadcasts, or future tooling that reads persisted
 // sessions. Model-visible text belongs in tool result `content`.
 const MAX_PERSISTED_TOOL_RESULT_DETAILS_BYTES = 8_192;
 const MAX_PERSISTED_DETAIL_STRING_CHARS = 2_000;
@@ -521,8 +521,9 @@ export function installSessionToolResultGuard(
   opts?: {
     /** Optional session key for transcript update broadcasts. */
     sessionKey?: string;
-    /** Optional agent id for selected-global transcript update broadcasts. */
+    /** Optional agent/session identity for SQLite-backed transcript broadcasts. */
     agentId?: string;
+    sessionId?: string;
     /**
      * Optional transform applied to any message before persistence.
      */
@@ -547,7 +548,7 @@ export function installSessionToolResultGuard(
      */
     allowedToolNames?: Iterable<string>;
     /**
-     * Synchronous hook invoked before any message is written to the session JSONL.
+     * Synchronous hook invoked before any message is written to the persisted transcript.
      * If the hook returns { block: true }, the message is silently dropped.
      * If it returns { message }, the modified message is written instead.
      */
@@ -773,19 +774,17 @@ export function installSessionToolResultGuard(
       suppressNextUserMessagePersistence = false;
       return undefined;
     }
-    const {
-      entryId: result,
-      messageSeq,
-      sessionFile,
-    } = appendMessageAndCacheTranscriptSeq(finalMessage);
-    if (sessionFile) {
+    const result = appendMessageAndCacheTranscriptSeq(finalMessage);
+
+    if (opts?.sessionId || opts?.sessionKey) {
       emitSessionTranscriptUpdate({
-        sessionFile,
+        ...(opts?.agentId ? { agentId: opts.agentId } : {}),
+        ...(opts?.sessionId ? { sessionId: opts.sessionId } : {}),
         sessionKey: opts?.sessionKey,
         ...(opts?.agentId ? { agentId: opts.agentId } : {}),
         message: finalMessage,
-        messageId: typeof result === "string" ? result : undefined,
-        ...(messageSeq !== undefined ? { messageSeq } : {}),
+        messageId: result.entryId,
+        ...(result.messageSeq !== undefined ? { messageSeq: result.messageSeq } : {}),
       });
     }
 
@@ -804,7 +803,7 @@ export function installSessionToolResultGuard(
       );
     }
 
-    return result;
+    return result.entryId;
   };
 
   // Monkey-patch appendMessage with our guarded version.

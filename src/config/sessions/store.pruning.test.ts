@@ -6,11 +6,13 @@ import {
   registerSessionMaintenancePreserveKeysProvider,
 } from "./store-maintenance-preserve.js";
 import {
+  capEntryCount,
+  getActiveSessionMaintenanceWarning,
   isProtectedSessionMaintenanceEntry,
+  pruneStaleEntries,
   resolveMaintenanceConfigFromInput,
   resolveSessionEntryMaintenanceHighWater,
 } from "./store-maintenance.js";
-import { capEntryCount, getActiveSessionMaintenanceWarning, pruneStaleEntries } from "./store.js";
 import type { SessionEntry } from "./types.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;

@@ -1,6 +1,6 @@
 import { expect } from "vitest";
-import type { AssistantMessage } from "../llm/types.js";
 import { subscribeEmbeddedAgentSession } from "./embedded-agent-subscribe.js";
+import type { AssistantMessage } from "./pi-ai-contract.js";
 
 type SubscribeEmbeddedAgentSession = typeof subscribeEmbeddedAgentSession;
 type SubscribeEmbeddedAgentSessionParams = Parameters<SubscribeEmbeddedAgentSession>[0];

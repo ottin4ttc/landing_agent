@@ -356,7 +356,7 @@ function readStabilityBundle(
   stateDir: string,
 ): ReadDiagnosticStabilityBundleResult {
   if (target === false) {
-    return { status: "missing", dir: "$OPENCLAW_STATE_DIR/logs/stability" };
+    return { status: "missing", dir: "sqlite:diagnostics.stability" };
   }
   if (target === undefined || target === "latest") {
     return readLatestDiagnosticStabilityBundleSync({ stateDir });

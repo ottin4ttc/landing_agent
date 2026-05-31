@@ -36,9 +36,6 @@ export function createQaRunnerRuntime(): PluginRuntime {
         },
       },
       session: {
-        resolveStorePath(_store: string | undefined, { agentId }: { agentId: string }) {
-          return agentId;
-        },
         readSessionUpdatedAt({ sessionKey }: { sessionKey: string }) {
           return sessions.has(sessionKey) ? Date.now() : undefined;
         },
@@ -93,7 +90,7 @@ export function createQaRunnerRuntime(): PluginRuntime {
               ? params.ctxPayload.SessionKey
               : params.routeSessionKey;
           await params.recordInboundSession({
-            storePath: params.storePath,
+            agentId: params.agentId,
             sessionKey,
             ctx: params.ctxPayload,
             onRecordError: params.record?.onRecordError ?? (() => undefined),

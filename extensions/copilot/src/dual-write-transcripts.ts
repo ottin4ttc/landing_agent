@@ -17,7 +17,7 @@
  * (extensions/codex/src/app-server/transcript-mirror.ts). Both writers
  * cooperate via idempotency-key dedupe: each mirrored entry carries a
  * stable `${idempotencyScope}:${identity}` key, and we skip any key
- * already present in the transcript on disk before appending. Both
+ * already present in the SQLite transcript before appending. Both
  * attempt-execution's untagged entries (no idempotencyKey) and our
  * tagged mirror entries can coexist; attempt-execution dedupes its own
  * final-assistant append via `embeddedAssistantGapFill` content match.
@@ -29,12 +29,10 @@
  */
 
 import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
 import {
-  acquireSessionWriteLock,
   appendSessionTranscriptMessage,
   emitSessionTranscriptUpdate,
-  resolveSessionWriteLockAcquireTimeoutMs,
+  loadSqliteSessionTranscriptEvents,
   runAgentHarnessBeforeMessageWriteHook,
   type AgentMessage,
   type SessionWriteLockAcquireTimeoutConfig,
@@ -94,9 +92,9 @@ function buildMirrorDedupeIdentity(message: MirroredAgentMessage): string {
 }
 
 export interface MirrorCopilotTranscriptParams {
-  sessionFile: string;
   sessionKey?: string;
   agentId?: string;
+  sessionId?: string;
   messages: AgentMessage[];
   /**
    * Stable per-harness/per-thread scope. The codex equivalent uses
@@ -120,94 +118,94 @@ export async function mirrorCopilotTranscript(
     return;
   }
 
-  const lock = await acquireSessionWriteLock({
-    sessionFile: params.sessionFile,
-    timeoutMs: resolveSessionWriteLockAcquireTimeoutMs(params.config),
-  });
-  try {
-    const existingIdempotencyKeys = await readTranscriptIdempotencyKeys(params.sessionFile);
-    for (const message of messages) {
-      const dedupeIdentity = buildMirrorDedupeIdentity(message);
-      const idempotencyKey = params.idempotencyScope
-        ? `${params.idempotencyScope}:${dedupeIdentity}`
-        : undefined;
-      if (idempotencyKey && existingIdempotencyKeys.has(idempotencyKey)) {
-        continue;
-      }
-      const transcriptMessage = {
-        ...message,
-        ...(idempotencyKey ? { idempotencyKey } : {}),
-      } as AgentMessage;
-      const nextMessage = runAgentHarnessBeforeMessageWriteHook({
-        message: transcriptMessage,
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-      });
-      if (!nextMessage) {
-        continue;
-      }
-      const messageToAppend = (
-        idempotencyKey
-          ? {
-              ...(nextMessage as unknown as Record<string, unknown>),
-              idempotencyKey,
-            }
-          : nextMessage
-      ) as AgentMessage;
-      await appendSessionTranscriptMessage({
-        transcriptPath: params.sessionFile,
-        message: messageToAppend,
-        config: params.config,
-      });
-      if (idempotencyKey) {
-        existingIdempotencyKeys.add(idempotencyKey);
-      }
-    }
-  } finally {
-    await lock.release();
+  const agentId = params.agentId?.trim();
+  const sessionId = params.sessionId?.trim();
+  if (!agentId || !sessionId) {
+    throw new Error("Copilot transcript mirror requires agentId and sessionId.");
   }
 
-  if (params.sessionKey) {
-    emitSessionTranscriptUpdate({ sessionFile: params.sessionFile, sessionKey: params.sessionKey });
-  } else {
-    emitSessionTranscriptUpdate(params.sessionFile);
+  const mirrorState = readTranscriptMirrorState({ agentId, sessionId });
+  let nextMessageSeq = mirrorState.messageCount;
+  for (const message of messages) {
+    const dedupeIdentity = buildMirrorDedupeIdentity(message);
+    const idempotencyKey = params.idempotencyScope
+      ? `${params.idempotencyScope}:${dedupeIdentity}`
+      : undefined;
+    if (idempotencyKey && mirrorState.idempotencyKeys.has(idempotencyKey)) {
+      continue;
+    }
+    const transcriptMessage = {
+      ...message,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    } as AgentMessage;
+    const nextMessage = runAgentHarnessBeforeMessageWriteHook({
+      message: transcriptMessage,
+      agentId,
+      sessionKey: params.sessionKey,
+    });
+    if (!nextMessage) {
+      continue;
+    }
+    const messageToAppend = (
+      idempotencyKey
+        ? {
+            ...(nextMessage as unknown as Record<string, unknown>),
+            idempotencyKey,
+          }
+        : nextMessage
+    ) as AgentMessage;
+    const { messageId, message: appendedMessage } = await appendSessionTranscriptMessage({
+      agentId,
+      sessionId,
+      message: messageToAppend,
+      config: params.config,
+    });
+    nextMessageSeq += 1;
+    emitSessionTranscriptUpdate({
+      agentId,
+      sessionId,
+      ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+      message: appendedMessage,
+      messageId,
+      messageSeq: nextMessageSeq,
+    });
+    if (idempotencyKey) {
+      mirrorState.idempotencyKeys.add(idempotencyKey);
+    }
   }
 }
 
-async function readTranscriptIdempotencyKeys(sessionFile: string): Promise<Set<string>> {
-  const keys = new Set<string>();
-  let raw: string;
-  try {
-    raw = await fs.readFile(sessionFile, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-    return keys;
-  }
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) {
+function readTranscriptMirrorState(params: { agentId: string; sessionId: string }): {
+  idempotencyKeys: Set<string>;
+  messageCount: number;
+} {
+  const idempotencyKeys = new Set<string>();
+  let messageCount = 0;
+  for (const entry of loadSqliteSessionTranscriptEvents(params)) {
+    const event = entry.event;
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
       continue;
     }
-    try {
-      const parsed = JSON.parse(line) as { message?: { idempotencyKey?: unknown } };
-      if (typeof parsed.message?.idempotencyKey === "string") {
-        keys.add(parsed.message.idempotencyKey);
-      }
-    } catch {
-      continue;
+    const record = event as {
+      type?: unknown;
+      message?: { idempotencyKey?: unknown };
+    };
+    if (record.type === "message") {
+      messageCount += 1;
+    }
+    if (typeof record.message?.idempotencyKey === "string") {
+      idempotencyKeys.add(record.message.idempotencyKey);
     }
   }
-  return keys;
+  return { idempotencyKeys, messageCount };
 }
 
 /**
  * Caller-side wrapper that swallows mirror failures. attempt.ts uses
- * this so that a transient transcript-mirror failure (lock contention,
- * disk full, etc.) never breaks an otherwise-successful attempt. The
- * SDK's own session file remains the source of truth in that case;
- * the OpenClaw audit trail just misses the intermediate messages for
- * this turn.
+ * this so that a transient transcript-mirror failure never breaks an
+ * otherwise-successful attempt. The SDK's own session storage remains
+ * the source of truth in that case; the OpenClaw audit trail just
+ * misses the intermediate messages for this turn.
  */
 export async function dualWriteCopilotTranscriptBestEffort(
   params: MirrorCopilotTranscriptParams,

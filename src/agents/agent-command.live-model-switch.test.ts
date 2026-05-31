@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../config/sessions.js";
+import { toAgentStoreSessionKey } from "../routing/session-key.js";
 import { INTERNAL_RUNTIME_CONTEXT_BEGIN, INTERNAL_RUNTIME_CONTEXT_END } from "./internal-events.js";
 import { LiveSessionModelSwitchError } from "./live-model-switch-error.js";
 
@@ -35,7 +36,7 @@ const state = vi.hoisted(() => ({
   emitAgentEventMock: vi.fn(),
   registerAgentRunContextMock: vi.fn(),
   clearAgentRunContextMock: vi.fn(),
-  updateSessionStoreAfterAgentRunMock: vi.fn(),
+  updateSessionEntryAfterAgentRunMock: vi.fn(),
   deliverAgentCommandResultMock: vi.fn(),
   resolveAgentDeliveryPlanMock: vi.fn(),
   resolveAgentOutboundTargetMock: vi.fn(),
@@ -79,7 +80,7 @@ vi.mock("./command/attempt-execution.runtime.js", () => ({
   persistSessionEntry: vi.fn(),
   prependInternalEventContext: (body: string) => body,
   runAgentAttempt: (...args: unknown[]) => state.runAgentAttemptMock(...args),
-  sessionFileHasContent: vi.fn(async () => false),
+  sessionTranscriptHasContent: vi.fn(async () => false),
 }));
 
 vi.mock("./command/attempt-execution.shared.js", async () => {
@@ -115,10 +116,16 @@ vi.mock("./command/run-context.js", () => ({
   }),
 }));
 
-vi.mock("./command/session-store.runtime.js", () => ({
-  updateSessionStoreAfterAgentRun: (...args: unknown[]) =>
-    state.updateSessionStoreAfterAgentRunMock(...args),
-}));
+vi.mock("./command/session-entry-updates.js", async () => {
+  const actual = await vi.importActual<typeof import("./command/session-entry-updates.js")>(
+    "./command/session-entry-updates.js",
+  );
+  return {
+    ...actual,
+    updateSessionEntryAfterAgentRun: (...args: unknown[]) =>
+      state.updateSessionEntryAfterAgentRunMock(...args),
+  };
+});
 
 vi.mock("./command/session.js", () => ({
   resolveSession: () => ({
@@ -130,7 +137,6 @@ vi.mock("./command/session.js", () => ({
       skillsSnapshot: { prompt: "", skills: [], version: 0 },
     },
     sessionStore: state.sessionStoreMock,
-    storePath: state.storePathMock,
     isNewSession: false,
     persistedThinking: undefined,
     persistedVerbose: undefined,
@@ -214,18 +220,13 @@ vi.mock("../config/runtime-snapshot.js", () => ({
 vi.mock("../config/sessions.js", () => ({
   resolveAgentIdFromSessionKey: () => "default",
   mergeSessionEntry: (a: unknown, b: unknown) => ({ ...(a as object), ...(b as object) }),
-  updateSessionStore: vi.fn(
-    async (_path: string, fn: (store: Record<string, unknown>) => unknown) => {
-      const store: Record<string, unknown> = {};
-      return fn(store);
-    },
-  ),
 }));
 
 vi.mock("../config/sessions/transcript-resolve.runtime.js", () => ({
-  resolveSessionTranscriptFile: async () => ({
-    sessionFile: "/tmp/session.jsonl",
-    sessionEntry: { sessionId: "session-1", updatedAt: Date.now() },
+  resolveSessionTranscriptTarget: async (params: { sessionEntry?: unknown }) => ({
+    agentId: "default",
+    sessionId: "session-1",
+    sessionEntry: params.sessionEntry ?? { sessionId: "session-1", updatedAt: Date.now() },
   }),
 }));
 
@@ -315,7 +316,7 @@ vi.mock("../terminal/ansi.js", () => ({
 vi.mock("../trajectory/runtime.js", () => ({
   createTrajectoryRuntimeRecorder: () => ({
     enabled: true,
-    filePath: "/tmp/session.trajectory.jsonl",
+    runtimeScope: "sqlite:default:trajectory:session-1",
     recordEvent: (...args: unknown[]) => state.trajectoryRecordEventMock(...args),
     flush: () => state.trajectoryFlushMock(),
   }),
@@ -690,12 +691,10 @@ vi.mock("../acp/control-plane/manager.js", () => ({
 }));
 
 let agentCommand: typeof import("./agent-command.js").agentCommand;
-let agentCommandTesting: typeof import("./agent-command.js").testing;
 
 beforeAll(async () => {
   const mod = await import("./agent-command.js");
   agentCommand ??= mod.agentCommand;
-  agentCommandTesting ??= mod.testing;
 });
 
 type FallbackRunnerParams = {
@@ -939,11 +938,12 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
         };
       },
     );
-    state.updateSessionStoreAfterAgentRunMock.mockResolvedValue(undefined);
+    state.updateSessionEntryAfterAgentRunMock.mockResolvedValue(undefined);
     state.trajectoryFlushMock.mockResolvedValue(undefined);
-    state.prepareInternalSessionEffectsTranscriptMock.mockResolvedValue(
-      "/tmp/openclaw-internal-run.jsonl",
-    );
+    state.prepareInternalSessionEffectsTranscriptMock.mockResolvedValue({
+      agentId: "main",
+      sessionId: "internal-agent-runs:test-run",
+    });
     state.removeInternalSessionEffectsTranscriptMock.mockResolvedValue(undefined);
   });
 
@@ -1012,7 +1012,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       return entry?.lastInteractionAt !== undefined;
     });
     expect(touchWrites).toHaveLength(1);
-    expect(state.updateSessionStoreAfterAgentRunMock).toHaveBeenCalledTimes(1);
+    expect(state.updateSessionEntryAfterAgentRunMock).toHaveBeenCalledTimes(1);
   });
 
   it("skips the initial session touch after gateway ingress already persisted activity", async () => {
@@ -1031,7 +1031,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       return entry?.lastInteractionAt !== undefined;
     });
     expect(touchWrites).toHaveLength(0);
-    expect(state.updateSessionStoreAfterAgentRunMock).toHaveBeenCalledTimes(1);
+    expect(state.updateSessionEntryAfterAgentRunMock).toHaveBeenCalledTimes(1);
   });
 
   it("uses rotated session identity for all post-run session persistence", async () => {
@@ -1039,7 +1039,6 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     setupSessionTouchStore();
     const rotatedEntry: SessionEntry = {
       sessionId: "rotated-session",
-      sessionFile: "/tmp/rotated-session.jsonl",
       updatedAt: 2,
       skillsSnapshot: { prompt: "", skills: [], version: 0 },
     };
@@ -1058,10 +1057,9 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     result.meta.agentMeta = {
       ...result.meta.agentMeta,
       sessionId: "rotated-session",
-      sessionFile: "/tmp/rotated-session.jsonl",
     };
     state.runAgentAttemptMock.mockResolvedValue(result);
-    state.updateSessionStoreAfterAgentRunMock.mockImplementation(async () => {
+    state.updateSessionEntryAfterAgentRunMock.mockImplementation(async () => {
       state.sessionStoreMock = { "agent:main:main": rotatedEntry };
     });
     state.persistCliTurnTranscriptMock.mockResolvedValue(rotatedEntry);
@@ -1069,7 +1067,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
 
     await runBasicAgentCommand();
 
-    expectRecordFields(mockCallArg(state.updateSessionStoreAfterAgentRunMock), {
+    expectRecordFields(mockCallArg(state.updateSessionEntryAfterAgentRunMock), {
       sessionId: "rotated-session",
     });
     expectRecordFields(mockCallArg(state.persistCliTurnTranscriptMock), {
@@ -1101,7 +1099,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
 
     await runBasicAgentCommand();
 
-    expectRecordFields(mockCallArg(state.updateSessionStoreAfterAgentRunMock), {
+    expectRecordFields(mockCallArg(state.updateSessionEntryAfterAgentRunMock), {
       sessionId: "session-1",
     });
     expectRecordFields(mockCallArg(state.deliverAgentCommandResultMock), {
@@ -1111,17 +1109,15 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
 
   it("scopes explicit-agent sentinel store keys before command routing", () => {
     expect(
-      agentCommandTesting.resolveExplicitAgentCommandSessionKey({
-        rawExplicitSessionKey: "global",
-        agentIdOverride: "work",
-        cfg: {},
+      toAgentStoreSessionKey({
+        requestKey: "global",
+        agentId: "work",
       }),
     ).toBe("agent:work:global");
     expect(
-      agentCommandTesting.resolveExplicitAgentCommandSessionKey({
-        rawExplicitSessionKey: "main",
-        agentIdOverride: "work",
-        cfg: {},
+      toAgentStoreSessionKey({
+        requestKey: "main",
+        agentId: "work",
       }),
     ).toBe("agent:work:main");
   });
@@ -1143,7 +1139,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       return entry?.thinkingLevel === "medium";
     })?.[0] as { entry?: Record<string, unknown> } | undefined;
     expect(touchWrite?.entry?.lastInteractionAt).toBeDefined();
-    expect(state.updateSessionStoreAfterAgentRunMock).toHaveBeenCalledTimes(1);
+    expect(state.updateSessionEntryAfterAgentRunMock).toHaveBeenCalledTimes(1);
   });
 
   it("persists and clears current run delivery context for restart recovery", async () => {
@@ -1642,7 +1638,6 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     const visibleEntry: SessionEntry = {
       sessionId: "session-1",
       updatedAt: 1,
-      sessionFile: "/tmp/session.jsonl",
       providerOverride: "anthropic",
       modelOverride: "claude",
       modelOverrideSource: "user",
@@ -1652,9 +1647,9 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     state.sessionEntryMock = visibleEntry;
     state.sessionStoreMock = sessionStore;
     state.storePathMock = "/tmp/openclaw-session-store.json";
-    const attemptCalls: Array<{ sessionFile?: string; sessionEntry?: SessionEntry }> = [];
+    const attemptCalls: Array<{ sessionId?: string; sessionEntry?: SessionEntry }> = [];
     state.runAgentAttemptMock.mockImplementation(async (params) => {
-      attemptCalls.push(params as { sessionFile?: string; sessionEntry?: SessionEntry });
+      attemptCalls.push(params as { sessionId?: string; sessionEntry?: SessionEntry });
       return makeSuccessResult("openai", "gpt-5.4");
     });
 
@@ -1666,14 +1661,18 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     });
 
     expect(state.prepareInternalSessionEffectsTranscriptMock).toHaveBeenCalledWith({
-      sessionFile: "/tmp/session.jsonl",
+      agentId: "default",
       runId: expect.any(String),
+      sourceSessionId: "session-1",
     });
     expect(attemptCalls).toHaveLength(1);
-    expect(attemptCalls[0]?.sessionFile).toBe("/tmp/openclaw-internal-run.jsonl");
-    expect(attemptCalls[0]?.sessionEntry).toStrictEqual(visibleEntry);
+    expect(attemptCalls[0]?.sessionId).toBe("internal-agent-runs:test-run");
+    expect(attemptCalls[0]?.sessionEntry).toStrictEqual({
+      ...visibleEntry,
+      sessionId: "internal-agent-runs:test-run",
+    });
     expect(state.persistSessionEntryMock).not.toHaveBeenCalled();
-    expect(state.updateSessionStoreAfterAgentRunMock).not.toHaveBeenCalled();
+    expect(state.updateSessionEntryAfterAgentRunMock).not.toHaveBeenCalled();
     expect(sessionStore["agent:main:main"]).toBe(visibleEntry);
   });
 
@@ -1997,7 +1996,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       );
     });
     expect(autoPinnedSwitchWrites).toHaveLength(0);
-    expectRecordFields(mockCallArg(state.updateSessionStoreAfterAgentRunMock), {
+    expectRecordFields(mockCallArg(state.updateSessionEntryAfterAgentRunMock), {
       fallbackProvider: "openai",
       fallbackModel: "gpt-5.4",
     });

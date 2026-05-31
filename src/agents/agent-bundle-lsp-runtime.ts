@@ -9,13 +9,13 @@ import {
 } from "../plugin-sdk/windows-spawn.js";
 import { setPluginToolMeta } from "../plugins/tools.js";
 import { killProcessTree } from "../process/kill-tree.js";
+import type { AgentToolResult } from "./agent-core-contract.js";
 import { loadEmbeddedAgentLspConfig } from "./embedded-agent-lsp.js";
 import {
   resolveStdioMcpServerLaunchConfig,
   describeStdioMcpServerLaunchConfig,
   type StdioMcpServerLaunchConfig,
 } from "./mcp-stdio.js";
-import type { AgentToolResult } from "./runtime/index.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
 // Minimal LSP JSON-RPC framing over stdio (Content-Length header + JSON body).
@@ -380,11 +380,7 @@ function buildLspTools(session: LspSession): AnyAgentTool[] {
   return tools;
 }
 
-function formatLspResult(
-  serverName: string,
-  method: string,
-  result: unknown,
-): AgentToolResult<unknown> {
+function formatLspResult(serverName: string, method: string, result: unknown): AgentToolResult {
   const text =
     result !== null && result !== undefined
       ? JSON.stringify(result, null, 2)

@@ -1,15 +1,22 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  appendSqliteSessionTranscriptEvent,
+  loadSqliteSessionTranscriptEvents,
+} from "../config/sessions/transcript-store.sqlite.js";
+import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withTempDir } from "../test-helpers/temp-dir.js";
 import {
   prepareInternalSessionEffectsTranscript,
   removeInternalSessionEffectsTranscript,
+  resolveInternalSessionEffectsTranscriptSessionId,
 } from "./internal-session-effects.js";
 
 const ORIGINAL_STATE_DIR = process.env.OPENCLAW_STATE_DIR;
 
 afterEach(() => {
+  closeOpenClawAgentDatabasesForTest();
+  closeOpenClawStateDatabaseForTest();
   if (ORIGINAL_STATE_DIR === undefined) {
     delete process.env.OPENCLAW_STATE_DIR;
   } else {
@@ -18,41 +25,73 @@ afterEach(() => {
 });
 
 describe("prepareInternalSessionEffectsTranscript", () => {
-  it("creates a private transcript even without a visible source file", async () => {
+  it("creates a private SQLite transcript even without a visible source", async () => {
     await withTempDir({ prefix: "openclaw-internal-session-effects-" }, async (dir) => {
       process.env.OPENCLAW_STATE_DIR = dir;
 
-      const sessionFile = await prepareInternalSessionEffectsTranscript({
+      const transcript = await prepareInternalSessionEffectsTranscript({
+        agentId: "main",
         runId: "run/with space",
       });
 
-      expect(sessionFile).toBe(path.join(dir, "internal-agent-runs", "run_with_space.jsonl"));
-      expect(await fs.readFile(sessionFile, "utf8")).toBe("");
-      expect((await fs.stat(sessionFile)).mode & 0o777).toBe(0o600);
+      expect(transcript.sessionId).toBe("internal-agent-runs:run_with_space");
+      expect(
+        loadSqliteSessionTranscriptEvents({
+          agentId: "main",
+          sessionId: transcript.sessionId,
+        }).map((entry) => entry.event),
+      ).toEqual([]);
 
-      await removeInternalSessionEffectsTranscript(sessionFile);
-
-      await expect(fs.stat(sessionFile)).rejects.toMatchObject({ code: "ENOENT" });
+      await removeInternalSessionEffectsTranscript({
+        agentId: "main",
+        sessionId: transcript.sessionId,
+      });
+      expect(
+        loadSqliteSessionTranscriptEvents({
+          agentId: "main",
+          sessionId: transcript.sessionId,
+        }),
+      ).toEqual([]);
     });
   });
 
-  it("copies a visible source transcript into a private transcript", async () => {
+  it("copies a visible source transcript into a private SQLite transcript", async () => {
     await withTempDir({ prefix: "openclaw-internal-session-effects-" }, async (dir) => {
       process.env.OPENCLAW_STATE_DIR = dir;
-      const sourceFile = path.join(dir, "visible-session.jsonl");
-      await fs.writeFile(sourceFile, '{"role":"assistant","content":"done"}\n', {
-        mode: 0o644,
+      appendSqliteSessionTranscriptEvent({
+        agentId: "main",
+        sessionId: "visible-session",
+        event: { type: "session", id: "visible-session" },
+      });
+      appendSqliteSessionTranscriptEvent({
+        agentId: "main",
+        sessionId: "visible-session",
+        event: {
+          type: "message",
+          id: "assistant-done",
+          message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+        },
       });
 
-      const sessionFile = await prepareInternalSessionEffectsTranscript({
-        sessionFile: sourceFile,
+      const transcript = await prepareInternalSessionEffectsTranscript({
+        agentId: "main",
+        sourceSessionId: "visible-session",
         runId: "run-copy",
       });
 
-      expect(await fs.readFile(sessionFile, "utf8")).toBe(
-        '{"role":"assistant","content":"done"}\n',
-      );
-      expect((await fs.stat(sessionFile)).mode & 0o777).toBe(0o600);
+      expect(
+        loadSqliteSessionTranscriptEvents({
+          agentId: "main",
+          sessionId: transcript.sessionId,
+        }).map((entry) => entry.event),
+      ).toEqual([
+        { type: "session", id: "visible-session" },
+        {
+          type: "message",
+          id: "assistant-done",
+          message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+        },
+      ]);
     });
   });
 
@@ -60,13 +99,24 @@ describe("prepareInternalSessionEffectsTranscript", () => {
     await withTempDir({ prefix: "openclaw-internal-session-effects-" }, async (dir) => {
       process.env.OPENCLAW_STATE_DIR = dir;
 
-      const sessionFile = await prepareInternalSessionEffectsTranscript({
-        sessionFile: path.join(dir, "missing-session.jsonl"),
+      const transcript = await prepareInternalSessionEffectsTranscript({
+        agentId: "main",
+        sourceSessionId: "missing-session",
         runId: "run-missing-source",
       });
 
-      expect(await fs.readFile(sessionFile, "utf8")).toBe("");
-      expect((await fs.stat(sessionFile)).mode & 0o777).toBe(0o600);
+      expect(
+        loadSqliteSessionTranscriptEvents({
+          agentId: "main",
+          sessionId: transcript.sessionId,
+        }).map((entry) => entry.event),
+      ).toEqual([]);
     });
+  });
+
+  it("resolves stable private transcript session ids", () => {
+    expect(resolveInternalSessionEffectsTranscriptSessionId("run/with space")).toBe(
+      "internal-agent-runs:run_with_space",
+    );
   });
 });

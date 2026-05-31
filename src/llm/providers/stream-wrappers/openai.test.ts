@@ -1,7 +1,7 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
-import type { Model } from "openclaw/plugin-sdk/llm";
-import { createAssistantMessageEventStream } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
+import type { Model } from "../../../agents/pi-ai-contract.js";
+import { createAssistantMessageEventStream } from "../../../agents/pi-ai-contract.js";
 import {
   createOpenAIAttributionHeadersWrapper,
   createOpenAICompletionsStrictMessageKeysWrapper,

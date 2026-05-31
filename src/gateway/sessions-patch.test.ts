@@ -187,7 +187,7 @@ describe("gateway sessions patch", () => {
         modelOverride: "gpt-5.4",
         responseUsage: "tokens",
         parentSessionKey: "agent:main:main",
-      } as SessionEntry,
+      } as unknown as SessionEntry,
     };
     const entry = expectPatchOk(
       await runPatch({
@@ -199,7 +199,7 @@ describe("gateway sessions patch", () => {
     expect(entry.sessionId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
-    expect(entry.sessionFile).toBeUndefined();
+    expect((entry as Record<string, unknown>).sessionFile).toBeUndefined();
     expect(entry.label).toBeUndefined();
     expect(entry.sendPolicy).toBe("deny");
     expect(entry.modelOverride).toBe("gpt-5.4");

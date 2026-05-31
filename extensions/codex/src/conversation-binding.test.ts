@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExecApprovalsFile } from "openclaw/plugin-sdk/exec-approvals-runtime";
+import { closeOpenClawStateDatabaseForTest } from "openclaw/plugin-sdk/sqlite-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sharedClientMocks = vi.hoisted(() => ({
@@ -69,12 +70,35 @@ vi.mock("openclaw/plugin-sdk/exec-approvals-runtime", async (importOriginal) => 
 vi.mock("openclaw/plugin-sdk/agent-runtime", () => agentRuntimeMocks);
 
 import {
+  readCodexAppServerBinding,
+  writeCodexAppServerBinding,
+  type CodexAppServerThreadBinding,
+} from "./app-server/session-binding.js";
+import {
   handleCodexConversationBindingResolved,
   handleCodexConversationInboundClaim,
   startCodexConversationThread,
 } from "./conversation-binding.js";
 
 let tempDir: string;
+let previousStateDir: string | undefined;
+
+async function seedCodexBinding(
+  sessionId: string,
+  binding: Partial<CodexAppServerThreadBinding> & { threadId: string },
+): Promise<void> {
+  await writeCodexAppServerBinding(sessionId, {
+    threadId: binding.threadId,
+    cwd: binding.cwd ?? tempDir,
+    authProfileId: binding.authProfileId,
+    model: binding.model,
+    modelProvider: binding.modelProvider,
+    approvalPolicy: binding.approvalPolicy,
+    sandbox: binding.sandbox,
+    serviceTier: binding.serviceTier,
+    dynamicToolsFingerprint: binding.dynamicToolsFingerprint,
+  });
+}
 
 function mockCallArg(mock: ReturnType<typeof vi.fn>, callIndex = 0, argIndex = 0): unknown {
   const call = mock.mock.calls[callIndex];
@@ -87,9 +111,12 @@ function mockCallArg(mock: ReturnType<typeof vi.fn>, callIndex = 0, argIndex = 0
 describe("codex conversation binding", () => {
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-binding-"));
+    previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = tempDir;
   });
 
   afterEach(async () => {
+    closeOpenClawStateDatabaseForTest();
     sharedClientMocks.getSharedCodexAppServerClient.mockReset();
     execApprovalsRuntimeMocks.loadExecApprovals.mockReset();
     execApprovalsRuntimeMocks.loadExecApprovals.mockReturnValue({ version: 1, agents: {} });
@@ -105,6 +132,11 @@ describe("codex conversation binding", () => {
     codexRequirementsTomlMock.mockReset();
     resolveSandboxContextMock.mockReset();
     resolveSandboxContextMock.mockResolvedValue(null);
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -125,7 +157,7 @@ describe("codex conversation binding", () => {
   });
 
   it("uses the default Codex auth profile and omits the public OpenAI provider for new binds", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
+    const sessionId = "session";
     const config = {
       auth: { order: { openai: ["openai:default"] } },
     };
@@ -153,7 +185,7 @@ describe("codex conversation binding", () => {
 
     await startCodexConversationThread({
       config: config as never,
-      sessionFile,
+      sessionId,
       workspaceDir: tempDir,
       model: "gpt-5.4-mini",
       modelProvider: "openai",
@@ -174,13 +206,13 @@ describe("codex conversation binding", () => {
     expect(requests[0]?.params.model).toBe("gpt-5.4-mini");
     expect(requests[0]?.params.personality).toBe("none");
     expect(requests[0]?.params).not.toHaveProperty("modelProvider");
-    await expect(fs.readFile(`${sessionFile}.codex-app-server.json`, "utf8")).resolves.toContain(
-      '"authProfileId": "openai:default"',
-    );
+    await expect(readCodexAppServerBinding(sessionId)).resolves.toMatchObject({
+      authProfileId: "openai:default",
+    });
   });
 
   it("preserves Codex auth and omits the public OpenAI provider for native bind threads", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
+    const sessionId = "session";
     agentRuntimeMocks.ensureAuthProfileStore.mockReturnValue({
       version: 1,
       profiles: {
@@ -193,16 +225,12 @@ describe("codex conversation binding", () => {
         },
       },
     });
-    await fs.writeFile(
-      `${sessionFile}.codex-app-server.json`,
-      JSON.stringify({
-        schemaVersion: 1,
-        threadId: "thread-old",
-        cwd: tempDir,
-        authProfileId: "work",
-        modelProvider: "openai",
-      }),
-    );
+    await seedCodexBinding(sessionId, {
+      threadId: "thread-old",
+      cwd: tempDir,
+      authProfileId: "work",
+      modelProvider: "openai",
+    });
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
       request: vi.fn(async (method: string, requestParams: Record<string, unknown>) => {
@@ -216,7 +244,7 @@ describe("codex conversation binding", () => {
     });
 
     await startCodexConversationThread({
-      sessionFile,
+      sessionId,
       workspaceDir: tempDir,
       model: "gpt-5.4-mini",
       modelProvider: "openai",
@@ -231,16 +259,13 @@ describe("codex conversation binding", () => {
     expect(requests[0]?.params.model).toBe("gpt-5.4-mini");
     expect(requests[0]?.params.personality).toBe("none");
     expect(requests[0]?.params).not.toHaveProperty("modelProvider");
-    await expect(fs.readFile(`${sessionFile}.codex-app-server.json`, "utf8")).resolves.toContain(
-      '"authProfileId": "work"',
-    );
-    await expect(
-      fs.readFile(`${sessionFile}.codex-app-server.json`, "utf8"),
-    ).resolves.not.toContain('"modelProvider": "openai"');
+    const binding = await readCodexAppServerBinding(sessionId);
+    expect(binding?.authProfileId).toBe("work");
+    expect(binding?.modelProvider).toBeUndefined();
   });
 
   it("stores and uses the owning agent dir for bound app-server sessions", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
+    const sessionId = "session";
     const agentDir = path.join(tempDir, "agents", "bot-a", "agent");
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
       request: vi.fn(async () => ({
@@ -250,7 +275,7 @@ describe("codex conversation binding", () => {
     });
 
     const data = await startCodexConversationThread({
-      sessionFile,
+      sessionId,
       workspaceDir: tempDir,
       agentDir,
       model: "gpt-5.4-mini",
@@ -264,7 +289,7 @@ describe("codex conversation binding", () => {
   });
 
   it("rejects binding when configured exec auto mode may need unrouted human approvals", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
+    const sessionId = "session";
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
       request: vi.fn(async (method: string, requestParams: Record<string, unknown>) => {
@@ -285,7 +310,7 @@ describe("codex conversation binding", () => {
             },
           },
         } as never,
-        sessionFile,
+        sessionId,
         workspaceDir: tempDir,
         model: "gpt-5.4-mini",
       }),
@@ -296,7 +321,7 @@ describe("codex conversation binding", () => {
   });
 
   it("rejects binding when configured exec ask mode needs unrouted user approvals", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
+    const sessionId = "session";
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
       request: vi.fn(async (method: string, requestParams: Record<string, unknown>) => {
@@ -317,7 +342,7 @@ describe("codex conversation binding", () => {
             },
           },
         } as never,
-        sessionFile,
+        sessionId,
         workspaceDir: tempDir,
         model: "gpt-5.4-mini",
       }),
@@ -328,7 +353,7 @@ describe("codex conversation binding", () => {
   });
 
   it("applies host exec approval floors to configless native bind threads", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
+    const sessionId = "session";
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     execApprovalsRuntimeMocks.loadExecApprovals.mockReturnValue({
       version: 1,
@@ -350,7 +375,7 @@ describe("codex conversation binding", () => {
 
     await expect(
       startCodexConversationThread({
-        sessionFile,
+        sessionId,
         workspaceDir: tempDir,
         model: "gpt-5.4-mini",
       }),
@@ -359,10 +384,9 @@ describe("codex conversation binding", () => {
     expect(requests).toEqual([]);
   });
 
-  it("clears the Codex app-server sidecar when a pending bind is denied", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    const sidecar = `${sessionFile}.codex-app-server.json`;
-    await fs.writeFile(sidecar, JSON.stringify({ schemaVersion: 1, threadId: "thread-1" }));
+  it("clears the Codex app-server binding when a pending bind is denied", async () => {
+    const sessionId = "session";
+    await seedCodexBinding(sessionId, { threadId: "thread-1" });
 
     await handleCodexConversationBindingResolved({
       status: "denied",
@@ -371,7 +395,7 @@ describe("codex conversation binding", () => {
         data: {
           kind: "codex-app-server-session",
           version: 1,
-          sessionFile,
+          sessionId,
           workspaceDir: tempDir,
         },
         conversation: {
@@ -382,7 +406,7 @@ describe("codex conversation binding", () => {
       },
     });
 
-    await expect(fs.stat(sidecar)).rejects.toHaveProperty("code", "ENOENT");
+    await expect(readCodexAppServerBinding(sessionId)).resolves.toBeUndefined();
   });
 
   it("consumes inbound bound messages when command authorization is absent", async () => {
@@ -405,7 +429,7 @@ describe("codex conversation binding", () => {
           data: {
             kind: "codex-app-server-session",
             version: 1,
-            sessionFile: path.join(tempDir, "session.jsonl"),
+            sessionId: "session",
             workspaceDir: tempDir,
           },
         },
@@ -468,11 +492,8 @@ describe("codex conversation binding", () => {
   });
 
   it("blocks bound Codex app-server turns when the current OpenClaw session is sandboxed", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    await fs.writeFile(
-      `${sessionFile}.codex-app-server.json`,
-      JSON.stringify({ schemaVersion: 1, threadId: "thread-1", cwd: tempDir }),
-    );
+    const sessionId = "sandboxed-session";
+    await seedCodexBinding(sessionId, { threadId: "thread-1", cwd: tempDir });
 
     const result = await handleCodexConversationInboundClaim(
       {
@@ -496,7 +517,7 @@ describe("codex conversation binding", () => {
           data: {
             kind: "codex-app-server-session",
             version: 1,
-            sessionFile,
+            sessionId,
             workspaceDir: tempDir,
           },
         },
@@ -518,11 +539,8 @@ describe("codex conversation binding", () => {
   });
 
   it("blocks bound Codex app-server turns when exec host=node is active", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    await fs.writeFile(
-      `${sessionFile}.codex-app-server.json`,
-      JSON.stringify({ schemaVersion: 1, threadId: "thread-1", cwd: tempDir }),
-    );
+    const sessionId = "node-session";
+    await seedCodexBinding(sessionId, { threadId: "thread-1", cwd: tempDir });
 
     const result = await handleCodexConversationInboundClaim(
       {
@@ -546,7 +564,7 @@ describe("codex conversation binding", () => {
           data: {
             kind: "codex-app-server-session",
             version: 1,
-            sessionFile,
+            sessionId,
             workspaceDir: tempDir,
           },
         },
@@ -616,7 +634,7 @@ describe("codex conversation binding", () => {
   });
 
   it("recreates a missing bound thread and preserves auth plus turn overrides", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
+    const sessionId = "session";
     agentRuntimeMocks.ensureAuthProfileStore.mockReturnValue({
       version: 1,
       profiles: {
@@ -627,20 +645,16 @@ describe("codex conversation binding", () => {
         },
       },
     });
-    await fs.writeFile(
-      `${sessionFile}.codex-app-server.json`,
-      JSON.stringify({
-        schemaVersion: 1,
-        threadId: "thread-old",
-        cwd: tempDir,
-        authProfileId: "work",
-        model: "gpt-5.4-mini",
-        modelProvider: "openai",
-        approvalPolicy: "on-request",
-        sandbox: "workspace-write",
-        serviceTier: "fast",
-      }),
-    );
+    await seedCodexBinding(sessionId, {
+      threadId: "thread-old",
+      cwd: tempDir,
+      authProfileId: "work",
+      model: "gpt-5.4-mini",
+      modelProvider: "openai",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      serviceTier: "fast",
+    });
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     const notificationHandlers: Array<(notification: Record<string, unknown>) => void> = [];
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
@@ -709,7 +723,7 @@ describe("codex conversation binding", () => {
           data: {
             kind: "codex-app-server-session",
             version: 1,
-            sessionFile,
+            sessionId,
             workspaceDir: tempDir,
           },
         },
@@ -735,29 +749,23 @@ describe("codex conversation binding", () => {
     expect(requests[2]?.params.threadId).toBe("thread-new");
     expect(requests[2]?.params.approvalPolicy).toBe("on-request");
     expect(requests[2]?.params.serviceTier).toBe("priority");
-    const savedBinding = JSON.parse(
-      await fs.readFile(`${sessionFile}.codex-app-server.json`, "utf8"),
-    );
-    expect(savedBinding.threadId).toBe("thread-new");
-    expect(savedBinding.authProfileId).toBe("work");
-    expect(savedBinding.approvalPolicy).toBe("on-request");
-    expect(savedBinding.sandbox).toBe("workspace-write");
-    expect(savedBinding.serviceTier).toBe("priority");
-    expect(savedBinding).not.toHaveProperty("modelProvider");
+    const savedBinding = await readCodexAppServerBinding(sessionId);
+    expect(savedBinding?.threadId).toBe("thread-new");
+    expect(savedBinding?.authProfileId).toBe("work");
+    expect(savedBinding?.approvalPolicy).toBe("on-request");
+    expect(savedBinding?.sandbox).toBe("workspace-write");
+    expect(savedBinding?.serviceTier).toBe("priority");
+    expect(savedBinding?.modelProvider).toBeUndefined();
   });
 
   it("does not silently decline auto-mode approvals during missing thread recovery", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    await fs.writeFile(
-      `${sessionFile}.codex-app-server.json`,
-      JSON.stringify({
-        schemaVersion: 1,
-        threadId: "thread-old",
-        cwd: tempDir,
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-      }),
-    );
+    const sessionId = "auto-mode-recovery";
+    await seedCodexBinding(sessionId, {
+      threadId: "thread-old",
+      cwd: tempDir,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     const notificationHandlers: Array<(notification: Record<string, unknown>) => void> = [];
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
@@ -820,7 +828,7 @@ describe("codex conversation binding", () => {
           data: {
             kind: "codex-app-server-session",
             version: 1,
-            sessionFile,
+            sessionId,
             workspaceDir: tempDir,
           },
         },
@@ -845,7 +853,7 @@ describe("codex conversation binding", () => {
   });
 
   it("creates a fresh thread when recovery finds the binding already cleared", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
+    const sessionId = "cleared-binding";
     const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
     const notificationHandlers: Array<(notification: Record<string, unknown>) => void> = [];
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
@@ -905,7 +913,7 @@ describe("codex conversation binding", () => {
           data: {
             kind: "codex-app-server-session",
             version: 1,
-            sessionFile,
+            sessionId,
             workspaceDir: tempDir,
           },
         },
@@ -917,10 +925,9 @@ describe("codex conversation binding", () => {
     expect(requests.map((request) => request.method)).toEqual(["thread/start", "turn/start"]);
     expect(requests[1]?.params.threadId).toBe("thread-new");
     expect(requests[1]?.params.personality).toBe("none");
-    const savedBinding = JSON.parse(
-      await fs.readFile(`${sessionFile}.codex-app-server.json`, "utf8"),
-    );
-    expect(savedBinding.threadId).toBe("thread-new");
+    await expect(readCodexAppServerBinding(sessionId)).resolves.toMatchObject({
+      threadId: "thread-new",
+    });
   });
 
   it("passes sandbox state when resolving bound turn policy", async () => {
@@ -932,17 +939,13 @@ describe("codex conversation binding", () => {
       ].join("\n"),
     );
     resolveSandboxContextMock.mockResolvedValue({ enabled: true });
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    await fs.writeFile(
-      `${sessionFile}.codex-app-server.json`,
-      JSON.stringify({
-        schemaVersion: 1,
-        threadId: "thread-1",
-        cwd: tempDir,
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-      }),
-    );
+    const sessionId = "agent-main-session-1";
+    await seedCodexBinding(sessionId, {
+      threadId: "thread-1",
+      cwd: tempDir,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+    });
     let notificationHandler: ((notification: unknown) => void) | undefined;
     const turnStartParams: Record<string, unknown>[] = [];
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
@@ -996,7 +999,7 @@ describe("codex conversation binding", () => {
           data: {
             kind: "codex-app-server-session",
             version: 1,
-            sessionFile,
+            sessionId,
             workspaceDir: tempDir,
           },
         },
@@ -1037,17 +1040,12 @@ describe("codex conversation binding", () => {
   });
 
   it("returns a clean failure reply when app-server turn start rejects", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    const agentDir = path.join(tempDir, "agents", "bot-b", "agent");
-    await fs.writeFile(
-      `${sessionFile}.codex-app-server.json`,
-      JSON.stringify({
-        schemaVersion: 1,
-        threadId: "thread-1",
-        cwd: tempDir,
-        authProfileId: "openai:work",
-      }),
-    );
+    const sessionId = "session";
+    await seedCodexBinding(sessionId, {
+      threadId: "thread-1",
+      cwd: tempDir,
+      authProfileId: "openai:work",
+    });
     const unhandledRejections: unknown[] = [];
     const onUnhandledRejection = (reason: unknown) => {
       unhandledRejections.push(reason);
@@ -1088,9 +1086,8 @@ describe("codex conversation binding", () => {
             data: {
               kind: "codex-app-server-session",
               version: 1,
-              sessionFile,
+              sessionId,
               workspaceDir: tempDir,
-              agentDir,
             },
           },
         },
@@ -1115,16 +1112,11 @@ describe("codex conversation binding", () => {
   });
 
   it("falls back to content when the channel body for agent is blank", async () => {
-    const sessionFile = path.join(tempDir, "session.jsonl");
-    const agentDir = path.join(tempDir, "agents", "bot-b", "agent");
-    await fs.writeFile(
-      `${sessionFile}.codex-app-server.json`,
-      JSON.stringify({
-        schemaVersion: 1,
-        threadId: "thread-1",
-        cwd: tempDir,
-      }),
-    );
+    const sessionId = "session";
+    await seedCodexBinding(sessionId, {
+      threadId: "thread-1",
+      cwd: tempDir,
+    });
     let notificationHandler: ((notification: unknown) => void) | undefined;
     const turnStartParams: Record<string, unknown>[] = [];
     sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue({
@@ -1176,9 +1168,8 @@ describe("codex conversation binding", () => {
           data: {
             kind: "codex-app-server-session",
             version: 1,
-            sessionFile,
+            sessionId,
             workspaceDir: tempDir,
-            agentDir,
           },
         },
       },
@@ -1186,10 +1177,6 @@ describe("codex conversation binding", () => {
     );
 
     expect(result).toEqual({ handled: true, reply: { text: "done" } });
-    const sharedClientParams = mockCallArg(sharedClientMocks.getSharedCodexAppServerClient) as {
-      agentDir?: unknown;
-    };
-    expect(sharedClientParams?.agentDir).toBe(agentDir);
     expect(turnStartParams[0]?.input).toEqual([
       { type: "text", text: "use the fallback prompt", text_elements: [] },
     ]);

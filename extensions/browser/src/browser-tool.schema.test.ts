@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ACT_MAX_VIEWPORT_DIMENSION } from "./browser/act-policy.js";
 import { BrowserToolSchema } from "./browser-tool.schema.js";
+import { ACT_MAX_VIEWPORT_DIMENSION } from "./browser/act-policy.js";
 
 type SchemaRecord = Record<string, { maximum?: number; properties?: SchemaRecord }>;
 

@@ -43,6 +43,7 @@ vi.mock("../plugins/current-plugin-metadata-snapshot.js", () => ({
 
 vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
   loadPluginMetadataSnapshot: pluginMetadataMocks.loadPluginMetadataSnapshot,
+  resolvePluginMetadataSnapshot: pluginMetadataMocks.loadPluginMetadataSnapshot,
 }));
 
 vi.mock("../plugins/setup-registry.js", () => ({

@@ -1,4 +1,5 @@
 import { getRuntimeConfig } from "../config/config.js";
+import { resolveAgentIdFromSessionKey } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { callGateway } from "../gateway/call.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -32,7 +33,6 @@ import {
   getSubagentSessionStartedAt,
   persistSubagentSessionTiming,
   resolveArchiveAfterMs,
-  safeRemoveAttachmentsDir,
 } from "./subagent-registry-helpers.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { resolveSubagentRunDeadlineMs } from "./subagent-run-timeout.js";
@@ -41,10 +41,6 @@ import type { SubagentSessionCompletion } from "./subagent-session-reconciliatio
 const log = createSubsystemLogger("agents/subagent-registry");
 const RECOVERABLE_WAIT_RETRY_DELAY_MS = process.env.OPENCLAW_TEST_FAST === "1" ? 25 : 5_000;
 const WAIT_TIMEOUT_DEADLINE_SKEW_MS = 250;
-
-function shouldDeleteAttachments(entry: SubagentRunRecord) {
-  return entry.cleanup === "delete" || !entry.retainAttachmentsOnKeep;
-}
 
 function resolveHardRunTimeoutEndedAt(
   entry: SubagentRunRecord,
@@ -510,7 +506,7 @@ export function createSubagentRunManager(params: {
     fallback?: SubagentRunRecord;
     runTimeoutSeconds?: number;
     preserveFrozenResultFallback?: boolean;
-    transcriptFile?: string;
+    transcriptSessionId?: string;
   }) => {
     const previousRunId = replaceParams.previousRunId.trim();
     const nextRunId = replaceParams.nextRunId.trim();
@@ -526,17 +522,12 @@ export function createSubagentRunManager(params: {
 
     if (previousRunId !== nextRunId) {
       params.clearPendingLifecycleError(previousRunId);
-      if (shouldDeleteAttachments(source)) {
-        void safeRemoveAttachmentsDir(source);
-      }
-      if (
-        source.execution?.transcriptFile &&
-        source.execution.transcriptFile !== replaceParams.transcriptFile
-      ) {
-        void removeInternalSessionEffectsTranscript(source.execution.transcriptFile);
-      }
       params.runs.delete(previousRunId);
       params.resumedRuns.delete(previousRunId);
+      void removeInternalSessionEffectsTranscript({
+        agentId: resolveAgentIdFromSessionKey(source.childSessionKey),
+        sessionId: source.execution?.transcriptSessionId,
+      });
     }
 
     const now = Date.now();
@@ -577,7 +568,7 @@ export function createSubagentRunManager(params: {
       execution: {
         status: "running",
         startedAt: now,
-        transcriptFile: replaceParams.transcriptFile,
+        transcriptSessionId: replaceParams.transcriptSessionId,
       },
       completion: {
         required: source.expectsCompletionMessage === true,
@@ -706,9 +697,6 @@ export function createSubagentRunManager(params: {
     params.clearPendingLifecycleError(runId);
     const entry = params.runs.get(runId);
     if (entry) {
-      if (shouldDeleteAttachments(entry)) {
-        void safeRemoveAttachmentsDir(entry);
-      }
       void params.notifyContextEngineSubagentEnded({
         childSessionKey: entry.childSessionKey,
         reason: "released",
@@ -796,9 +784,6 @@ export function createSubagentRunManager(params: {
             childSessionKey: entry.childSessionKey,
           });
         });
-        if (shouldDeleteAttachments(entry)) {
-          void safeRemoveAttachmentsDir(entry);
-        }
         params.completeCleanupBookkeeping({
           runId: entry.runId,
           entry,

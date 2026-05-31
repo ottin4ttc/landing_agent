@@ -10,7 +10,7 @@ type SlackActionInvoke = (
   action: Record<string, unknown>,
   cfg: unknown,
   toolContext: unknown,
-) => Promise<AgentToolResult<unknown>>;
+) => Promise<AgentToolResult>;
 
 let slackActionRuntimePromise: Promise<typeof import("./action-runtime.runtime.js")> | undefined;
 

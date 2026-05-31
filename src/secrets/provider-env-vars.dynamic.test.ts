@@ -94,6 +94,7 @@ vi.mock("../plugins/plugin-registry.js", () => ({
 
 vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
   loadPluginMetadataSnapshot: pluginRegistryMocks.loadPluginMetadataSnapshot,
+  resolvePluginMetadataSnapshot: pluginRegistryMocks.loadPluginMetadataSnapshot,
 }));
 
 describe("provider env vars dynamic manifest metadata", () => {

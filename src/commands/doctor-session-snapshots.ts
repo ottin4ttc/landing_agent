@@ -2,9 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { note } from "../../packages/terminal-core/src/note.js";
+import { listAgentIds } from "../agents/agent-scope.js";
 import { resolveStateDir } from "../config/paths.js";
 import { hydrateSessionStoreSkillPromptRefs } from "../config/sessions/skill-prompt-blobs.js";
-import { resolveAllAgentSessionStoreTargetsSync } from "../config/sessions/targets.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { expandHomePrefix } from "../infra/home-dir.js";
@@ -252,12 +252,17 @@ function resolveSessionStorePaths(params: {
   cfg?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
 }): string[] | undefined {
-  if (!params.cfg) {
+  const configured = params.cfg?.session?.store;
+  if (typeof configured !== "string" || !configured.trim()) {
     return undefined;
   }
-  return resolveAllAgentSessionStoreTargetsSync(params.cfg, { env: params.env })
-    .map((target) => target.storePath)
-    .filter((storePath) => fs.existsSync(storePath))
+  const storePath = expandHomePrefix(configured.trim(), { env: params.env });
+  if (!storePath.includes("{agentId}")) {
+    return [storePath];
+  }
+  return listAgentIds(params.cfg ?? {})
+    .map((agentId) => storePath.replaceAll("{agentId}", agentId))
+    .filter((candidate) => fs.existsSync(candidate))
     .toSorted((a, b) => a.localeCompare(b));
 }
 
@@ -266,9 +271,8 @@ function loadSessionStoreForSnapshotScan(storePath: string): Record<string, Sess
   if (!isRecord(parsed)) {
     return {};
   }
-  const store = parsed as Record<string, SessionEntry>;
-  hydrateSessionStoreSkillPromptRefs({ storePath, store });
-  return store;
+  hydrateSessionStoreSkillPromptRefs({ storePath, store: parsed });
+  return parsed as Record<string, SessionEntry>;
 }
 
 export async function noteSessionSnapshotHealth(params?: {

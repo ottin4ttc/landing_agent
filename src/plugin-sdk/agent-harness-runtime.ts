@@ -24,7 +24,8 @@ import { truncateUtf16Safe } from "../utils.js";
 
 export const TOOL_PROGRESS_OUTPUT_MAX_CHARS = 8_000;
 
-export type { AgentMessage } from "../agents/runtime/index.js";
+export type { AgentMessage } from "../agents/agent-core-contract.js";
+export type { ModelRegistry } from "../agents/model-registry-contract.js";
 export type {
   AgentHarness,
   AgentHarnessAttemptParams,
@@ -68,6 +69,7 @@ export type { HeartbeatToolResponse } from "../auto-reply/heartbeat-tool-respons
 export type { AgentApprovalEventData, AgentEventPayload } from "../infra/agent-events.js";
 export type { ExecApprovalDecision } from "../infra/exec-approvals.js";
 export type { NormalizedUsage } from "../agents/usage.js";
+export { listTrajectoryRuntimeEvents } from "../trajectory/runtime-store.sqlite.js";
 export type {
   AgentToolResultMiddleware,
   AgentToolResultMiddlewareContext,
@@ -247,7 +249,41 @@ export {
   type SessionWriteLockAcquireTimeoutConfig,
 } from "../agents/session-write-lock.js";
 export { appendSessionTranscriptMessage } from "../config/sessions/transcript-append.js";
+export {
+  createPluginBlobStore,
+  createPluginBlobSyncStore,
+  createPluginStateKeyedStore,
+  createPluginStateSyncKeyedStore,
+  type OpenKeyedStoreOptions,
+  type PluginBlobEntry,
+  type PluginBlobStore,
+  type PluginBlobSyncStore,
+  type PluginStateEntry,
+  type PluginStateKeyedStore,
+  type PluginStateSyncKeyedStore,
+} from "./plugin-state-runtime.js";
+export {
+  appendSqliteSessionTranscriptEvent,
+  deleteSqliteSessionTranscript,
+  hasSqliteSessionTranscriptEvents,
+  loadSqliteSessionTranscriptBoundedEvents,
+  loadSqliteSessionTranscriptEvents,
+  replaceSqliteSessionTranscriptEvents,
+} from "../config/sessions/transcript-store.sqlite.js";
+export { loadCommitmentStore, saveCommitmentStore } from "../commitments/store.js";
+export type { CommitmentRecord, CommitmentStoreSnapshot } from "../commitments/types.js";
 export { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+export {
+  buildSessionContext,
+  CURRENT_SESSION_VERSION,
+  SessionManager,
+  type AgentSession,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type SessionEntry,
+  type TranscriptEntry,
+} from "../agents/transcript/session-transcript-contract.js";
+export { openTranscriptSessionManagerForSession } from "../agents/transcript/session-manager.js";
 export {
   getBeforeToolCallPolicyDiagnosticState,
   hasBeforeToolCallPolicy,
@@ -317,6 +353,11 @@ export {
   testing as nativeHookRelayTesting,
   registerNativeHookRelay,
 } from "../agents/harness/native-hook-relay.js";
+export {
+  createTrajectoryRuntimeRecorder,
+  toTrajectoryToolDefinitions as toRuntimeTrajectoryToolDefinitions,
+} from "../trajectory/runtime.js";
+export type { TrajectoryToolDefinition } from "../trajectory/types.js";
 
 /**
  * Derive the same compact user-facing tool detail that embedded OpenClaw uses for progress logs.

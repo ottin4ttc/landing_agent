@@ -26,7 +26,7 @@ describe("memory vector degradation warnings", () => {
     expect(second).toBe(true);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
-      "chunks_vec not updated — sqlite-vec unavailable: load failed. Vector recall degraded. Further duplicate warnings suppressed.",
+      "memory_index_chunks_vec not updated — sqlite-vec unavailable: load failed. Vector recall degraded. Further duplicate warnings suppressed.",
     );
   });
 
@@ -43,7 +43,7 @@ describe("memory vector degradation warnings", () => {
 
     expect(shown).toBe(true);
     expect(warn).toHaveBeenCalledWith(
-      "chunks_vec not updated — semantic vector embeddings unavailable — no vector dimensions resolved. Vector recall degraded. Further duplicate warnings suppressed.",
+      "memory_index_chunks_vec not updated — semantic vector embeddings unavailable — no vector dimensions resolved. Vector recall degraded. Further duplicate warnings suppressed.",
     );
   });
 

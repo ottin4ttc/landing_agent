@@ -16,7 +16,6 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveCronDeliveryPreviews } from "../../cron/delivery-preview.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
 import {
-  isInvalidCronRunLogJobIdError,
   readCronRunLogEntriesPage,
   readCronRunLogEntriesPageAll,
 } from "../../cron/run-log.js";
@@ -571,7 +570,7 @@ export const cronHandlers: GatewayRequestHandlers = {
           .map((job) => [job.id, job.name]),
       );
       const page = await readCronRunLogEntriesPageAll({
-        storePath: context.cronStorePath,
+        storePath: context.cronStoreKey,
         limit: p.limit,
         offset: p.offset,
         statuses: p.statuses,
@@ -588,10 +587,10 @@ export const cronHandlers: GatewayRequestHandlers = {
     }
     try {
       const page = await readCronRunLogEntriesPage({
-        storePath: context.cronStorePath,
-        jobId: jobId as string,
+        storePath: context.cronStoreKey,
         limit: p.limit,
         offset: p.offset,
+        jobId: jobId as string,
         statuses: p.statuses,
         status: p.status,
         runId: p.runId,
@@ -601,10 +600,7 @@ export const cronHandlers: GatewayRequestHandlers = {
         sortDir: p.sortDir,
       });
       respond(true, page, undefined);
-    } catch (err) {
-      if (!isInvalidCronRunLogJobIdError(err)) {
-        throw err;
-      }
+    } catch {
       respond(
         false,
         undefined,

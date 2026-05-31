@@ -1,5 +1,5 @@
 import type { ReasoningLevel, ThinkLevel } from "../../auto-reply/thinking.js";
-import type { ThinkingLevel } from "../runtime/index.js";
+import type { ThinkingLevel } from "../agent-core-contract.js";
 
 export function normalizeContextTokenBudget(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0

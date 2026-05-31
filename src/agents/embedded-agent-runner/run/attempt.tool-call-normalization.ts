@@ -10,14 +10,13 @@ import {
 import { visitObjectContentBlocks } from "../../../shared/message-content-blocks.js";
 import { normalizeLowercaseStringOrEmpty } from "../../../../packages/normalization-core/src/string-coerce.js";
 import { normalizeStringEntries } from "../../../../packages/normalization-core/src/string-normalization.js";
+import type { AgentMessage, StreamFn } from "../../agent-core-contract.js";
+import { validateAnthropicTurns, validateGeminiTurns } from "../../embedded-agent-helpers.js";
 import {
   downgradeOpenAIFunctionCallReasoningPairs,
   downgradeOpenAIReasoningBlocks,
   normalizeOpenAIResponsesToolCallIds,
-  validateAnthropicTurns,
-  validateGeminiTurns,
-} from "../../embedded-agent-helpers.js";
-import type { AgentMessage, StreamFn } from "../../runtime/index.js";
+} from "../../embedded-agent-helpers/openai.js";
 import { sanitizeToolUseResultPairing } from "../../session-transcript-repair.js";
 import {
   extractToolCallsFromAssistant,

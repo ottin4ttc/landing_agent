@@ -119,9 +119,7 @@ export async function handleClickClackInbound(params: {
   }
   const senderName = message.author?.display_name || message.author_id;
   const previousTimestamp = runtime.channel.session.readSessionUpdatedAt({
-    storePath: runtime.channel.session.resolveStorePath(params.config.session?.store, {
-      agentId: route.agentId,
-    }),
+    agentId: route.agentId,
     sessionKey: route.sessionKey,
   });
   const body = runtime.channel.reply.formatAgentEnvelope({
@@ -131,9 +129,6 @@ export async function handleClickClackInbound(params: {
     previousTimestamp,
     envelope: runtime.channel.reply.resolveEnvelopeFormatOptions(params.config as OpenClawConfig),
     body: message.body,
-  });
-  const storePath = runtime.channel.session.resolveStorePath(params.config.session?.store, {
-    agentId: route.agentId,
   });
   const ctxPayload = runtime.channel.reply.finalizeInboundContext({
     Body: body,
@@ -169,7 +164,6 @@ export async function handleClickClackInbound(params: {
     accountId: params.account.accountId,
     agentId: route.agentId,
     routeSessionKey: route.sessionKey,
-    storePath,
     ctxPayload,
     recordInboundSession: runtime.channel.session.recordInboundSession,
     dispatchReplyWithBufferedBlockDispatcher:

@@ -1,6 +1,6 @@
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
-import type { AssistantMessage, ToolResultMessage, UserMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
+import type { AssistantMessage, ToolResultMessage, UserMessage } from "./pi-ai-contract.js";
 import {
   sanitizeGoogleTurnOrdering,
   sanitizeSessionMessagesImages,

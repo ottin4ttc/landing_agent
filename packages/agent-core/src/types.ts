@@ -99,7 +99,7 @@ export interface AfterToolCallContext {
   /** Validated tool arguments for the target tool schema. */
   args: unknown;
   /** The executed tool result before unknown `afterToolCall` overrides are applied. */
-  result: AgentToolResult<unknown>;
+  result: AgentToolResult;
   /** Whether the executed tool result is currently treated as an error. */
   isError: boolean;
   /** Current agent context at the time the tool call is finalized. */
@@ -389,7 +389,7 @@ export interface AgentToolProgress {
 }
 
 /** Final or partial result produced by a tool. */
-export interface AgentToolResult<T> {
+export interface AgentToolResult<T = unknown> {
   /** Text or image content returned to the model. */
   content: (TextContent | ImageContent)[];
   /** Arbitrary structured details for logs or UI rendering. */

@@ -32,6 +32,7 @@ vi.mock("./src/http-route.js", () => ({
 }));
 
 vi.mock("./src/documents.js", () => ({
+  resolveCanvasHttpPathToMaterializedLocalPath: mocks.resolveCanvasHttpPathToLocalPath,
   resolveCanvasHttpPathToLocalPath: mocks.resolveCanvasHttpPathToLocalPath,
 }));
 

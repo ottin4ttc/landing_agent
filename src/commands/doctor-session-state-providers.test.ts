@@ -532,7 +532,6 @@ describe("doctor session state provider routes", () => {
     await runPluginSessionStateDoctorRepairs({
       cfg,
       store: store as unknown as Parameters<typeof runPluginSessionStateDoctorRepairs>[0]["store"],
-      absoluteStorePath: "/tmp/nonexistent-store.json",
       prompter,
       env: {},
       warnings,

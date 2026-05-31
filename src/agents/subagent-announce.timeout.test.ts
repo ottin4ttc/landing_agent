@@ -51,7 +51,7 @@ function createGatewayCallModuleMock() {
 
 function createSubagentDepthModuleMock() {
   return {
-    getSubagentDepthFromSessionStore: (sessionKey?: string) => requesterDepthResolver(sessionKey),
+    getSubagentDepthFromSessionEntries: (sessionKey?: string) => requesterDepthResolver(sessionKey),
   };
 }
 
@@ -86,10 +86,9 @@ vi.mock("./subagent-announce-delivery.runtime.js", () =>
       return await callGatewayImpl(typed);
     },
     getRuntimeConfig: () => configOverride,
-    loadSessionStore: () => sessionStore,
+    getSessionEntry: (params: { sessionKey: string }) => sessionStore[params.sessionKey],
     resolveAgentIdFromSessionKey: () => "main",
     resolveMainSessionKey: () => "agent:main:main",
-    resolveStorePath: () => "/tmp/sessions-main.json",
     isEmbeddedAgentRunActive: (sessionId: string) => isEmbeddedAgentRunActiveMock(sessionId),
     queueEmbeddedAgentMessageWithOutcome: (sessionId: string) => ({
       queued: false,
@@ -184,12 +183,10 @@ vi.mock("./subagent-announce.runtime.js", () => ({
     return await callGatewayImpl(request);
   },
   getRuntimeConfig: () => configOverride,
-  loadSessionStore: vi.fn(() => sessionStore),
-  readSessionMessagesAsync: vi.fn(async () => []),
-  readSessionEntry: (_storePath: string, sessionKey: string) => sessionStore[sessionKey],
+  getSessionEntry: (params: { sessionKey: string }) => sessionStore[params.sessionKey],
   resolveAgentIdFromSessionKey: () => "main",
-  resolveStorePath: () => "/tmp/sessions-main.json",
   resolveMainSessionKey: () => "agent:main:main",
+  readSessionMessagesAsync: async () => [],
   isEmbeddedAgentRunActive: (sessionId: string) => isEmbeddedAgentRunActiveMock(sessionId),
   waitForEmbeddedAgentRunEnd: (sessionId: string, timeoutMs?: number) =>
     waitForEmbeddedAgentRunEndMock(sessionId, timeoutMs),

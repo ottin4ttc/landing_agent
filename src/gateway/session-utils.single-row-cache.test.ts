@@ -1,12 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/config.js";
 import type { OpenClawConfig } from "../config/config.js";
-import {
-  resolveStorePath,
-  saveSessionStore,
-  updateSessionStore,
-  type SessionEntry,
-} from "../config/sessions.js";
+import { patchSessionEntry, upsertSessionEntry, type SessionEntry } from "../config/sessions.js";
 import { resetPluginRuntimeStateForTest } from "../plugins/runtime.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 
@@ -117,7 +112,9 @@ describe("single gateway session row child-session cache", () => {
           status: "running",
         },
       };
-      await saveSessionStore(resolveStorePath(cfg.session?.store, { agentId: "main" }), store);
+      for (const [sessionKey, entry] of Object.entries(store)) {
+        upsertSessionEntry({ agentId: "main", sessionKey, entry });
+      }
 
       const rowA = loadGatewaySessionRow("agent:main:subagent:parent-a", { now });
       const rowB = loadGatewaySessionRow("agent:main:subagent:parent-b", { now: now + 50 });
@@ -167,7 +164,9 @@ describe("single gateway session row child-session cache", () => {
           status: "running",
         },
       };
-      await saveSessionStore(resolveStorePath(cfg.session?.store, { agentId: "main" }), store);
+      for (const [sessionKey, entry] of Object.entries(store)) {
+        upsertSessionEntry({ agentId: "main", sessionKey, entry });
+      }
 
       subagentRegistryReadMock.setSubagentRunsForTest([
         {
@@ -212,7 +211,6 @@ describe("single gateway session row child-session cache", () => {
       const oldParent = "agent:main:subagent:parent-old";
       const newParent = "agent:main:subagent:parent-new";
       const child = "agent:main:subagent:child";
-      const storePath = resolveStorePath(cfg.session?.store, { agentId: "main" });
       const store: Record<string, SessionEntry> = {
         [oldParent]: {
           sessionId: "parent-old",
@@ -229,20 +227,19 @@ describe("single gateway session row child-session cache", () => {
           status: "running",
         },
       };
-      await saveSessionStore(storePath, store);
+      for (const [sessionKey, entry] of Object.entries(store)) {
+        upsertSessionEntry({ agentId: "main", sessionKey, entry });
+      }
 
       expect(loadGatewaySessionRow(oldParent, { now })?.childSessions).toEqual([child]);
-      await updateSessionStore(
-        storePath,
-        (cachedStore) => {
-          const childEntry = cachedStore[child];
-          if (childEntry) {
-            childEntry.parentSessionKey = newParent;
-            childEntry.updatedAt = now + 25;
-          }
-        },
-        { skipMaintenance: true, takeCacheOwnership: true },
-      );
+      await patchSessionEntry({
+        agentId: "main",
+        sessionKey: child,
+        update: () => ({
+          parentSessionKey: newParent,
+          updatedAt: now + 25,
+        }),
+      });
 
       expect(loadGatewaySessionRow(oldParent, { now: now + 50 })?.childSessions).toBeUndefined();
       expect(loadGatewaySessionRow(newParent, { now: now + 50 })?.childSessions).toEqual([child]);

@@ -1,7 +1,7 @@
 import { expect, vi } from "vitest";
 import type { AgentMessage } from "./runtime/index.js";
-import type { SessionManager } from "./sessions/index.js";
 import type { TranscriptPolicy } from "./transcript-policy.js";
+import type { SessionManager } from "./transcript/session-transcript-contract.js";
 
 type SessionEntry = { type: string; customType: string; data: unknown };
 export type SanitizeSessionHistoryFn = (params: {

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { vi } from "vitest";
@@ -6,11 +7,13 @@ import type { Mock } from "vitest";
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { MsgContext } from "../auto-reply/templating.js";
+import { upsertSessionEntry, type SessionEntry } from "../config/sessions.js";
 import type { AgentBinding } from "../config/types.agents.js";
 import type { HooksConfig } from "../config/types.hooks.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RunCronAgentTurnResult } from "../cron/isolated-agent/run.types.js";
 import type { TailscaleWhoisIdentity } from "../infra/tailscale.js";
+import { DEFAULT_AGENT_ID, toAgentStoreSessionKey } from "../routing/session-key.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
 export type GetReplyFromConfigFn = (
@@ -62,9 +65,9 @@ type GatewayTestHoistedState = {
     agentsConfig: Record<string, unknown> | undefined;
     bindingsConfig: AgentBinding[] | undefined;
     channelsConfig: Record<string, unknown> | undefined;
-    sessionStorePath: string | undefined;
     sessionConfig: Record<string, unknown> | undefined;
     allowFrom: string[] | undefined;
+    cronStoreKey: string | undefined;
     cronStorePath: string | undefined;
     cronEnabled: boolean | undefined;
     gatewayBind: "auto" | "lan" | "tailnet" | "loopback" | undefined;
@@ -75,6 +78,7 @@ type GatewayTestHoistedState = {
     legacyParsed: Record<string, unknown>;
     migrationConfig: Record<string, unknown> | null;
     migrationChanges: string[];
+    sessionStorePath: string | undefined;
   };
 };
 
@@ -121,9 +125,9 @@ const gatewayTestHoisted = vi.hoisted(() => {
       agentsConfig: undefined,
       bindingsConfig: undefined,
       channelsConfig: undefined,
-      sessionStorePath: undefined,
       sessionConfig: undefined,
       allowFrom: undefined,
+      cronStoreKey: undefined,
       cronStorePath: undefined,
       cronEnabled: false,
       gatewayBind: undefined,
@@ -134,6 +138,7 @@ const gatewayTestHoisted = vi.hoisted(() => {
       legacyParsed: {},
       migrationConfig: null,
       migrationChanges: [],
+      sessionStorePath: undefined,
     },
   };
   store[key] = created;
@@ -160,6 +165,25 @@ export const testState = gatewayTestHoisted.testState;
 export const testIsNixMode = gatewayTestHoisted.testIsNixMode;
 export const sessionStoreSaveDelayMs = gatewayTestHoisted.sessionStoreSaveDelayMs;
 export const embeddedRunMock = gatewayTestHoisted.embeddedRunMock;
+
+export async function writeSessionStore(params: {
+  agentId?: string;
+  entries: Record<string, Partial<SessionEntry>>;
+  storePath?: string;
+}): Promise<void> {
+  const agentId = params.agentId ?? DEFAULT_AGENT_ID;
+  const normalizedEntries: Record<string, Partial<SessionEntry>> = {};
+  for (const [requestKey, entry] of Object.entries(params.entries)) {
+    const sessionKey = toAgentStoreSessionKey({ agentId, requestKey });
+    normalizedEntries[sessionKey] = entry;
+    upsertSessionEntry({ agentId, sessionKey, entry: entry as SessionEntry });
+  }
+  const storePath = params.storePath ?? testState.sessionStorePath;
+  if (storePath) {
+    await fs.mkdir(path.dirname(storePath), { recursive: true });
+    await fs.writeFile(storePath, `${JSON.stringify(normalizedEntries, null, 2)}\n`, "utf-8");
+  }
+}
 
 export const testConfigRoot = resolveGlobalSingleton(GATEWAY_TEST_CONFIG_ROOT_KEY, () => ({
   value: path.join(os.tmpdir(), `openclaw-gateway-test-${process.pid}-${crypto.randomUUID()}`),

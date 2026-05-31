@@ -169,12 +169,12 @@ export async function applySessionsPatchToStore(params: {
     : {
         ...existing,
         sessionId: randomUUID(),
-        sessionFile: undefined,
         updatedAt: Math.max(existing?.updatedAt ?? 0, now),
       };
   if (existing && !existing.sessionId) {
     delete next.label;
     delete next.displayName;
+    delete (next as Record<string, unknown>).sessionFile;
   }
 
   if ("spawnedBy" in patch) {
@@ -216,27 +216,6 @@ export async function applySessionsPatchToStore(params: {
         return invalid("spawnedWorkspaceDir cannot be changed once set");
       }
       next.spawnedWorkspaceDir = trimmed;
-    }
-  }
-
-  if ("spawnedCwd" in patch) {
-    const raw = patch.spawnedCwd;
-    if (raw === null) {
-      if (existing?.spawnedCwd) {
-        return invalid("spawnedCwd cannot be cleared once set");
-      }
-    } else if (raw !== undefined) {
-      if (!supportsSpawnLineage(storeKey)) {
-        return invalid("spawnedCwd is only supported for subagent:* or acp:* sessions");
-      }
-      const trimmed = normalizeOptionalString(raw) ?? "";
-      if (!trimmed) {
-        return invalid("invalid spawnedCwd: empty");
-      }
-      if (existing?.spawnedCwd && existing.spawnedCwd !== trimmed) {
-        return invalid("spawnedCwd cannot be changed once set");
-      }
-      next.spawnedCwd = trimmed;
     }
   }
 

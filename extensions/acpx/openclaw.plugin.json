@@ -17,7 +17,8 @@
       },
       "stateDir": {
         "type": "string",
-        "minLength": 1
+        "deprecated": true,
+        "description": "Legacy option accepted for compatibility and ignored; ACPX state follows the OpenClaw state directory."
       },
       "probeAgent": {
         "type": "string",
@@ -48,10 +49,6 @@
       "queueOwnerTtlSeconds": {
         "type": "number",
         "minimum": 0
-      },
-      "probeAgent": {
-        "type": "string",
-        "minLength": 1
       },
       "mcpServers": {
         "type": "object",
@@ -100,10 +97,6 @@
     "cwd": {
       "label": "Default Working Directory",
       "help": "Default working directory for embedded ACP session operations when not set per session."
-    },
-    "stateDir": {
-      "label": "State Directory",
-      "help": "Directory used for embedded ACP session state and persistence."
     },
     "permissionMode": {
       "label": "Permission Mode",

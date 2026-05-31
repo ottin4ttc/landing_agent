@@ -43,6 +43,10 @@ const LEGACY_OPENAI_PROVIDER_ID = ["openai", "codex"].join("-");
 const OPENAI_DEFAULT_MODEL = "openai/gpt-5.5";
 const HERMES_AUTH_DISPLAY_NAME = "Hermes import";
 
+function buildStateEnv(ctx: MigrationProviderContext): NodeJS.ProcessEnv {
+  return { ...process.env, OPENCLAW_STATE_DIR: ctx.stateDir };
+}
+
 type AgentDefaultModelConfigs = NonNullable<
   NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["models"]
 >;
@@ -369,7 +373,9 @@ export async function buildAuthItems(params: {
   if (profiles.length === 0) {
     return items;
   }
-  const store = loadAuthProfileStoreWithoutExternalProfiles(params.targets.agentDir);
+  const store = loadAuthProfileStoreWithoutExternalProfiles(params.targets.agentDir, {
+    env: buildStateEnv(params.ctx),
+  });
   items.push(
     ...profiles.map((profile) => {
       const matchedProfileId = findMatchingProfile(store, profile.credential);
@@ -472,6 +478,7 @@ export async function applyAuthItem(
   }
   const store = await updateAuthProfileStoreWithLock({
     agentDir: targets.agentDir,
+    env: buildStateEnv(ctx),
     updater: (freshStore) => {
       const existing = freshStore.profiles[profileId];
       if (!ctx.overwrite && existing) {

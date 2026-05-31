@@ -1,33 +1,36 @@
-import fs from "node:fs/promises";
-import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
-import type { SessionEntry } from "openclaw/plugin-sdk/agent-sessions";
+import type { SessionEntry, TranscriptEntry } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   buildSessionContext,
-  migrateSessionEntries,
-  parseSessionEntries,
-} from "openclaw/plugin-sdk/agent-sessions";
+  loadSqliteSessionTranscriptEvents,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
+import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { sanitizeCodexHistoryImagePayloads } from "./image-payload-sanitizer.js";
 
-function isMissingFileError(error: unknown): boolean {
-  return Boolean(
-    error &&
-    typeof error === "object" &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "ENOENT",
-  );
-}
+export type CodexMirroredSessionHistoryScope = {
+  agentId: string;
+  path?: string;
+  sessionId: string;
+};
 
 export async function readCodexMirroredSessionHistoryMessages(
-  sessionFile: string,
+  scope: CodexMirroredSessionHistoryScope,
 ): Promise<AgentMessage[] | undefined> {
   try {
-    const raw = await fs.readFile(sessionFile, "utf-8");
-    const entries = parseSessionEntries(raw);
+    const agentId = scope.agentId.trim();
+    const sessionId = scope.sessionId.trim();
+    if (!agentId || !sessionId) {
+      return [];
+    }
+    const entries = loadSqliteSessionTranscriptEvents({ agentId, path: scope.path, sessionId })
+      .map((entry) => entry.event)
+      .filter((entry): entry is TranscriptEntry => Boolean(entry && typeof entry === "object"));
+    if (entries.length === 0) {
+      return [];
+    }
     const firstEntry = entries[0] as { type?: unknown; id?: unknown } | undefined;
     if (firstEntry?.type !== "session" || typeof firstEntry.id !== "string") {
       return undefined;
     }
-    migrateSessionEntries(entries);
     const sessionEntries = entries.filter(
       (entry): entry is SessionEntry => entry.type !== "session",
     );
@@ -35,10 +38,7 @@ export async function readCodexMirroredSessionHistoryMessages(
       buildSessionContext(sessionEntries).messages,
       "codex mirrored history",
     );
-  } catch (error) {
-    if (isMissingFileError(error)) {
-      return [];
-    }
+  } catch {
     return undefined;
   }
 }

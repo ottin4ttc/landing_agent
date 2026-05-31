@@ -2,13 +2,13 @@ import "./isolated-agent.mocks.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runEmbeddedAgent } from "../agents/embedded-agent.js";
 import { loadModelCatalog } from "../agents/model-catalog.js";
+import { makeCfg } from "./isolated-agent.test-harness.js";
 import {
   DEFAULT_MESSAGE,
   GMAIL_MODEL,
   runCronTurn,
   withTempHome,
 } from "./isolated-agent.turn-test-helpers.js";
-import { makeCfg } from "./isolated-agent.test-harness.js";
 import { resolveCronModelSelection } from "./isolated-agent/model-selection.js";
 import * as isolatedAgentRunRuntime from "./isolated-agent/run.runtime.js";
 
@@ -67,7 +67,7 @@ describe("runCronIsolatedAgentTurn hook content wrapping", () => {
 
   it("uses hooks.gmail.model for normalized Gmail hook provenance", async () => {
     await withTempHome(async (home) => {
-      const cfg = makeCfg(home, "unused-session-store.json", {
+      const cfg = makeCfg(home, {
         hooks: {
           gmail: {
             model: GMAIL_MODEL,

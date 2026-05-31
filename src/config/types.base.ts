@@ -147,8 +147,6 @@ export type SessionResetConfig = {
 };
 export type SessionResetByTypeConfig = {
   direct?: SessionResetConfig;
-  /** @deprecated Use `direct` instead. Kept for backward compatibility. */
-  dm?: SessionResetConfig;
   group?: SessionResetConfig;
   thread?: SessionResetConfig;
 };
@@ -183,6 +181,7 @@ export type SessionThreadBindingsConfig = {
 };
 
 export type SessionConfig = {
+  store?: string;
   scope?: SessionScope;
   /** DM session scoping (default: "main"). */
   dmScope?: DmScope;
@@ -194,7 +193,6 @@ export type SessionConfig = {
   resetByType?: SessionResetByTypeConfig;
   /** Channel-specific reset overrides (e.g. { discord: { mode: "idle", idleMinutes: 10080 } }). */
   resetByChannel?: Record<string, SessionResetConfig>;
-  store?: string;
   typingIntervalSeconds?: number;
   typingMode?: TypingMode;
   mainKey?: string;
@@ -240,7 +238,7 @@ export type SessionMaintenanceConfig = {
   resetArchiveRetention?: string | number | false;
   /**
    * Optional per-agent sessions-directory disk budget (e.g. "500mb").
-   * When exceeded, warn (mode=warn) or enforce oldest-first cleanup (mode=enforce).
+   * When exceeded, warn (mode=warn) or enforce oldest-first cleanup.
    */
   maxDiskBytes?: number | string;
   /**
@@ -299,7 +297,6 @@ export type DiagnosticsOtelConfig = {
 
 export type DiagnosticsCacheTraceConfig = {
   enabled?: boolean;
-  filePath?: string;
   includeMessages?: boolean;
   includePrompt?: boolean;
   includeSystem?: boolean;

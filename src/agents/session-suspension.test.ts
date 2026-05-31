@@ -5,7 +5,9 @@ import { CommandLane } from "../process/lanes.js";
 import { MAX_TIMER_TIMEOUT_MS } from "../shared/number-coercion.js";
 
 const sessionStoreMocks = vi.hoisted(() => ({
-  applySessionStoreEntryPatch: vi.fn(),
+  patchSessionEntry: vi.fn(async (params: { update: (entry: unknown) => unknown }) => {
+    await params.update({ sessionId: "session-1" });
+  }),
 }));
 
 const commandQueueMocks = vi.hoisted(() => ({
@@ -19,7 +21,7 @@ vi.mock("../process/command-queue.js", () => commandQueueMocks);
 vi.mock("./command/session.js", () => ({
   resolveStoredSessionKeyForSessionId: () => ({
     sessionKey: "session-key",
-    storePath: "/tmp/openclaw-session-suspension-test/sessions.json",
+    agentId: "main",
   }),
 }));
 
@@ -43,7 +45,7 @@ describe("session suspension", () => {
     cancelLaneAutoResume(CommandLane.Cron);
     cancelLaneAutoResume(CommandLane.CronNested);
     vi.useRealTimers();
-    sessionStoreMocks.applySessionStoreEntryPatch.mockClear();
+    sessionStoreMocks.patchSessionEntry.mockClear();
     commandQueueMocks.setCommandLaneConcurrency.mockClear();
   });
 
@@ -111,7 +113,8 @@ describe("session suspension", () => {
     await suspendLane(Number.MAX_SAFE_INTEGER, {} as OpenClawConfig, CommandLane.Main);
 
     expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), MAX_TIMER_TIMEOUT_MS);
-    const patch = sessionStoreMocks.applySessionStoreEntryPatch.mock.calls[0]?.[0].patch as {
+    const update = sessionStoreMocks.patchSessionEntry.mock.calls[0]?.[0].update;
+    const patch = update?.({ sessionId: "session-1" }) as {
       quotaSuspension?: { expectedResumeBy?: number };
     };
     expect(patch.quotaSuspension?.expectedResumeBy).toBe(1_000 + MAX_TIMER_TIMEOUT_MS);

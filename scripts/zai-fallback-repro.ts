@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { loadSqliteSessionTranscriptEvents } from "../src/config/sessions/transcript-store.sqlite.js";
 import { resolvePnpmRunner } from "./pnpm-runner.mjs";
 
 type RunResult = {
@@ -212,9 +213,15 @@ async function main() {
     process.exit(run1.code ?? 1);
   }
 
-  const sessionFile = path.join(stateDir, "agents", "main", "sessions", `${sessionId}.jsonl`);
-  const transcript = await fs.readFile(sessionFile, "utf8").catch(() => "");
-  if (!transcript.includes('"toolResult"')) {
+  const transcriptEvents = loadSqliteSessionTranscriptEvents({
+    stateDir,
+    agentId: "main",
+    sessionId,
+  });
+  const hasToolResult = transcriptEvents.some((entry) =>
+    JSON.stringify(entry.event).includes('"toolResult"'),
+  );
+  if (!hasToolResult) {
     console.warn("Warning: no toolResult entries detected in session history.");
   }
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMSTeamsConversationStoreMemory } from "./conversation-store-memory.js";
 import { createMSTeamsConversationStoreState } from "./conversation-store-state.js";
@@ -16,7 +16,7 @@ type StoreFactory = {
 
 const storeFactories: StoreFactory[] = [
   {
-    name: "state",
+    name: "sqlite",
     createStore: async () => {
       const stateDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "openclaw-msteams-store-"));
       return createMSTeamsConversationStoreState({

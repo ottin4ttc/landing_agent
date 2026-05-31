@@ -20,9 +20,23 @@ type BundledChannelCatalogEntry = {
   order: number;
 };
 
-const OFFICIAL_CHANNEL_CATALOG_RELATIVE_PATH = path.join("dist", "channel-catalog.json");
-const officialCatalogFileCache = new Map<string, ChannelCatalogEntryLike[] | null>();
-const bundledPackageCatalogCache = new Map<string, ChannelCatalogEntryLike[] | null>();
+function getOfficialCatalogFileCache(): Map<string, ChannelCatalogEntryLike[] | null> {
+  const globalKey = "__openclawOfficialChannelCatalogFileCache";
+  const globals = globalThis as typeof globalThis & {
+    [globalKey]?: Map<string, ChannelCatalogEntryLike[] | null>;
+  };
+  globals[globalKey] ??= new Map<string, ChannelCatalogEntryLike[] | null>();
+  return globals[globalKey];
+}
+
+function getBundledPackageCatalogCache(): Map<string, ChannelCatalogEntryLike[] | null> {
+  const globalKey = "__openclawBundledPackageCatalogCache";
+  const globals = globalThis as typeof globalThis & {
+    [globalKey]?: Map<string, ChannelCatalogEntryLike[] | null>;
+  };
+  globals[globalKey] ??= new Map<string, ChannelCatalogEntryLike[] | null>();
+  return globals[globalKey];
+}
 
 function listPackageRoots(): string[] {
   return uniqueStrings(
@@ -38,6 +52,7 @@ function readBundledExtensionCatalogEntriesSync(): ChannelCatalogEntryLike[] {
   if (!pluginsDir) {
     return [];
   }
+  const bundledPackageCatalogCache = getBundledPackageCatalogCache();
   const cached = bundledPackageCatalogCache.get(pluginsDir);
   if (cached !== undefined) {
     return cached ?? [];
@@ -60,8 +75,10 @@ function readBundledExtensionCatalogEntriesSync(): ChannelCatalogEntryLike[] {
 }
 
 function readOfficialCatalogFileSync(): ChannelCatalogEntryLike[] {
+  const officialCatalogRelativePath = path.join("dist", "channel-catalog.json");
+  const officialCatalogFileCache = getOfficialCatalogFileCache();
   for (const packageRoot of listPackageRoots()) {
-    const candidate = path.join(packageRoot, OFFICIAL_CHANNEL_CATALOG_RELATIVE_PATH);
+    const candidate = path.join(packageRoot, officialCatalogRelativePath);
     const cached = officialCatalogFileCache.get(candidate);
     if (cached !== undefined) {
       if (cached) {

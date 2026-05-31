@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AuthStorage, ModelRegistry } from "openclaw/plugin-sdk/agent-sessions";
-import type { Api, Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import type { AnyAgentTool } from "../../agent-tools.types.js";
+import type { Api, Model } from "../../pi-ai-contract.js";
+import type { AuthStorage, ModelRegistry } from "../../pi-coding-agent-contract.js";
 import { buildEmbeddedAttemptToolRunContext } from "./attempt.tool-run-context.js";
 
 const MEMORY_RELATIVE_PATH = "memory/2026-03-24.md";
@@ -13,7 +13,6 @@ function createAttemptParams(workspaceDir: string) {
   return {
     sessionId: "session-memory-flush",
     sessionKey: "agent:main",
-    sessionFile: path.join(workspaceDir, "session.json"),
     workspaceDir,
     prompt: "flush durable notes",
     timeoutMs: 30_000,

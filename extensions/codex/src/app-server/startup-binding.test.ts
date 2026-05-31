@@ -37,7 +37,6 @@ describe("Codex app-server startup binding", () => {
       path.join(path.dirname(sessionFile), "sessions.json"),
       JSON.stringify({
         "agent:main:session-1": {
-          sessionFile,
           ...record,
         },
       }),
@@ -59,13 +58,12 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
-      sessionFile,
       agentDir,
       config: {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
             },
           },
         },
@@ -184,13 +182,12 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
-      sessionFile,
       agentDir,
       config: {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
               maxActiveTranscriptBytes: "1k",
             },
           },
@@ -216,14 +213,13 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
-      sessionFile,
       agentDir,
       codexHome,
       config: {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
               maxActiveTranscriptBytes: 1_000,
             },
           },
@@ -263,13 +259,12 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
-      sessionFile,
       agentDir,
       config: {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
               maxActiveTranscriptBytes: "1mb",
             },
           },
@@ -309,13 +304,12 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
-      sessionFile,
       agentDir,
       config: {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
               maxActiveTranscriptBytes: "1mb",
             },
           },
@@ -362,13 +356,12 @@ describe("Codex app-server startup binding", () => {
     );
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
-      sessionFile,
       agentDir,
       config: {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
               maxActiveTranscriptBytes: "1mb",
             },
           },
@@ -406,13 +399,12 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
-      sessionFile,
       agentDir,
       config: {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
               maxActiveTranscriptBytes: "1mb",
             },
           },
@@ -509,13 +501,12 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
-      sessionFile,
       agentDir,
       config: {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
               maxActiveTranscriptBytes: 1_000,
             },
           },
@@ -541,13 +532,12 @@ describe("Codex app-server startup binding", () => {
 
     const binding = await rotateOversizedCodexAppServerStartupBinding({
       binding: await readCodexAppServerBinding(sessionFile),
-      sessionFile,
       agentDir,
       config: {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
               maxActiveTranscriptBytes: 1_000,
             },
           },

@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { clearLoadInstalledPluginIndexInstallRecordsCache } from "../plugins/installed-plugin-index-records.js";
+import { clearLoadInstalledPluginIndexInstallRecordsCache } from "../plugins/installed-plugin-index-record-reader.js";
+import { writePersistedInstalledPluginIndexSync } from "../plugins/installed-plugin-index-store.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { sourceBundledPluginTestEnv } from "./test-helpers.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
 
 vi.unmock("../version.js");
@@ -132,7 +135,7 @@ describe("config plugin validation", () => {
       HOME: suiteHome,
       OPENCLAW_HOME: undefined,
       OPENCLAW_STATE_DIR: path.join(suiteHome, ".openclaw"),
-      OPENCLAW_BUNDLED_PLUGINS_DIR: undefined,
+      ...sourceBundledPluginTestEnv(),
       OPENCLAW_VERSION: undefined,
       VITEST: "true",
     }) satisfies NodeJS.ProcessEnv;
@@ -240,6 +243,7 @@ describe("config plugin validation", () => {
   });
 
   afterAll(async () => {
+    closeOpenClawStateDatabaseForTest();
     await fs.rm(fixtureRoot, { recursive: true, force: true });
   });
 
@@ -280,6 +284,10 @@ describe("config plugin validation", () => {
       );
       expect(res.warnings.filter((warning) => warning.path.startsWith("plugins."))).toEqual([
         {
+          path: "plugins.load.paths",
+          message: `plugin: plugin path not found: ${missingPath}`,
+        },
+        {
           path: "plugins.entries.missing-plugin",
           message:
             "plugin not found: missing-plugin (stale config entry ignored; remove it from plugins config)",
@@ -312,6 +320,24 @@ describe("config plugin validation", () => {
         path: "plugins.deny",
         message:
           "plugin not found: missing-deny (stale config entry ignored; remove it from plugins config)",
+      });
+    }
+  });
+
+  it("warns instead of failing for missing configured plugin load paths", () => {
+    const missingPath = path.join(suiteHome, "missing-plugin-dir");
+    const res = validateInSuite({
+      agents: { list: [{ id: "pi" }] },
+      plugins: {
+        load: { paths: [missingPath] },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.warnings).toContainEqual({
+        path: "plugins.load.paths",
+        message: `plugin: plugin path not found: ${missingPath}`,
       });
     }
   });
@@ -832,13 +858,16 @@ describe("config plugin validation", () => {
   });
 
   it("uses persisted installed-plugin records as stale channel evidence", async () => {
-    const installedPluginIndexPath = path.join(suiteHome, ".openclaw", "plugins", "installs.json");
-    await mkdirSafe(path.dirname(installedPluginIndexPath));
     clearLoadInstalledPluginIndexInstallRecordsCache();
-    await fs.writeFile(
-      installedPluginIndexPath,
-      JSON.stringify(
+    try {
+      writePersistedInstalledPluginIndexSync(
         {
+          version: 1,
+          hostContractVersion: "test-host",
+          compatRegistryVersion: "test-compat",
+          migrationVersion: 1,
+          policyHash: "test-policy",
+          generatedAtMs: 0,
           installRecords: {
             "missing-sms": {
               source: "npm",
@@ -847,16 +876,12 @@ describe("config plugin validation", () => {
             },
           },
           plugins: [],
+          diagnostics: [],
         },
-        null,
-        2,
-      ),
-      "utf-8",
-    );
-    clearLoadInstalledPluginIndexInstallRecordsCache();
-    try {
+        { stateDir: path.join(suiteHome, ".openclaw") },
+      );
       const res = validateInSuite({
-        agents: { list: [{ id: "openclaw" }] },
+        agents: { list: [{ id: "pi" }] },
         channels: {
           "missing-sms": { token: "stale" },
         },
@@ -872,7 +897,6 @@ describe("config plugin validation", () => {
           "unknown channel id: missing-sms (stale channel plugin config ignored; run openclaw doctor --fix to remove stale config, or install the plugin)",
       });
     } finally {
-      await fs.rm(installedPluginIndexPath, { force: true });
       clearLoadInstalledPluginIndexInstallRecordsCache();
     }
   });
@@ -917,7 +941,8 @@ describe("config plugin validation", () => {
       {
         env: {
           ...suiteEnv(),
-          OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(suiteHome, "missing-bundled-plugins"),
+          OPENCLAW_BUNDLED_PLUGINS_DIR: undefined,
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
         },
       },
     );

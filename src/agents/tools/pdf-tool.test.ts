@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import * as pdfExtractModule from "../../media/pdf-extract.js";
+import { saveMediaBuffer } from "../../media/store.js";
 import * as webMedia from "../../media/web-media.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import * as modelDiscovery from "../agent-model-discovery.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import * as modelAuth from "../model-auth.js";
@@ -142,7 +144,7 @@ async function stubPdfToolInfra(
           }) as never;
   vi.spyOn(modelDiscovery, "discoverModels").mockReturnValue({ find } as never);
 
-  vi.spyOn(modelsConfig, "ensureOpenClawModelsJson").mockResolvedValue({
+  vi.spyOn(modelsConfig, "ensureOpenClawModelCatalog").mockResolvedValue({
     agentDir,
     wrote: false,
   });
@@ -157,15 +159,18 @@ async function withManagedInboundPdf(
   run: (params: { stateDir: string; mediaId: string; mediaPath: string }) => Promise<void>,
 ) {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pdf-managed-inbound-"));
-  const inboundDir = path.join(stateDir, "media", "inbound");
-  const mediaId = "claim-check-test.pdf";
-  const mediaPath = path.join(inboundDir, mediaId);
-  await fs.mkdir(inboundDir, { recursive: true });
-  await fs.writeFile(mediaPath, FAKE_PDF_MEDIA.buffer);
   vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+  const saved = await saveMediaBuffer(
+    FAKE_PDF_MEDIA.buffer,
+    FAKE_PDF_MEDIA.contentType,
+    "inbound",
+    undefined,
+    "claim-check-test.pdf",
+  );
   try {
-    await run({ stateDir, mediaId, mediaPath });
+    await run({ stateDir, mediaId: saved.id, mediaPath: saved.path });
   } finally {
+    closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   }
 }
@@ -498,11 +503,9 @@ describe("createPdfTool", () => {
         pdf: "/tmp/doc.pdf",
       });
 
-      const ensureModelsJsonMock = vi.mocked(modelsConfig.ensureOpenClawModelsJson);
-      const [modelsConfigArg, modelsAgentDir, modelsOptions] = firstMockCall(
-        ensureModelsJsonMock,
-        "ensureOpenClawModelsJson",
-      );
+      const ensureModelCatalogMock = vi.mocked(modelsConfig.ensureOpenClawModelCatalog);
+      const [modelsConfigArg, modelsAgentDir, modelsOptions] =
+        ensureModelCatalogMock.mock.calls[0] ?? [];
       expectFields(
         (modelsConfigArg as { agents?: { defaults?: unknown } } | undefined)?.agents?.defaults,
         {

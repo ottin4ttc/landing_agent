@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
+import type { AssistantMessage } from "./pi-ai-contract.js";
 import {
   createTextEndBlockReplyHarness,
   emitAssistantTextDelta,

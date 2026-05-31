@@ -15,7 +15,7 @@ export async function handleDiscordMessagingAction(
   isActionEnabled: ActionGate<DiscordActionConfig>,
   cfg: OpenClawConfig,
   options?: DiscordMessagingActionOptions,
-): Promise<AgentToolResult<unknown>> {
+): Promise<AgentToolResult> {
   if (!cfg) {
     throw new Error("Discord messaging actions require a resolved runtime config.");
   }

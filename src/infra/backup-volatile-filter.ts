@@ -1,16 +1,5 @@
 import path from "node:path";
 
-/**
- * Paths that are known to change during a live backup and commonly trigger
- * tar EOF errors. These files are actively appended to (logs, sockets, pid
- * markers) while `tar.c()` is reading them, which races with the size recorded
- * at `lstat()` time.
- *
- * Skipping them is safe: they are either recreated on startup, are transient
- * by nature, or have durable equivalents elsewhere in state. Snapshotting a
- * partial tail of a live log has no restoration value.
- */
-
 const STATE_TRANSIENT_EXTENSIONS = new Set([".sock", ".pid", ".tmp"]);
 
 function normalizePosix(input: string): string {
@@ -64,18 +53,6 @@ export type VolatileFilterPlan = {
   stateDirs: string[];
 };
 
-/**
- * Returns true if the given absolute path should be skipped during backup
- * because it is a live-mutation target.
- *
- * Rules:
- *   - `{stateDir}/sessions/**`/`*.{jsonl,log}` (legacy)
- *   - `{stateDir}/agents/<agentId>/sessions/**`/`*.{jsonl,log}`
- *   - `{stateDir}/cron/runs/**`/`*.{jsonl,log}`
- *   - `{stateDir}/logs/**`/`*.{jsonl,log}`
- *   - `{stateDir}/{delivery-queue,session-delivery-queue}/**`/`*.{json,tmp}`
- *   - `{stateDir}/**`/`*.{sock,pid,tmp}`
- */
 export function isVolatileBackupPath(absolutePath: string, plan: VolatileFilterPlan): boolean {
   if (!absolutePath) {
     return false;

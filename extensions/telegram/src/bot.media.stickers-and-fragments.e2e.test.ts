@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { telegramBotDepsForTest } from "./bot.media.e2e-harness.js";
 import {
   TELEGRAM_TEST_TIMINGS,
   cacheStickerSpy,
@@ -244,6 +243,7 @@ describe("telegram text fragments", () => {
   });
 
   const TEXT_FRAGMENT_TEST_TIMEOUT_MS = process.platform === "win32" ? 45_000 : 20_000;
+  const TEXT_FRAGMENT_FLUSH_MS = TELEGRAM_TEST_TIMINGS.textFragmentGapMs + 80;
 
   it(
     "buffers near-limit text and processes sequential parts as one message",
@@ -279,12 +279,13 @@ describe("telegram text fragments", () => {
           getFile: async () => ({}),
         });
 
-        expect(replySpy).not.toHaveBeenCalled();
-        await flushScheduledTimerForDelay(
-          setTimeoutSpy,
-          clearTimeoutSpy,
-          TELEGRAM_TEST_TIMINGS.textFragmentGapMs,
-        );
+      expect(replySpy).not.toHaveBeenCalled();
+      await vi.waitFor(
+        () => {
+          expect(replySpy).toHaveBeenCalledTimes(1);
+        },
+        { timeout: Math.max(TEXT_FRAGMENT_FLUSH_MS * 6, 10_000), interval: 5 },
+      );
 
         expect(replySpy).toHaveBeenCalledTimes(1);
         const payload = replySpy.mock.calls.at(0)?.[0] as { RawBody?: string };
@@ -293,179 +294,6 @@ describe("telegram text fragments", () => {
       } finally {
         setTimeoutSpy.mockRestore();
         clearTimeoutSpy.mockRestore();
-      }
-    },
-    TEXT_FRAGMENT_TEST_TIMEOUT_MS,
-  );
-
-  it(
-    "keeps per-DM pairing store authorization when flushing text fragments",
-    async () => {
-      const originalLoadConfig = telegramBotDepsForTest.getRuntimeConfig;
-      telegramBotDepsForTest.getRuntimeConfig = (() => ({
-        channels: {
-          telegram: {
-            dmPolicy: "open",
-            direct: {
-              "42": { dmPolicy: "pairing" },
-            },
-          },
-        },
-      })) as typeof telegramBotDepsForTest.getRuntimeConfig;
-
-      const readAllowFromStore = vi.mocked(telegramBotDepsForTest.readChannelAllowFromStore);
-      const upsertPairingRequest = vi.mocked(telegramBotDepsForTest.upsertChannelPairingRequest);
-      readAllowFromStore.mockReset();
-      readAllowFromStore.mockResolvedValue(["777"]);
-      upsertPairingRequest.mockClear();
-
-      const runtimeError = vi.fn();
-      const { handler, replySpy } = await createBotHandlerWithOptions({ runtimeError });
-      let nextTimerHandle = 1;
-      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(() => {
-        const handle = nextTimerHandle;
-        nextTimerHandle += 1;
-        return handle as unknown as ReturnType<typeof setTimeout>;
-      });
-      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-      const part1 = "A".repeat(4050);
-      const part2 = "B".repeat(50);
-
-      try {
-        await handler({
-          message: {
-            chat: { id: 42, type: "private" },
-            from: { id: 777, is_bot: false, first_name: "Ada" },
-            message_id: 30,
-            date: 1736380800,
-            text: part1,
-          },
-          me: { username: "openclaw_bot" },
-          getFile: async () => ({}),
-        });
-
-        await handler({
-          message: {
-            chat: { id: 42, type: "private" },
-            from: { id: 777, is_bot: false, first_name: "Ada" },
-            message_id: 31,
-            date: 1736380801,
-            text: part2,
-          },
-          me: { username: "openclaw_bot" },
-          getFile: async () => ({}),
-        });
-
-        await flushScheduledTimerForDelay(
-          setTimeoutSpy,
-          clearTimeoutSpy,
-          TELEGRAM_TEST_TIMINGS.textFragmentGapMs,
-        );
-
-        expect(readAllowFromStore).toHaveBeenCalledWith("telegram", process.env, "default");
-        expect(upsertPairingRequest).not.toHaveBeenCalled();
-        expect(replySpy).toHaveBeenCalledTimes(1);
-        expect(runtimeError).not.toHaveBeenCalled();
-      } finally {
-        setTimeoutSpy.mockRestore();
-        clearTimeoutSpy.mockRestore();
-        telegramBotDepsForTest.getRuntimeConfig = originalLoadConfig;
-        readAllowFromStore.mockReset();
-        readAllowFromStore.mockResolvedValue([]);
-      }
-    },
-    TEXT_FRAGMENT_TEST_TIMEOUT_MS,
-  );
-
-  it(
-    "buffers different forum topic fragments independently",
-    async () => {
-      const originalLoadConfig = telegramBotDepsForTest.getRuntimeConfig;
-      telegramBotDepsForTest.getRuntimeConfig = (() => ({
-        channels: {
-          telegram: {
-            dmPolicy: "open",
-            allowFrom: ["*"],
-            groupAllowFrom: ["777"],
-            groupPolicy: "open",
-            groups: {
-              "-10042": { allowFrom: ["777"], groupPolicy: "open", requireMention: false },
-            },
-          },
-        },
-      })) as typeof telegramBotDepsForTest.getRuntimeConfig;
-
-      const runtimeError = vi.fn();
-      const { handler, replySpy } = await createBotHandlerWithOptions({ runtimeError });
-      let nextTimerHandle = 1;
-      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(() => {
-        const handle = nextTimerHandle;
-        nextTimerHandle += 1;
-        return handle as unknown as ReturnType<typeof setTimeout>;
-      });
-      const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-
-      try {
-        await handler({
-          message: {
-            chat: { id: -10042, type: "supergroup", is_forum: true },
-            from: { id: 777, is_bot: false, first_name: "Ada" },
-            message_id: 120,
-            message_thread_id: 101,
-            is_topic_message: true,
-            date: 1736380800,
-            text: `@openclaw_bot topic-one ${"A".repeat(4050)}`,
-          },
-          me: { username: "openclaw_bot" },
-          getFile: async () => ({}),
-        });
-
-        await handler({
-          message: {
-            chat: { id: -10042, type: "supergroup", is_forum: true },
-            from: { id: 777, is_bot: false, first_name: "Ada" },
-            message_id: 121,
-            message_thread_id: 202,
-            is_topic_message: true,
-            date: 1736380801,
-            text: `@openclaw_bot topic-two ${"B".repeat(4050)}`,
-          },
-          me: { username: "openclaw_bot" },
-          getFile: async () => ({}),
-        });
-
-        const timers = resolveActiveScheduledTimersForDelay(
-          setTimeoutSpy,
-          clearTimeoutSpy,
-          TELEGRAM_TEST_TIMINGS.textFragmentGapMs,
-        );
-        expect(timers).toHaveLength(2);
-        for (const timer of timers) {
-          clearTimeout(timer.handle);
-          await timer.callback();
-        }
-        expect(replySpy).toHaveBeenCalledTimes(2);
-        const rawBodies = replySpy.mock.calls.map(
-          (call) => (call[0] as { RawBody?: string }).RawBody,
-        );
-        expect(rawBodies).toEqual(
-          expect.arrayContaining([
-            expect.stringContaining("topic-one"),
-            expect.stringContaining("topic-two"),
-          ]),
-        );
-        expect(runtimeError).not.toHaveBeenCalled();
-      } finally {
-        for (const timer of resolveActiveScheduledTimersForDelay(
-          setTimeoutSpy,
-          clearTimeoutSpy,
-          TELEGRAM_TEST_TIMINGS.textFragmentGapMs,
-        )) {
-          clearTimeout(timer.handle);
-        }
-        setTimeoutSpy.mockRestore();
-        clearTimeoutSpy.mockRestore();
-        telegramBotDepsForTest.getRuntimeConfig = originalLoadConfig;
       }
     },
     TEXT_FRAGMENT_TEST_TIMEOUT_MS,

@@ -589,11 +589,6 @@ function createChannelOutboundContextBase(
 
 const isAbortError = (err: unknown): boolean => err instanceof Error && err.name === "AbortError";
 
-const isDeliveryAbortError = (err: unknown): boolean =>
-  isAbortError(err) ||
-  (err instanceof OutboundDeliveryError &&
-    isAbortError((err as Error & { cause?: unknown }).cause));
-
 async function markQueuedPlatformSendAttemptStarted(params: {
   queueId: string;
   queuePolicy: OutboundDeliveryQueuePolicy;
@@ -648,7 +643,6 @@ type DeliverOutboundPayloadsCoreParams = {
   bestEffort?: boolean;
   onError?: (err: unknown, payload: NormalizedOutboundPayload) => void;
   onPayload?: (payload: NormalizedOutboundPayload) => void;
-  onPayloadDeliveryOutcome?: (outcome: OutboundPayloadDeliveryOutcome) => void;
   /** Session/agent context used for hooks and media local-root scoping. */
   session?: OutboundSessionContext;
   mirror?: DeliveryMirror;
@@ -658,6 +652,7 @@ type DeliverOutboundPayloadsCoreParams = {
 
 type DeliverOutboundPayloadsCoreRuntimeParams = DeliverOutboundPayloadsCoreParams & {
   onPlatformSendStart?: () => Promise<void>;
+  onPayloadDeliveryOutcome?: (outcome: OutboundPayloadDeliveryOutcome) => void;
 };
 
 /**
@@ -675,6 +670,7 @@ export type DeliverOutboundPayloadsParams = DeliverOutboundPayloadsCoreParams & 
   queuePolicy?: OutboundDeliveryQueuePolicy;
   renderedBatchPlan?: QueuedRenderedMessageBatchPlan;
   onDeliveryIntent?: (intent: OutboundDeliveryIntent) => void;
+  onPayloadDeliveryOutcome?: (outcome: OutboundPayloadDeliveryOutcome) => void;
 };
 
 type MessageSentEvent = {
@@ -776,18 +772,14 @@ function normalizeEmptyPayloadForDelivery(payload: ReplyPayload): ReplyPayload |
   return payload;
 }
 
-type NormalizedPayloadForChannelDelivery = {
-  index: number;
-  payload: ReplyPayload;
-};
-
 function normalizePayloadsForChannelDelivery(
   plan: readonly OutboundPayloadPlan[],
   handler: ChannelHandler,
-): NormalizedPayloadForChannelDelivery[] {
-  const normalizedPayloads: NormalizedPayloadForChannelDelivery[] = [];
+): Array<{ sourceIndex: number; payload: ReplyPayload }> {
+  const normalizedPayloads: Array<{ sourceIndex: number; payload: ReplyPayload }> = [];
   for (const entry of plan) {
-    let sanitizedPayload = stripInternalRuntimeScaffoldingFromPayload(entry.payload);
+    const payload = entry.payload;
+    let sanitizedPayload = stripInternalRuntimeScaffoldingFromPayload(payload);
     if (handler.sanitizeText && sanitizedPayload.text) {
       if (!handler.shouldSkipPlainTextSanitization?.(sanitizedPayload)) {
         sanitizedPayload = {
@@ -805,7 +797,7 @@ function normalizePayloadsForChannelDelivery(
         )
       : null;
     if (normalized) {
-      normalizedPayloads.push({ index: entry.sourceIndex, payload: normalized });
+      normalizedPayloads.push({ sourceIndex: entry.sourceIndex, payload: normalized });
     }
   }
   return normalizedPayloads;
@@ -1234,12 +1226,6 @@ function suppressedPayloadOutcome(params: {
 export async function deliverOutboundPayloads(
   params: DeliverOutboundPayloadsParams,
 ): Promise<OutboundDeliveryResult[]> {
-  return await deliverOutboundPayloadsInternal(params);
-}
-
-export async function deliverOutboundPayloadsInternal(
-  params: DeliverOutboundPayloadsParams,
-): Promise<OutboundDeliveryResult[]> {
   const { channel, to, payloads } = params;
   const queuePolicy = params.queuePolicy ?? "best_effort";
   const queuePayloads = payloads.map(stripInternalRuntimeScaffoldingFromPayload);
@@ -1302,6 +1288,12 @@ export async function deliverOutboundPayloadsInternal(
     return [];
   }
   return claimResult.value;
+}
+
+export async function deliverOutboundPayloadsInternal(
+  params: DeliverOutboundPayloadsParams,
+): Promise<OutboundDeliveryResult[]> {
+  return await deliverOutboundPayloads(params);
 }
 
 async function deliverOutboundPayloadsWithQueueCleanup(
@@ -1383,7 +1375,7 @@ async function deliverOutboundPayloadsWithQueueCleanup(
     return results;
   } catch (err) {
     if (queueId) {
-      if (isDeliveryAbortError(err)) {
+      if (isAbortError(err)) {
         await ackDelivery(queueId).catch(() => {});
       } else if (!platformResultsReturned) {
         await failDelivery(queueId, formatErrorMessage(err)).catch((failErr: unknown) => {
@@ -1565,7 +1557,7 @@ async function deliverOutboundPayloadsCore(
       },
     );
   }
-  for (const { index: payloadIndex, payload } of normalizedPayloads) {
+  for (const { sourceIndex: payloadIndex, payload } of normalizedPayloads) {
     let payloadSummary = buildPayloadSummary(payload);
     let deliveryKind: DiagnosticMessageDeliveryKind = "other";
     let deliveryStartedAt = 0;
@@ -1940,6 +1932,9 @@ async function deliverOutboundPayloadsCore(
         content: payloadSummary.hookContent ?? payloadSummary.text,
         error: formatErrorMessage(err),
       });
+      if (isAbortError(err)) {
+        throw err;
+      }
       if (!params.bestEffort) {
         throw toOutboundDeliveryError({
           error: err,

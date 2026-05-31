@@ -135,7 +135,7 @@ export class AgentSessionRuntime {
 
   private async emitBeforeSwitch(
     reason: "new" | "resume",
-    targetSessionFile?: string,
+    targetSessionRef?: string,
   ): Promise<{ cancelled: boolean }> {
     const runner = this.currentSession.extensionRunner;
     if (!runner.hasHandlers("session_before_switch")) {
@@ -145,7 +145,7 @@ export class AgentSessionRuntime {
     const result = await runner.emit({
       type: "session_before_switch",
       reason,
-      targetSessionFile,
+      targetSessionRef,
     });
     return { cancelled: result?.cancel === true };
   }
@@ -169,12 +169,12 @@ export class AgentSessionRuntime {
 
   private async teardownCurrent(
     reason: SessionShutdownEvent["reason"],
-    targetSessionFile?: string,
+    targetSessionRef?: string,
   ): Promise<void> {
     await emitSessionShutdownEvent(this.currentSession.extensionRunner, {
       type: "session_shutdown",
       reason,
-      targetSessionFile,
+      targetSessionRef,
     });
     this.beforeSessionInvalidate?.();
     this.currentSession.dispose();
@@ -199,27 +199,31 @@ export class AgentSessionRuntime {
   }
 
   async switchSession(
-    sessionPath: string,
+    sessionRef: string,
     options?: {
       cwdOverride?: string;
       withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
     },
   ): Promise<{ cancelled: boolean }> {
-    const beforeResult = await this.emitBeforeSwitch("resume", sessionPath);
+    const beforeResult = await this.emitBeforeSwitch("resume", sessionRef);
     if (beforeResult.cancelled) {
       return beforeResult;
     }
 
-    const previousSessionFile = this.currentSession.sessionFile;
-    const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
+    const previousSessionRef = this.currentSession.sessionRef;
+    const sessionManager = SessionManager.resumeTranscript(
+      sessionRef,
+      undefined,
+      options?.cwdOverride,
+    );
     assertSessionCwdExists(sessionManager, this.cwd);
-    await this.teardownCurrent("resume", sessionManager.getSessionFile());
+    await this.teardownCurrent("resume", sessionManager.getSessionRef());
     this.apply(
       await this.createRuntime({
         cwd: sessionManager.getCwd(),
         agentDir: this.runtimeServices.agentDir,
         sessionManager,
-        sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+        sessionStartEvent: { type: "session_start", reason: "resume", previousSessionRef },
       }),
     );
     await this.finishSessionReplacement(options?.withSession);
@@ -227,7 +231,7 @@ export class AgentSessionRuntime {
   }
 
   async newSession(options?: {
-    parentSession?: string;
+    parentTranscriptScope?: ReturnType<SessionManager["getTranscriptScope"]>;
     setup?: (sessionManager: SessionManager) => Promise<void>;
     withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
   }): Promise<{ cancelled: boolean }> {
@@ -236,20 +240,20 @@ export class AgentSessionRuntime {
       return beforeResult;
     }
 
-    const previousSessionFile = this.currentSession.sessionFile;
+    const previousSessionRef = this.currentSession.sessionRef;
     const sessionDir = this.currentSession.sessionManager.getSessionDir();
-    const sessionManager = SessionManager.create(this.cwd, sessionDir);
-    if (options?.parentSession) {
-      sessionManager.newSession({ parentSession: options.parentSession });
+    const sessionManager = SessionManager.createForCwd(this.cwd, sessionDir);
+    if (options?.parentTranscriptScope) {
+      sessionManager.newSession({ parentTranscriptScope: options.parentTranscriptScope });
     }
 
-    await this.teardownCurrent("new", sessionManager.getSessionFile());
+    await this.teardownCurrent("new", sessionManager.getSessionRef());
     this.apply(
       await this.createRuntime({
         cwd: this.cwd,
         agentDir: this.runtimeServices.agentDir,
         sessionManager,
-        sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
+        sessionStartEvent: { type: "session_start", reason: "new", previousSessionRef },
       }),
     );
     if (options?.setup) {
@@ -291,41 +295,42 @@ export class AgentSessionRuntime {
       selectedText = extractUserMessageText(selectedEntry.message.content);
     }
 
-    const previousSessionFile = this.currentSession.sessionFile;
+    const previousSessionRef = this.currentSession.sessionRef;
     if (this.currentSession.sessionManager.isPersisted()) {
-      const currentSessionFile = this.currentSession.sessionFile;
-      if (!currentSessionFile) {
-        throw new Error("Persisted session is missing a session file");
+      const currentTranscriptScope = this.currentSession.sessionManager.getTranscriptScope();
+      const currentSessionRef = this.currentSession.sessionRef;
+      if (!currentTranscriptScope || !currentSessionRef) {
+        throw new Error("Persisted session is missing a transcript scope");
       }
       const sessionDir = this.currentSession.sessionManager.getSessionDir();
       if (!targetLeafId) {
-        const sessionManager = SessionManager.create(this.cwd, sessionDir);
-        sessionManager.newSession({ parentSession: currentSessionFile });
-        await this.teardownCurrent("fork", sessionManager.getSessionFile());
+        const sessionManager = SessionManager.createForCwd(this.cwd, sessionDir);
+        sessionManager.newSession({ parentTranscriptScope: currentTranscriptScope });
+        await this.teardownCurrent("fork", sessionManager.getSessionRef());
         this.apply(
           await this.createRuntime({
             cwd: this.cwd,
             agentDir: this.runtimeServices.agentDir,
             sessionManager,
-            sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
+            sessionStartEvent: { type: "session_start", reason: "fork", previousSessionRef },
           }),
         );
         await this.finishSessionReplacement(options?.withSession);
         return { cancelled: false, selectedText };
       }
 
-      const sessionManager = SessionManager.open(currentSessionFile, sessionDir);
-      const forkedSessionPath = sessionManager.createBranchedSession(targetLeafId);
-      if (!forkedSessionPath) {
+      const sessionManager = SessionManager.resumeTranscript(currentSessionRef, sessionDir);
+      const forkedSessionRef = sessionManager.createBranchedTranscript(targetLeafId);
+      if (!forkedSessionRef) {
         throw new Error("Failed to create forked session");
       }
-      await this.teardownCurrent("fork", sessionManager.getSessionFile());
+      await this.teardownCurrent("fork", sessionManager.getSessionRef());
       this.apply(
         await this.createRuntime({
           cwd: sessionManager.getCwd(),
           agentDir: this.runtimeServices.agentDir,
           sessionManager,
-          sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
+          sessionStartEvent: { type: "session_start", reason: "fork", previousSessionRef },
         }),
       );
       await this.finishSessionReplacement(options?.withSession);
@@ -334,17 +339,18 @@ export class AgentSessionRuntime {
 
     const sessionManager = this.currentSession.sessionManager;
     if (!targetLeafId) {
-      sessionManager.newSession({ parentSession: this.currentSession.sessionFile });
+      const parentTranscriptScope = this.currentSession.sessionManager.getTranscriptScope();
+      sessionManager.newSession(parentTranscriptScope ? { parentTranscriptScope } : {});
     } else {
-      sessionManager.createBranchedSession(targetLeafId);
+      sessionManager.createBranchedTranscript(targetLeafId);
     }
-    await this.teardownCurrent("fork", sessionManager.getSessionFile());
+    await this.teardownCurrent("fork", sessionManager.getSessionRef());
     this.apply(
       await this.createRuntime({
         cwd: this.cwd,
         agentDir: this.runtimeServices.agentDir,
         sessionManager,
-        sessionStartEvent: { type: "session_start", reason: "fork", previousSessionFile },
+        sessionStartEvent: { type: "session_start", reason: "fork", previousSessionRef },
       }),
     );
     await this.finishSessionReplacement(options?.withSession);
@@ -375,20 +381,24 @@ export class AgentSessionRuntime {
       return beforeResult;
     }
 
-    const previousSessionFile = this.currentSession.sessionFile;
+    const previousSessionRef = this.currentSession.sessionRef;
     if (resolve(destinationPath) !== resolvedPath) {
       copyFileSync(resolvedPath, destinationPath);
     }
 
-    const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
+    const sessionManager = SessionManager.resumeTranscript(
+      destinationPath,
+      sessionDir,
+      cwdOverride,
+    );
     assertSessionCwdExists(sessionManager, this.cwd);
-    await this.teardownCurrent("resume", sessionManager.getSessionFile());
+    await this.teardownCurrent("resume", sessionManager.getSessionRef());
     this.apply(
       await this.createRuntime({
         cwd: sessionManager.getCwd(),
         agentDir: this.runtimeServices.agentDir,
         sessionManager,
-        sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
+        sessionStartEvent: { type: "session_start", reason: "resume", previousSessionRef },
       }),
     );
     await this.finishSessionReplacement();

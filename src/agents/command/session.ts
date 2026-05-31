@@ -11,22 +11,22 @@ import {
   resolveAgentIdFromSessionKey,
   resolveExplicitAgentSessionKey,
 } from "../../config/sessions/main-session.js";
-import { resolveStorePath } from "../../config/sessions/paths.js";
 import {
   evaluateSessionFreshness,
   resolveSessionResetPolicy,
 } from "../../config/sessions/reset-policy.js";
 import { resolveChannelResetConfig, resolveSessionResetType } from "../../config/sessions/reset.js";
+import { readSqliteSessionRoutingInfo } from "../../config/sessions/session-entries.sqlite.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
-import { loadSessionStore } from "../../config/sessions/store-load.js";
+import { listSessionEntries } from "../../config/sessions/store.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
-  buildAgentMainSessionKey,
   DEFAULT_AGENT_ID,
   isUnscopedSessionKeySentinel,
   normalizeAgentId,
   normalizeMainKey,
+  toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
 import { resolveSessionIdMatchSelection } from "../../sessions/session-id-resolution.js";
 import { listAgentIds, resolveDefaultAgentId } from "../agent-scope.js";
@@ -37,7 +37,7 @@ export type SessionResolution = {
   sessionKey?: string;
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
-  storePath: string;
+  agentId: string;
   isNewSession: boolean;
   persistedThinking?: ThinkLevel;
   persistedVerbose?: VerboseLevel;
@@ -46,7 +46,7 @@ export type SessionResolution = {
 type SessionKeyResolution = {
   sessionKey?: string;
   sessionStore: Record<string, SessionEntry>;
-  storePath: string;
+  agentId: string;
 };
 
 type SessionIdMatchSet = {
@@ -55,6 +55,12 @@ type SessionIdMatchSet = {
   storeByKey: Map<string, SessionKeyResolution>;
 };
 
+function listSessionRows(agentId: string): Record<string, SessionEntry> {
+  return Object.fromEntries(
+    listSessionEntries({ agentId }).map(({ sessionKey, entry }) => [sessionKey, entry]),
+  );
+}
+
 export function buildExplicitSessionIdSessionKey(params: {
   sessionId: string;
   agentId?: string;
@@ -62,71 +68,9 @@ export function buildExplicitSessionIdSessionKey(params: {
   return `agent:${normalizeAgentId(params.agentId)}:explicit:${params.sessionId.trim()}`;
 }
 
-function resolveLegacyMainStoreSessionForDefaultAgent(opts: {
-  cfg: OpenClawConfig;
-  defaultAgentId: string;
-  mainKey: string;
-  sessionKey?: string;
-  sessionStore: Record<string, SessionEntry>;
-  storePath: string;
-  cloneOnWrite?: boolean;
-}): SessionKeyResolution | undefined {
-  if (opts.defaultAgentId === DEFAULT_AGENT_ID || !opts.sessionKey) {
-    return undefined;
-  }
-  const defaultMainSessionKey = buildAgentMainSessionKey({
-    agentId: opts.defaultAgentId,
-    mainKey: opts.mainKey,
-  });
-  if (opts.sessionKey !== defaultMainSessionKey || opts.sessionStore[opts.sessionKey]) {
-    return undefined;
-  }
-
-  const legacyStorePath = resolveStorePath(opts.cfg.session?.store, {
-    agentId: DEFAULT_AGENT_ID,
-  });
-  const legacyKeys = [
-    buildAgentMainSessionKey({ agentId: DEFAULT_AGENT_ID, mainKey: opts.mainKey }),
-    buildAgentMainSessionKey({ agentId: DEFAULT_AGENT_ID, mainKey: "main" }),
-  ];
-  if (legacyStorePath === opts.storePath) {
-    for (const legacyKey of legacyKeys) {
-      const legacyEntry = opts.sessionStore[legacyKey];
-      if (legacyEntry) {
-        const sessionStore = opts.cloneOnWrite ? { ...opts.sessionStore } : opts.sessionStore;
-        sessionStore[opts.sessionKey] = { ...legacyEntry };
-        return {
-          sessionKey: opts.sessionKey,
-          sessionStore,
-          storePath: opts.storePath,
-        };
-      }
-    }
-    return undefined;
-  }
-  const legacyStore = loadSessionStore(
-    legacyStorePath,
-    opts.cloneOnWrite ? { clone: false } : undefined,
-  );
-  for (const legacyKey of legacyKeys) {
-    const legacyEntry = legacyStore[legacyKey];
-    if (legacyEntry) {
-      const sessionStore = opts.cloneOnWrite ? { ...opts.sessionStore } : opts.sessionStore;
-      sessionStore[opts.sessionKey] = { ...legacyEntry };
-      return {
-        sessionKey: opts.sessionKey,
-        sessionStore,
-        storePath: opts.storePath,
-      };
-    }
-  }
-  return undefined;
-}
-
 function collectSessionIdMatchesForRequest(opts: {
   cfg: OpenClawConfig;
   sessionStore: Record<string, SessionEntry>;
-  storePath: string;
   storeAgentId?: string;
   sessionId: string;
   searchOtherAgentStores: boolean;
@@ -138,7 +82,7 @@ function collectSessionIdMatchesForRequest(opts: {
 
   const addMatches = (
     candidateStore: Record<string, SessionEntry>,
-    candidateStorePath: string,
+    candidateAgentId: string,
     options?: { primary?: boolean },
   ): void => {
     for (const [candidateKey, candidateEntry] of Object.entries(candidateStore)) {
@@ -152,12 +96,12 @@ function collectSessionIdMatchesForRequest(opts: {
       storeByKey.set(candidateKey, {
         sessionKey: candidateKey,
         sessionStore: candidateStore,
-        storePath: candidateStorePath,
+        agentId: candidateAgentId,
       });
     }
   };
 
-  addMatches(opts.sessionStore, opts.storePath, { primary: true });
+  addMatches(opts.sessionStore, opts.storeAgentId ?? DEFAULT_AGENT_ID, { primary: true });
   if (!opts.searchOtherAgentStores) {
     return { matches, primaryStoreMatches, storeByKey };
   }
@@ -166,11 +110,7 @@ function collectSessionIdMatchesForRequest(opts: {
     if (agentId === opts.storeAgentId) {
       continue;
     }
-    const candidateStorePath = resolveStorePath(opts.cfg.session?.store, { agentId });
-    addMatches(
-      loadSessionStore(candidateStorePath, opts.clone === false ? { clone: false } : undefined),
-      candidateStorePath,
-    );
+    addMatches(listSessionRows(agentId), agentId);
   }
 
   return { matches, primaryStoreMatches, storeByKey };
@@ -188,12 +128,10 @@ export function resolveStoredSessionKeyForSessionId(opts: {
 }): SessionKeyResolution {
   const sessionId = opts.sessionId.trim();
   const storeAgentId = opts.agentId?.trim() ? normalizeAgentId(opts.agentId) : undefined;
-  const storePath = resolveStorePath(opts.cfg.session?.store, {
-    agentId: storeAgentId,
-  });
-  const sessionStore = loadSessionStore(storePath);
+  const agentId = storeAgentId ?? DEFAULT_AGENT_ID;
+  const sessionStore = listSessionRows(agentId);
   if (!sessionId) {
-    return { sessionKey: undefined, sessionStore, storePath };
+    return { sessionKey: undefined, sessionStore, agentId };
   }
 
   const selection = resolveSessionIdMatchSelection(
@@ -203,7 +141,7 @@ export function resolveStoredSessionKeyForSessionId(opts: {
   return {
     sessionKey: selection.kind === "selected" ? selection.sessionKey : undefined,
     sessionStore,
-    storePath,
+    agentId,
   };
 }
 
@@ -221,43 +159,35 @@ export function resolveSessionKeyForRequest(opts: {
   const defaultAgentId = normalizeAgentId(resolveDefaultAgentId(opts.cfg));
   const requestedAgentId = opts.agentId?.trim() ? normalizeAgentId(opts.agentId) : undefined;
   const requestedSessionId = opts.sessionId?.trim() || undefined;
-  const explicitSessionKey =
-    opts.sessionKey?.trim() ||
-    (!requestedSessionId
+  const rawExplicitSessionKey = opts.sessionKey?.trim();
+  const explicitSessionKey = rawExplicitSessionKey
+    ? requestedAgentId || !isUnscopedSessionKeySentinel(rawExplicitSessionKey)
+      ? toAgentStoreSessionKey({
+          agentId: requestedAgentId ?? defaultAgentId,
+          requestKey: rawExplicitSessionKey,
+          mainKey,
+        })
+      : rawExplicitSessionKey
+    : !requestedSessionId
       ? resolveExplicitAgentSessionKey({
           cfg: opts.cfg,
           agentId: requestedAgentId,
         })
-      : undefined);
-  const storeAgentId = explicitSessionKey
-    ? isUnscopedSessionKeySentinel(explicitSessionKey)
-      ? (requestedAgentId ?? defaultAgentId)
-      : resolveAgentIdFromSessionKey(explicitSessionKey)
-    : (requestedAgentId ?? defaultAgentId);
-  const storePath = resolveStorePath(sessionCfg?.store, {
-    agentId: storeAgentId,
-  });
-  const loadOptions = opts.clone === false ? { clone: false as const } : undefined;
-  const sessionStore = loadSessionStore(storePath, loadOptions);
+      : undefined;
+  const storeAgentId =
+    rawExplicitSessionKey &&
+    !requestedAgentId &&
+    isUnscopedSessionKeySentinel(rawExplicitSessionKey)
+      ? defaultAgentId
+      : explicitSessionKey
+        ? resolveAgentIdFromSessionKey(explicitSessionKey)
+        : (requestedAgentId ?? defaultAgentId);
+  const agentId = storeAgentId ?? defaultAgentId;
+  const sessionStore = listSessionRows(agentId);
 
   const ctx: MsgContext | undefined = opts.to?.trim() ? { From: opts.to } : undefined;
   let sessionKey: string | undefined =
     explicitSessionKey ?? (ctx ? resolveSessionKey(scope, ctx, mainKey, storeAgentId) : undefined);
-
-  if (ctx && !requestedAgentId && !requestedSessionId && !explicitSessionKey) {
-    const legacyMainSession = resolveLegacyMainStoreSessionForDefaultAgent({
-      cfg: opts.cfg,
-      defaultAgentId,
-      mainKey,
-      sessionKey,
-      sessionStore,
-      storePath,
-      cloneOnWrite: opts.clone === false,
-    });
-    if (legacyMainSession) {
-      return legacyMainSession;
-    }
-  }
 
   // If a session id was provided, prefer to re-use its existing entry (by id) even when no key was
   // derived. When duplicates exist across agent stores, pick the same deterministic best match used
@@ -271,8 +201,7 @@ export function resolveSessionKeyForRequest(opts: {
     const { matches, primaryStoreMatches, storeByKey } = collectSessionIdMatchesForRequest({
       cfg: opts.cfg,
       sessionStore,
-      storePath,
-      storeAgentId,
+      storeAgentId: agentId,
       sessionId: requestedSessionId,
       searchOtherAgentStores: requestedAgentId === undefined,
       ...(opts.clone === false ? { clone: false } : {}),
@@ -298,7 +227,7 @@ export function resolveSessionKeyForRequest(opts: {
     });
   }
 
-  return { sessionKey, sessionStore, storePath };
+  return { sessionKey, sessionStore, agentId };
 }
 
 export function resolveSession(opts: {
@@ -310,7 +239,7 @@ export function resolveSession(opts: {
   clone?: boolean;
 }): SessionResolution {
   const sessionCfg = opts.cfg.session;
-  const { sessionKey, sessionStore, storePath } = resolveSessionKeyForRequest({
+  const { sessionKey, sessionStore, agentId } = resolveSessionKeyForRequest({
     cfg: opts.cfg,
     to: opts.to,
     sessionId: opts.sessionId,
@@ -321,11 +250,18 @@ export function resolveSession(opts: {
   const now = Date.now();
 
   const sessionEntry = sessionKey ? sessionStore[sessionKey] : undefined;
+  const routingInfo = sessionKey
+    ? readSqliteSessionRoutingInfo({ agentId, sessionKey })
+    : undefined;
 
-  const resetType = resolveSessionResetType({ sessionKey });
+  const resetType = resolveSessionResetType({
+    sessionKey,
+    sessionScope: routingInfo?.sessionScope,
+    chatType: routingInfo?.chatType,
+  });
   const channelReset = resolveChannelResetConfig({
     sessionCfg,
-    channel: sessionEntry?.lastChannel ?? sessionEntry?.channel ?? sessionEntry?.origin?.provider,
+    channel: routingInfo?.channel ?? sessionEntry?.channel,
   });
   const resetPolicy = resolveSessionResetPolicy({
     sessionCfg,
@@ -337,8 +273,7 @@ export function resolveSession(opts: {
         updatedAt: sessionEntry.updatedAt,
         ...resolveSessionLifecycleTimestamps({
           entry: sessionEntry,
-          agentId: opts.agentId,
-          storePath,
+          agentId,
         }),
         now,
         policy: resetPolicy,
@@ -367,7 +302,7 @@ export function resolveSession(opts: {
     sessionKey,
     sessionEntry,
     sessionStore,
-    storePath,
+    agentId,
     isNewSession,
     persistedThinking,
     persistedVerbose,

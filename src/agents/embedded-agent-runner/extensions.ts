@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
+import type { AgentToolResult } from "../runtime/index.js";
+import type { ExtensionFactory } from "../agent-extension-contract.js";
 import { setCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
 import contextPruningExtension from "../agent-hooks/context-pruning.js";
@@ -15,9 +17,8 @@ import {
 import { resolveContextWindowInfo } from "../context-window-guard.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import { createAgentToolResultMiddlewareRunner } from "../harness/tool-result-middleware.js";
-import type { AgentToolResult } from "../runtime/index.js";
-import type { ExtensionFactory, SessionManager } from "../sessions/index.js";
 import { resolveTranscriptPolicy } from "../transcript-policy.js";
+import type { SessionManager } from "../transcript/session-transcript-contract.js";
 import { isCacheTtlEligibleProvider, readLastCacheTtlTimestamp } from "./cache-ttl.js";
 
 type AgentToolResultEvent = {
@@ -26,7 +27,7 @@ type AgentToolResultEvent = {
   toolCallId?: string;
   toolName?: string;
   input?: unknown;
-  content?: AgentToolResult<unknown>["content"];
+  content?: AgentToolResult["content"];
   details?: unknown;
   isError?: boolean;
 };
@@ -37,11 +38,10 @@ function recordFromUnknown(value: unknown): Record<string, unknown> {
     : {};
 }
 
-// Only checks "error" and "timeout" — the status values emitted by the
+// Only checks "error" and "timeout" -- the status values emitted by the
 // adapter's buildToolExecutionErrorResult. The subscribe-side classifier
-// (isErrorLikeStatus) uses a broader regex because it handles arbitrary
-// external tool results; this bridge only elevates adapter-produced statuses.
-function hasErrorToolResultStatus(result: AgentToolResult<unknown>): boolean {
+// handles arbitrary external tool results with a broader status policy.
+function hasErrorToolResultStatus(result: AgentToolResult): boolean {
   const details = recordFromUnknown(result.details);
   const status = normalizeOptionalLowercaseString(details.status);
   return status === "error" || status === "timeout";
@@ -63,7 +63,7 @@ function buildAgentToolResultMiddlewareFactory(): ExtensionFactory {
       const current = {
         content,
         details: event.details,
-      } satisfies AgentToolResult<unknown>;
+      } satisfies AgentToolResult;
       const inputHadErrorStatus = hasErrorToolResultStatus(current);
       const result = await runner.applyToolResultMiddleware({
         threadId: event.threadId,

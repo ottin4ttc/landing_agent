@@ -1643,8 +1643,7 @@ describe("gateway chat transcript writes (guardrail)", () => {
     expect(chatSrc).toContain("appendInjectedAssistantMessageToTranscript(");
 
     expect(helperSrc).toContain("appendSessionTranscriptMessage({");
-    expect(helperSrc).toContain("useRawWhenLinear: true");
-    expect(helperSrc).not.toContain("SessionManager.open(params.transcriptPath)");
+    expect(helperSrc).not.toContain(["SessionManager", "open("].join("."));
   });
 });
 
@@ -3288,7 +3287,7 @@ describe("gateway healthHandlers.health cache freshness", () => {
       heartbeatSeconds: 0,
       defaultAgentId: "main",
       agents: [],
-      sessions: { path: "/tmp/sessions.json", count: 0, recent: [] },
+      sessions: { databasePath: "/tmp/openclaw-agent.sqlite", count: 0, recent: [] },
     };
     const fresh = {
       ...cached,
@@ -3372,7 +3371,7 @@ describe("gateway healthHandlers.health cache freshness", () => {
       heartbeatSeconds: 0,
       defaultAgentId: "main",
       agents: [],
-      sessions: { path: "/tmp/sessions.json", count: 0, recent: [] },
+      sessions: { databasePath: "/tmp/openclaw-agent.sqlite", count: 0, recent: [] },
       eventLoop,
     };
     const respond = vi.fn();
@@ -3415,7 +3414,7 @@ describe("gateway healthHandlers.health cache freshness", () => {
       heartbeatSeconds: 0,
       defaultAgentId: "main",
       agents: [],
-      sessions: { path: "/tmp/sessions.json", count: 0, recent: [] },
+      sessions: { databasePath: "/tmp/openclaw-agent.sqlite", count: 0, recent: [] },
       modelPricing: { state: "ok", sources: [] },
     };
     pricingState.recordGatewayModelPricingSourceFailure(
@@ -3566,7 +3565,7 @@ describe("gateway healthHandlers.health cache freshness", () => {
       heartbeatSeconds: 0,
       defaultAgentId: "main",
       agents: [],
-      sessions: { path: "/tmp/sessions.json", count: 0, recent: [] },
+      sessions: { databasePath: "/tmp/openclaw-agent.sqlite", count: 0, recent: [] },
     };
     const fresh = {
       ...cached,

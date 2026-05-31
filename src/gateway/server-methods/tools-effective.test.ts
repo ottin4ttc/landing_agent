@@ -4,11 +4,17 @@ import type { McpToolCatalog, SessionMcpRuntime } from "../../agents/agent-bundl
 import { testing, toolsEffectiveHandlers } from "./tools-effective.js";
 
 const runtimeMocks = vi.hoisted(() => ({
-  deliveryContextFromSession: vi.fn(() => ({
+  readSqliteSessionDeliveryContext: vi.fn(() => ({
     channel: "telegram",
     to: "channel-1",
     accountId: "acct-1",
     threadId: "thread-2",
+  })),
+  readSqliteSessionRoutingInfo: vi.fn(() => ({
+    chatType: "group",
+    channel: "telegram",
+    accountId: "acct-1",
+    conversationThreadId: "thread-2",
   })),
   applyFinalEffectiveToolPolicy: vi.fn(
     (params: { bundledTools: unknown[] }) => params.bundledTools,
@@ -211,7 +217,6 @@ describe("tools.effective handler", () => {
       canonicalKey: "missing-session",
       entry: undefined,
       legacyKey: undefined,
-      storePath: "/tmp/sessions.json",
     } as never);
     const { respond, invoke } = createInvokeParams({ sessionKey: "missing-session" });
     await invoke();
@@ -554,7 +559,7 @@ describe("tools.effective handler", () => {
     expect(runtimeMocks.buildBundleMcpToolsFromCatalog).not.toHaveBeenCalled();
   });
 
-  it("falls back to origin.threadId when delivery context omits thread metadata", async () => {
+  it("uses typed SQLite routing when delivery context omits thread metadata", async () => {
     runtimeMocks.loadSessionEntry.mockReturnValueOnce({
       cfg: {},
       canonicalKey: "main:abc",
@@ -564,11 +569,6 @@ describe("tools.effective handler", () => {
         lastChannel: "telegram",
         lastAccountId: "acct-1",
         lastTo: "channel-1",
-        origin: {
-          provider: "telegram",
-          accountId: "acct-1",
-          threadId: 42,
-        },
         groupId: "group-4",
         groupChannel: "#ops",
         space: "workspace-5",
@@ -577,11 +577,17 @@ describe("tools.effective handler", () => {
         model: "gpt-4.1",
       },
     } as never);
-    runtimeMocks.deliveryContextFromSession.mockReturnValueOnce({
+    runtimeMocks.readSqliteSessionDeliveryContext.mockReturnValueOnce({
       channel: "telegram",
       to: "channel-1",
       accountId: "acct-1",
       threadId: "42",
+    });
+    runtimeMocks.readSqliteSessionRoutingInfo.mockReturnValueOnce({
+      chatType: "group",
+      channel: "telegram",
+      accountId: "acct-1",
+      conversationThreadId: "42",
     });
 
     const { respond, invoke } = createInvokeParams({ sessionKey: "main:abc" });

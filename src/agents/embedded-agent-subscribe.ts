@@ -1343,3 +1343,5 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     },
   };
 }
+
+export { subscribeEmbeddedAgentSession as subscribeEmbeddedPiSession };

@@ -1871,16 +1871,6 @@ function resolveCacheRetention(cacheRetention: string | undefined): "short" | "l
   return "short";
 }
 
-function resolvePromptCacheKey(
-  options: Pick<BaseStreamOptions, "promptCacheKey" | "sessionId"> | undefined,
-  cacheRetention: "short" | "long" | "none",
-): string | undefined {
-  if (cacheRetention === "none") {
-    return undefined;
-  }
-  return clampOpenAIPromptCacheKey(options?.promptCacheKey ?? options?.sessionId);
-}
-
 function getPromptCacheRetention(
   baseUrl: string | undefined,
   cacheRetention: "short" | "long" | "none",
@@ -1889,6 +1879,16 @@ function getPromptCacheRetention(
     return undefined;
   }
   return baseUrl?.includes("api.openai.com") ? "24h" : undefined;
+}
+
+function resolvePromptCacheKey(
+  options: Pick<BaseStreamOptions, "promptCacheKey" | "sessionId"> | undefined,
+  cacheRetention: "short" | "long" | "none",
+): string | undefined {
+  if (cacheRetention === "none") {
+    return undefined;
+  }
+  return clampOpenAIPromptCacheKey(options?.promptCacheKey ?? options?.sessionId);
 }
 
 function resolveOpenAIReasoningEffort(
@@ -3574,7 +3574,6 @@ export function buildOpenAICompletionsParams(
     messages = stripCompletionMessagesToRoleContent(messages) as typeof messages;
   }
   const cacheRetention = resolveCacheRetention(options?.cacheRetention);
-  const promptCacheKey = resolvePromptCacheKey(options, cacheRetention);
   const params: Record<string, unknown> = {
     model: model.id,
     messages: compat.requiresStringContent
@@ -3588,6 +3587,7 @@ export function buildOpenAICompletionsParams(
   if (compat.supportsStore) {
     params.store = false;
   }
+  const promptCacheKey = resolvePromptCacheKey(options, cacheRetention);
   if (compat.supportsPromptCacheKey && promptCacheKey) {
     params.prompt_cache_key = promptCacheKey;
     // When the caller explicitly opted into long retention, forward the

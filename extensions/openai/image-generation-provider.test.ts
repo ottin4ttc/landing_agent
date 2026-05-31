@@ -1520,7 +1520,7 @@ describe("openai image generation provider", () => {
     mockGeneratedPngResponse();
     resolveApiKeyForProviderMock.mockImplementation(async (params?: { provider?: string }) => {
       if (params?.provider === "openai") {
-        return { apiKey: "openai-key", source: "models.json", mode: "api-key" };
+        return { apiKey: "openai-key", source: "stored model catalog", mode: "api-key" };
       }
       if (params?.provider === "openai") {
         return { apiKey: "codex-key", source: "profile:openai:default", mode: "oauth" };

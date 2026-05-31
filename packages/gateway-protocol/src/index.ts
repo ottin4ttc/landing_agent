@@ -307,8 +307,6 @@ import {
   SessionsAbortParamsSchema,
   type SessionsCompactParams,
   SessionsCompactParamsSchema,
-  type SessionsCleanupParams,
-  SessionsCleanupParamsSchema,
   type SessionsCompactionBranchParams,
   SessionsCompactionBranchParamsSchema,
   type SessionsCompactionGetParams,
@@ -596,9 +594,6 @@ export const validateSecretsResolveResult = lazyCompile<SecretsResolveResult>(
   SecretsResolveResultSchema,
 );
 export const validateSessionsListParams = lazyCompile<SessionsListParams>(SessionsListParamsSchema);
-export const validateSessionsCleanupParams = lazyCompile<SessionsCleanupParams>(
-  SessionsCleanupParamsSchema,
-);
 export const validateSessionsPreviewParams = lazyCompile<SessionsPreviewParams>(
   SessionsPreviewParamsSchema,
 );
@@ -971,7 +966,6 @@ export {
   NodePendingEnqueueParamsSchema,
   NodePendingEnqueueResultSchema,
   SessionsListParamsSchema,
-  SessionsCleanupParamsSchema,
   SessionsPreviewParamsSchema,
   SessionsDescribeParamsSchema,
   SessionsResolveParamsSchema,
@@ -1281,7 +1275,6 @@ export type {
   NodePendingEnqueueParams,
   NodePendingEnqueueResult,
   SessionsListParams,
-  SessionsCleanupParams,
   SessionsPreviewParams,
   SessionsDescribeParams,
   SessionsResolveParams,
@@ -1334,7 +1327,8 @@ function uniqueStrings(values: string[]): string[] {
 // result mirrors the wire contract and keeps the package independent of src/.
 type SessionsPatchResult = {
   ok: true;
-  path: string;
+  path?: string;
+  databasePath: string;
   key: string;
   entry: Record<string, unknown>;
   resolved?: {

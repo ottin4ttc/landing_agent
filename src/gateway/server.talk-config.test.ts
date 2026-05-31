@@ -1,5 +1,3 @@
-import os from "node:os";
-import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { validateTalkConfigResult } from "../../packages/gateway-protocol/src/index.js";
 import { normalizeResolvedSecretInputString } from "../config/types.secrets.js";
@@ -59,9 +57,9 @@ afterAll(async () => {
 });
 
 async function createFreshOperatorDevice(scopes: string[], nonce: string) {
-  const identity = loadOrCreateDeviceIdentity(
-    path.join(os.tmpdir(), `openclaw-talk-config-device-${process.pid}-${talkConfigDeviceSeq++}`),
-  );
+  const identity = loadOrCreateDeviceIdentity({
+    key: `test:talk-config:${process.pid}:${talkConfigDeviceSeq++}`,
+  });
   const signedAtMs = Date.now();
   const payload = buildDeviceAuthPayload({
     deviceId: identity.deviceId,

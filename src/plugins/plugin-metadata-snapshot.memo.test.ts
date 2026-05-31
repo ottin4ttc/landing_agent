@@ -2,18 +2,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  clearCurrentPluginMetadataSnapshot,
-  setCurrentPluginMetadataSnapshot,
-} from "./current-plugin-metadata-snapshot.js";
-import { resolveInstalledPluginIndexPolicyHash } from "./installed-plugin-index-policy.js";
-import type { InstalledPluginIndex } from "./installed-plugin-index.js";
+import { clearCurrentPluginMetadataSnapshot } from "./current-plugin-metadata-snapshot.js";
+import { writePersistedInstalledPluginIndexSync } from "./installed-plugin-index-store.js";
+import type {
+  InstalledPluginIndex,
+  InstalledPluginInstallRecordInfo,
+} from "./installed-plugin-index.js";
 import type { PluginManifestRecord, PluginManifestRegistry } from "./manifest-registry.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
 import {
   clearLoadPluginMetadataSnapshotMemo,
   loadPluginMetadataSnapshot,
-  resolvePluginMetadataSnapshot,
 } from "./plugin-metadata-snapshot.js";
 
 const loadPluginRegistrySnapshotWithMetadata = vi.hoisted(() => vi.fn());
@@ -46,9 +45,13 @@ function tempStateDir(): string {
 }
 
 function touchPersistedIndex(stateDir: string, value = 1): void {
-  const indexPath = path.join(stateDir, "plugins", "installs.json");
-  fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-  fs.writeFileSync(indexPath, JSON.stringify({ value }));
+  writePersistedInstalledPluginIndexSync(
+    {
+      ...makeIndex("demo"),
+      generatedAtMs: value,
+    },
+    { stateDir },
+  );
 }
 
 function writeJson(filePath: string, value: unknown): void {
@@ -67,36 +70,39 @@ function writePersistedIndex(params: {
   const pluginDir = path.join(params.stateDir, "extensions", params.pluginId);
   const manifestPath = params.manifestPath ?? path.join(pluginDir, "openclaw.plugin.json");
   const packageJsonPath = params.packageJsonPath ?? path.join(pluginDir, "package.json");
-  writeJson(path.join(params.stateDir, "plugins", "installs.json"), {
-    version: 1,
-    hostContractVersion: "test",
-    compatRegistryVersion: "test",
-    migrationVersion: 1,
-    policyHash: "test",
-    generatedAtMs: 1,
-    installRecords: {},
-    diagnostics: [],
-    plugins: [
-      {
-        pluginId: params.pluginId,
-        manifestPath,
-        manifestHash: `${params.pluginId}-manifest`,
-        rootDir: pluginDir,
-        ...(params.source ? { source: params.source } : {}),
-        ...(params.setupSource ? { setupSource: params.setupSource } : {}),
-        origin: "global",
-        enabled: true,
-        packageJson: { path: "package.json", hash: `${params.pluginId}-package` },
-        startup: {
-          sidecar: false,
-          memory: false,
-          deferConfiguredChannelFullLoadUntilAfterListen: false,
-          agentHarnesses: [],
+  writePersistedInstalledPluginIndexSync(
+    {
+      version: 1,
+      hostContractVersion: "test",
+      compatRegistryVersion: "test",
+      migrationVersion: 1,
+      policyHash: "test",
+      generatedAtMs: 1,
+      installRecords: {},
+      diagnostics: [],
+      plugins: [
+        {
+          pluginId: params.pluginId,
+          manifestPath,
+          manifestHash: `${params.pluginId}-manifest`,
+          rootDir: pluginDir,
+          ...(params.source ? { source: params.source } : {}),
+          ...(params.setupSource ? { setupSource: params.setupSource } : {}),
+          origin: "global",
+          enabled: true,
+          packageJson: { path: "package.json", hash: `${params.pluginId}-package` },
+          startup: {
+            sidecar: false,
+            memory: false,
+            deferConfiguredChannelFullLoadUntilAfterListen: false,
+            agentHarnesses: [],
+          },
+          compat: [],
         },
-        compat: [],
-      },
-    ],
-  });
+      ],
+    },
+    { stateDir: params.stateDir },
+  );
   writeJson(manifestPath, { id: params.pluginId });
   writeJson(packageJsonPath, { name: params.pluginId });
 }
@@ -128,19 +134,22 @@ function writeRecoverableNpmPlugin(params: {
 
 function writePersistedInstallRecords(
   stateDir: string,
-  installRecords: Record<string, Record<string, unknown>>,
+  installRecords: Record<string, InstalledPluginInstallRecordInfo>,
 ): void {
-  writeJson(path.join(stateDir, "plugins", "installs.json"), {
-    version: 1,
-    hostContractVersion: "test",
-    compatRegistryVersion: "test",
-    migrationVersion: 1,
-    policyHash: "test",
-    generatedAtMs: 1,
-    installRecords,
-    diagnostics: [],
-    plugins: [],
-  });
+  writePersistedInstalledPluginIndexSync(
+    {
+      version: 1,
+      hostContractVersion: "test",
+      compatRegistryVersion: "test",
+      migrationVersion: 1,
+      policyHash: "test",
+      generatedAtMs: 1,
+      installRecords,
+      diagnostics: [],
+      plugins: [],
+    },
+    { stateDir },
+  );
 }
 
 function makeIndex(
@@ -286,158 +295,7 @@ describe("loadPluginMetadataSnapshot process memo", () => {
     expect(loadPluginManifestRegistryForInstalledIndex).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps hot persisted snapshots for alternating config callers", () => {
-    const stateDir = tempStateDir();
-    touchPersistedIndex(stateDir);
-    loadPluginRegistrySnapshotWithMetadata.mockReturnValue({
-      source: "persisted",
-      snapshot: makeIndex(),
-      diagnostics: [],
-    });
-
-    loadPluginMetadataSnapshot({
-      config: { plugins: { allow: ["demo"] } },
-      env: {},
-      stateDir,
-    });
-    loadPluginMetadataSnapshot({
-      config: { plugins: { allow: ["other"] } },
-      env: {},
-      stateDir,
-    });
-    loadPluginMetadataSnapshot({
-      config: { plugins: { allow: ["demo"] } },
-      env: {},
-      stateDir,
-    });
-
-    expect(loadPluginRegistrySnapshotWithMetadata).toHaveBeenCalledTimes(2);
-    expect(loadPluginManifestRegistryForInstalledIndex).toHaveBeenCalledTimes(2);
-  });
-
-  it("reuses workspace-scoped current snapshots when the caller opts in", () => {
-    const index = makeIndex();
-    index.policyHash = resolveInstalledPluginIndexPolicyHash({});
-    loadPluginRegistrySnapshotWithMetadata.mockReturnValue({
-      source: "runtime",
-      snapshot: index,
-      diagnostics: [],
-    });
-    const snapshot = loadPluginMetadataSnapshot({
-      config: {},
-      env: {},
-      index,
-      workspaceDir: "/workspace/a",
-    });
-    setCurrentPluginMetadataSnapshot(snapshot, {
-      config: {},
-      env: {},
-      workspaceDir: "/workspace/a",
-    });
-    loadPluginRegistrySnapshotWithMetadata.mockClear();
-    loadPluginManifestRegistryForInstalledIndex.mockClear();
-
-    expect(
-      resolvePluginMetadataSnapshot({
-        config: {},
-        env: {},
-        allowWorkspaceScopedCurrent: true,
-      }),
-    ).toBe(snapshot);
-    expect(loadPluginRegistrySnapshotWithMetadata).not.toHaveBeenCalled();
-    expect(loadPluginManifestRegistryForInstalledIndex).not.toHaveBeenCalled();
-  });
-
-  it("reuses compatible current snapshots without reloading metadata", () => {
-    const sourceConfig = { plugins: { allow: ["demo"] } };
-    const compatibleConfig = { plugins: { entries: { demo: { enabled: true } } } };
-    const index = makeIndex();
-    index.policyHash = resolveInstalledPluginIndexPolicyHash(sourceConfig);
-    loadPluginRegistrySnapshotWithMetadata.mockReturnValue({
-      source: "runtime",
-      snapshot: index,
-      diagnostics: [],
-    });
-    const snapshot = loadPluginMetadataSnapshot({
-      config: sourceConfig,
-      env: {},
-      index,
-      workspaceDir: "/workspace/a",
-    });
-    setCurrentPluginMetadataSnapshot(snapshot, {
-      config: sourceConfig,
-      compatibleConfigs: [compatibleConfig],
-      env: {},
-      workspaceDir: "/workspace/a",
-    });
-    loadPluginRegistrySnapshotWithMetadata.mockClear();
-    loadPluginManifestRegistryForInstalledIndex.mockClear();
-
-    expect(
-      resolvePluginMetadataSnapshot({
-        config: compatibleConfig,
-        env: {},
-        workspaceDir: "/workspace/a",
-      }),
-    ).toBe(snapshot);
-    expect(loadPluginRegistrySnapshotWithMetadata).not.toHaveBeenCalled();
-    expect(loadPluginManifestRegistryForInstalledIndex).not.toHaveBeenCalled();
-  });
-
-  it("does not scan persisted registry files when the caller provides an index", () => {
-    const stateDir = tempStateDir();
-    writePersistedIndex({ pluginId: "demo", stateDir });
-    const index = makeIndex();
-    loadPluginRegistrySnapshotWithMetadata.mockReturnValue({
-      source: "provided",
-      snapshot: index,
-      diagnostics: [],
-    });
-    loadPluginMetadataSnapshot({ config: {}, env: {}, index, stateDir });
-    const statSpy = vi.spyOn(fs, "statSync");
-    const readSpy = vi.spyOn(fs, "readFileSync");
-
-    try {
-      loadPluginMetadataSnapshot({ config: {}, env: {}, index, stateDir });
-    } finally {
-      statSpy.mockRestore();
-      readSpy.mockRestore();
-    }
-
-    expect(loadPluginRegistrySnapshotWithMetadata).toHaveBeenCalledOnce();
-    expect(loadPluginManifestRegistryForInstalledIndex).toHaveBeenCalledOnce();
-    expect(statSpy).not.toHaveBeenCalled();
-    expect(readSpy).not.toHaveBeenCalled();
-  });
-
-  it("does not freeze caller-owned provided index records", () => {
-    const stateDir = tempStateDir();
-    const index = makeIndex();
-    loadPluginRegistrySnapshotWithMetadata.mockReturnValue({
-      source: "provided",
-      snapshot: index,
-      diagnostics: [],
-    });
-
-    const snapshot = loadPluginMetadataSnapshot({ config: {}, env: {}, index, stateDir });
-    const callerRecord = index.plugins[0];
-    const snapshotRecord = snapshot.index.plugins[0];
-    if (!callerRecord || !snapshotRecord) {
-      throw new Error("expected metadata records");
-    }
-
-    expect(() => {
-      callerRecord.pluginId = "caller-mutated";
-      callerRecord.startup.agentHarnesses = ["caller-mutated"];
-    }).not.toThrow();
-    expect(snapshot.index.plugins[0]?.pluginId).toBe("demo");
-    expect(snapshot.index.plugins[0]?.startup.agentHarnesses).toEqual([]);
-    expect(() => {
-      snapshotRecord.pluginId = "snapshot-mutated";
-    }).toThrow();
-  });
-
-  it("memoizes policy-stale derived snapshots within the process", () => {
+  it("memoizes policy-stale derived snapshots used by validation callers", () => {
     const stateDir = tempStateDir();
     touchPersistedIndex(stateDir);
     loadPluginRegistrySnapshotWithMetadata.mockReturnValue({
@@ -576,13 +434,19 @@ describe("loadPluginMetadataSnapshot process memo", () => {
     [
       "install path package manifest",
       "~/tracked-plugin",
-      (recordPath: string) => ({ source: "path", installPath: recordPath }),
+      (recordPath: string): InstalledPluginInstallRecordInfo => ({
+        source: "path",
+        installPath: recordPath,
+      }),
       (homeDir: string) => path.join(homeDir, "tracked-plugin", "package.json"),
     ],
     [
       "source path package manifest",
       "~/tracked-plugin",
-      (recordPath: string) => ({ source: "path", sourcePath: recordPath }),
+      (recordPath: string): InstalledPluginInstallRecordInfo => ({
+        source: "path",
+        sourcePath: recordPath,
+      }),
       (homeDir: string) => path.join(homeDir, "tracked-plugin", "package.json"),
     ],
   ])(

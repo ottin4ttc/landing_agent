@@ -7,7 +7,8 @@ import { runCliAgent } from "../../agents/cli-runner.js";
 import type { RunCliAgentParams } from "../../agents/cli-runner/types.js";
 import { clearCliSession } from "../../agents/cli-session.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent.js";
-import { updateSessionStore, type SessionEntry } from "../../config/sessions.js";
+import { patchSessionEntry, type SessionEntry } from "../../config/sessions.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import type { AgentEventPayload } from "../../infra/agent-events.js";
 import { emitAgentEvent, onAgentEvent } from "../../infra/agent-events.js";
 
@@ -124,7 +125,6 @@ export async function clearDroppedCliSessionBinding(params: {
   provider: string;
   sessionKey?: string;
   sessionStore?: Record<string, SessionEntry>;
-  storePath?: string;
   activeSessionEntry?: SessionEntry;
 }): Promise<void> {
   const updatedAt = Date.now();
@@ -135,13 +135,20 @@ export async function clearDroppedCliSessionBinding(params: {
     clearCliSession(entry, params.provider);
     entry.updatedAt = updatedAt;
   };
+  // Clear the in-memory copies callers hold so the live run stops reusing the binding.
   clearEntry(params.activeSessionEntry);
   clearEntry(params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined);
-  if (!params.storePath || !params.sessionKey) {
+  if (!params.sessionKey) {
     return;
   }
-  await updateSessionStore(params.storePath, (store) => {
-    clearEntry(store[params.sessionKey!]);
+  // Persist the cleared binding to the SQLite session store keyed by sessionKey.
+  await patchSessionEntry({
+    agentId: resolveAgentIdFromSessionKey(params.sessionKey),
+    sessionKey: params.sessionKey,
+    update: (entry) => {
+      clearEntry(entry);
+      return entry;
+    },
   });
 }
 

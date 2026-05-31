@@ -1,0 +1,163 @@
+import hostFs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type { VirtualAgentFs } from "./agent-filesystem.js";
+
+export type VirtualAgentFsProjection = {
+  root: string;
+  cleanup: () => Promise<void>;
+  syncBack: () => Promise<void>;
+  resolveWorkdir: (workdir?: string) => Promise<string>;
+};
+
+export type VirtualAgentFsProjectionOptions = {
+  workspaceRoot?: string;
+};
+
+function normalizeVfsPath(input?: string): string {
+  if (!input || input === ".") {
+    return "/";
+  }
+  if (input.includes("\0")) {
+    throw new Error("VFS path must not contain NUL bytes.");
+  }
+  const normalized = path.posix.normalize(`/${input}`).replace(/\/+$/u, "");
+  return normalized || "/";
+}
+
+function hostPathFor(projectedRoot: string, vfsPath: string): string {
+  const normalized = normalizeVfsPath(vfsPath);
+  if (normalized === "/") {
+    return projectedRoot;
+  }
+  return path.join(projectedRoot, ...normalized.slice(1).split("/"));
+}
+
+function vfsPathFor(projectedRoot: string, hostPath: string): string {
+  const relative = path.relative(projectedRoot, hostPath);
+  if (!relative) {
+    return "/";
+  }
+  return normalizeVfsPath(relative.split(path.sep).join(path.posix.sep));
+}
+
+function isInsideOrAtRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveVfsWorkdir(
+  workdir: string | undefined,
+  options?: VirtualAgentFsProjectionOptions,
+): string {
+  if (!workdir || !path.isAbsolute(workdir)) {
+    return normalizeVfsPath(workdir);
+  }
+
+  const workspaceRoot = options?.workspaceRoot;
+  if (!workspaceRoot) {
+    return normalizeVfsPath(workdir);
+  }
+
+  const root = path.resolve(workspaceRoot);
+  const absoluteWorkdir = path.resolve(workdir);
+  if (!isInsideOrAtRoot(root, absoluteWorkdir)) {
+    throw new Error(`VFS exec workdir must be inside workspace root: ${workdir}`);
+  }
+
+  return normalizeVfsPath(
+    path.relative(root, absoluteWorkdir).split(path.sep).join(path.posix.sep),
+  );
+}
+
+async function walkProjectedFiles(projectedRoot: string): Promise<
+  Array<{
+    hostPath: string;
+    vfsPath: string;
+    kind: "directory" | "file";
+  }>
+> {
+  const entries: Array<{
+    hostPath: string;
+    vfsPath: string;
+    kind: "directory" | "file";
+  }> = [];
+  const visit = async (dir: string) => {
+    for (const entry of await hostFs.readdir(dir, { withFileTypes: true })) {
+      const hostPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        entries.push({ hostPath, vfsPath: vfsPathFor(projectedRoot, hostPath), kind: "directory" });
+        await visit(hostPath);
+      } else if (entry.isFile()) {
+        entries.push({ hostPath, vfsPath: vfsPathFor(projectedRoot, hostPath), kind: "file" });
+      }
+    }
+  };
+  await visit(projectedRoot);
+  return entries;
+}
+
+export async function createVirtualAgentFsProjection(
+  vfs: VirtualAgentFs,
+  options?: VirtualAgentFsProjectionOptions,
+): Promise<VirtualAgentFsProjection> {
+  const root = await hostFs.mkdtemp(path.join(os.tmpdir(), "openclaw-vfs-exec-"));
+  const exportedEntries = vfs.export("/", { recursive: true }).toSorted((left, right) => {
+    if (left.kind !== right.kind) {
+      return left.kind === "directory" ? -1 : 1;
+    }
+    return left.path.localeCompare(right.path);
+  });
+
+  for (const entry of exportedEntries) {
+    const hostPath = hostPathFor(root, entry.path);
+    if (entry.kind === "directory") {
+      await hostFs.mkdir(hostPath, { recursive: true });
+      continue;
+    }
+    await hostFs.mkdir(path.dirname(hostPath), { recursive: true });
+    const content = entry.contentBase64
+      ? Buffer.from(entry.contentBase64, "base64")
+      : vfs.readFile(entry.path);
+    await hostFs.writeFile(hostPath, content);
+  }
+
+  const syncBack = async () => {
+    const previousEntries = vfs
+      .list("/", { recursive: true })
+      .filter((entry) => entry.path !== "/");
+    const projectedEntries = await walkProjectedFiles(root);
+    const projectedByPath = new Map(projectedEntries.map((entry) => [entry.vfsPath, entry]));
+    const stalePaths = new Set<string>(
+      previousEntries
+        .filter((entry) => {
+          const projected = projectedByPath.get(entry.path);
+          return !projected || projected.kind !== entry.kind;
+        })
+        .map((entry) => entry.path),
+    );
+
+    for (const stalePath of [...stalePaths].toSorted((left, right) => right.length - left.length)) {
+      vfs.remove(stalePath, { recursive: true });
+    }
+
+    for (const entry of projectedEntries) {
+      if (entry.kind === "directory") {
+        vfs.mkdir(entry.vfsPath);
+      } else {
+        vfs.writeFile(entry.vfsPath, await hostFs.readFile(entry.hostPath));
+      }
+    }
+  };
+
+  return {
+    root,
+    cleanup: () => hostFs.rm(root, { recursive: true, force: true }),
+    syncBack,
+    resolveWorkdir: async (workdir?: string) => {
+      const resolved = hostPathFor(root, resolveVfsWorkdir(workdir, options));
+      await hostFs.mkdir(resolved, { recursive: true });
+      return resolved;
+    },
+  };
+}

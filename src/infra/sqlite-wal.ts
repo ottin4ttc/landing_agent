@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { MAX_TIMER_TIMEOUT_MS } from "../shared/number-coercion.js";
+import { emitDiagnosticEvent } from "./diagnostic-events.js";
 
 export const DEFAULT_SQLITE_WAL_AUTOCHECKPOINT_PAGES = 1000;
 export const DEFAULT_SQLITE_WAL_TRUNCATE_INTERVAL_MS = 30 * 60 * 1000;
@@ -45,6 +46,8 @@ export function configureSqliteWalMaintenance(
   );
   const timerIntervalMs = Math.min(checkpointIntervalMs, MAX_TIMER_TIMEOUT_MS);
   const checkpointMode = options.checkpointMode ?? "TRUNCATE";
+  const databaseLabel = options.databaseLabel?.trim() || "sqlite";
+
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(`PRAGMA wal_autocheckpoint = ${autoCheckpointPages};`);
 
@@ -53,6 +56,12 @@ export function configureSqliteWalMaintenance(
       db.exec(`PRAGMA wal_checkpoint(${checkpointMode});`);
       return true;
     } catch (error) {
+      emitDiagnosticEvent({
+        type: "sqlite.wal.checkpoint.error",
+        databaseLabel,
+        checkpointMode,
+        error: error instanceof Error ? error.message : String(error),
+      });
       options.onCheckpointError?.(error);
       return false;
     }

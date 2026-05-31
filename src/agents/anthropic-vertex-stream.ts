@@ -1,5 +1,5 @@
-import { loadBundledPluginPublicSurfaceModuleSync } from "../plugin-sdk/facade-runtime.js";
-import type { StreamFn } from "./runtime/index.js";
+import { loadBundledPluginPublicSurfaceModuleSync } from "../plugin-sdk/facade-loader.js";
+import type { StreamFn } from "./agent-core-contract.js";
 
 type AnthropicVertexStreamFacade = {
   createAnthropicVertexStreamFn: (

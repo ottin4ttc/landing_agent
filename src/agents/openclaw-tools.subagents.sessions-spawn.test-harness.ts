@@ -84,7 +84,6 @@ const hoisted = vi.hoisted(() => {
         method: "sessions.delete",
         params: {
           key: params.childSessionKey,
-          deleteTranscript: true,
           emitLifecycleHooks: params.spawnMode === "session",
         },
       });
@@ -208,9 +207,7 @@ export async function getSessionsSpawnTool(opts: CreateOpenClawToolsOpts) {
     }),
     forkSessionFromParent: async () => ({
       sessionId: "forked-session-id",
-      sessionFile: "/tmp/forked-session.jsonl",
     }),
-    updateSessionStore: async (_storePath, mutator) => mutator({}),
   });
   cachedSubagentRegistryTesting.setDepsForTest({
     callGateway: (optsUnknown) => hoisted.callGatewayMock(optsUnknown),
@@ -218,13 +215,13 @@ export async function getSessionsSpawnTool(opts: CreateOpenClawToolsOpts) {
     cleanupBrowserSessionsForLifecycleEnd: async () => {},
     ensureContextEnginesInitialized: () => {},
     ensureRuntimePluginsLoaded: () => {},
-    persistSubagentRunsToDisk: () => {
+    persistSubagentRunsToState: () => {
       hoisted.notifyEventWaiters();
     },
-    persistSubagentRunsToDiskOrThrow: () => {
+    persistSubagentRunsToStateOrThrow: () => {
       hoisted.notifyEventWaiters();
     },
-    restoreSubagentRunsFromDisk: () => 0,
+    restoreSubagentRunsFromState: () => 0,
     resolveContextEngine: async () => ({
       info: { id: "test", name: "Test" },
       assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
@@ -354,23 +351,39 @@ vi.mock("../config/config.js", () => ({
 }));
 
 vi.mock("../config/sessions.js", () => ({
-  loadSessionStore: () => hoisted.sessionStore,
+  getSessionEntry: ({ sessionKey }: { sessionKey: string }) => hoisted.sessionStore[sessionKey],
+  listSessionEntries: () =>
+    Object.entries(hoisted.sessionStore).map(([sessionKey, entry]) => ({ sessionKey, entry })),
   mergeSessionEntry: (existing: object | undefined, patch: object) => ({
     ...existing,
     ...patch,
   }),
+  resolveAgentSessionDatabaseTargetsSync: (_cfg: unknown, agentId: string) => [
+    {
+      agentId,
+      databasePath: `test://${agentId}`,
+    },
+  ],
+  resolveAllAgentSessionDatabaseTargetsSync: () => [
+    {
+      agentId: "main",
+      databasePath: "test://main",
+    },
+  ],
   resolveAgentIdFromSessionKey: (sessionKey: string) =>
     sessionKey.match(/^agent:([^:]+)/)?.[1] ?? "main",
   resolveAgentMainSessionKey: (params: {
     cfg?: { session?: { mainKey?: string } };
     agentId: string;
   }) => `agent:${params.agentId}:${params.cfg?.session?.mainKey ?? "main"}`,
-  resolveStorePath: () => "/tmp/openclaw-sessions-spawn-test-store.json",
-  updateSessionStore: async (
-    _storePath: string,
-    mutator: (store: typeof hoisted.sessionStore) => void | Promise<void>,
-  ) => {
-    await mutator(hoisted.sessionStore);
+  upsertSessionEntry: async ({
+    sessionKey,
+    entry,
+  }: {
+    sessionKey: string;
+    entry: (typeof hoisted.sessionStore)[string];
+  }) => {
+    hoisted.sessionStore[sessionKey] = entry;
   },
 }));
 

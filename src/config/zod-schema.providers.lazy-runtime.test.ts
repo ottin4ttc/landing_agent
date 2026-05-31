@@ -10,6 +10,7 @@ describe("ChannelsSchema bundled runtime loading", () => {
     collectBundledChannelConfigsMock.mockClear();
     vi.doMock("../plugins/plugin-metadata-snapshot.js", () => ({
       loadPluginMetadataSnapshot: loadPluginMetadataSnapshotMock,
+      resolvePluginMetadataSnapshot: loadPluginMetadataSnapshotMock,
     }));
     vi.doMock("../plugins/bundled-channel-config-metadata.js", () => ({
       collectBundledChannelConfigs: collectBundledChannelConfigsMock,

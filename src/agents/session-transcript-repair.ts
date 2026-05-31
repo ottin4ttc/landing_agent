@@ -3,7 +3,7 @@ import {
   normalizeOptionalString,
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
-import type { AgentMessage } from "./runtime/index.js";
+import type { AgentMessage } from "./agent-core-contract.js";
 import {
   extractToolCallsFromAssistant,
   extractToolResultId,

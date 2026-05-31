@@ -1,7 +1,8 @@
 import { html, nothing } from "lit";
 import { t } from "../i18n/index.ts";
 import {
-  createChatSessionsLoadOverrides,
+  CHAT_SESSIONS_ACTIVE_MINUTES,
+  CHAT_SESSIONS_REFRESH_LIMIT,
   refreshChat,
   refreshChatAvatar,
   scopedAgentParamsForSession,
@@ -727,7 +728,11 @@ export async function createChatSession(state: AppViewState): Promise<boolean> {
       emitCommandHooks: parentSessionKey !== undefined ? true : undefined,
     },
     {
-      ...createChatSessionsLoadOverrides(state),
+      activeMinutes: CHAT_SESSIONS_ACTIVE_MINUTES,
+      limit: CHAT_SESSIONS_REFRESH_LIMIT,
+      includeGlobal: true,
+      includeUnknown: true,
+      showArchived: state.sessionsShowArchived,
       ...scopedAgentListParamsForSession(state, previousSessionKey),
     },
   );
@@ -756,7 +761,11 @@ export async function createChatSession(state: AppViewState): Promise<boolean> {
 
 async function refreshSessionOptions(state: AppViewState) {
   await loadSessions(state as unknown as Parameters<typeof loadSessions>[0], {
-    ...createChatSessionsLoadOverrides(state),
+    activeMinutes: CHAT_SESSIONS_ACTIVE_MINUTES,
+    limit: CHAT_SESSIONS_REFRESH_LIMIT,
+    includeGlobal: true,
+    includeUnknown: true,
+    showArchived: state.sessionsShowArchived,
     ...scopedAgentListParamsForSession(state, state.sessionKey),
   });
 }

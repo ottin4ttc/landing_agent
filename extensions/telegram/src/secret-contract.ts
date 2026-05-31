@@ -13,7 +13,7 @@ export const secretTargetRegistryEntries: import("openclaw/plugin-sdk/channel-se
     {
       id: "channels.telegram.accounts.*.botToken",
       targetType: "channels.telegram.accounts.*.botToken",
-      configFile: "openclaw.json",
+      store: "openclaw.json",
       pathPattern: "channels.telegram.accounts.*.botToken",
       secretShape: "secret_input",
       expectedResolvedValue: "string",
@@ -24,7 +24,7 @@ export const secretTargetRegistryEntries: import("openclaw/plugin-sdk/channel-se
     {
       id: "channels.telegram.accounts.*.webhookSecret",
       targetType: "channels.telegram.accounts.*.webhookSecret",
-      configFile: "openclaw.json",
+      store: "openclaw.json",
       pathPattern: "channels.telegram.accounts.*.webhookSecret",
       secretShape: "secret_input",
       expectedResolvedValue: "string",
@@ -35,7 +35,7 @@ export const secretTargetRegistryEntries: import("openclaw/plugin-sdk/channel-se
     {
       id: "channels.telegram.botToken",
       targetType: "channels.telegram.botToken",
-      configFile: "openclaw.json",
+      store: "openclaw.json",
       pathPattern: "channels.telegram.botToken",
       secretShape: "secret_input",
       expectedResolvedValue: "string",
@@ -46,7 +46,7 @@ export const secretTargetRegistryEntries: import("openclaw/plugin-sdk/channel-se
     {
       id: "channels.telegram.webhookSecret",
       targetType: "channels.telegram.webhookSecret",
-      configFile: "openclaw.json",
+      store: "openclaw.json",
       pathPattern: "channels.telegram.webhookSecret",
       secretShape: "secret_input",
       expectedResolvedValue: "string",

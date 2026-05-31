@@ -58,10 +58,11 @@ describe("createPluginRuntimeMock", () => {
     );
     expect(recordInboundSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        storePath: "/tmp/openclaw-test",
+        agentId: undefined,
         sessionKey: "agent:main:test:direct:u1",
       }),
     );
+    expect(recordInboundSession.mock.calls[0]?.[0]).not.toHaveProperty("storePath");
     expect(runDispatch).toHaveBeenCalled();
     expect(result).toEqual(
       expect.objectContaining({

@@ -1,7 +1,6 @@
 import { finiteSecondsToTimerSafeMilliseconds } from "@openclaw/normalization-core/number-coercion";
 import type { ModelCompatConfig, ModelMediaInputConfig } from "../../config/types.models.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { ModelRegistry as CoreModelRegistry } from "../../llm/model-registry.js";
 import type { Api, Model } from "../../llm/types.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import {
@@ -107,10 +106,11 @@ const STATIC_PROVIDER_RUNTIME_HOOKS: ProviderRuntimeHooks = {
   normalizeProviderTransportWithPlugin: () => undefined,
 };
 
-const SKIP_AGENT_DISCOVERY_PROVIDER_RUNTIME_HOOKS: ProviderRuntimeHooks = {
-  // skipAgentDiscovery is the lean path used before agent discovery/models.json has run.
+const SKIP_PI_DISCOVERY_PROVIDER_RUNTIME_HOOKS: ProviderRuntimeHooks = {
+  // skipPiDiscovery is the lean path used before PI model catalog discovery has run.
   ...TARGET_PROVIDER_RUNTIME_HOOKS,
 };
+const SKIP_AGENT_DISCOVERY_PROVIDER_RUNTIME_HOOKS = SKIP_PI_DISCOVERY_PROVIDER_RUNTIME_HOOKS;
 
 function createEmptyAgentDiscoveryStores(): {
   authStorage: AuthStorage;
@@ -585,7 +585,7 @@ function applyConfiguredProviderOverrides(params: {
     return {
       ...discoveredModel,
       ...(resolvedParams ? { params: resolvedParams } : {}),
-      // Discovered models originate from models.json and may contain persistence markers.
+      // Discovered models originate from the model catalog and may contain persistence markers.
       headers: requestConfig.headers,
     };
   }
@@ -734,7 +734,7 @@ function applyConfiguredProviderOverrides(params: {
 function resolveExplicitModelWithRegistry(params: {
   provider: string;
   modelId: string;
-  modelRegistry: CoreModelRegistry;
+  modelRegistry: ModelRegistry;
   cfg?: OpenClawConfig;
   agentDir?: string;
   workspaceDir?: string;
@@ -922,7 +922,7 @@ function resolveDynamicModelAuthProfile(params: {
 function resolvePluginDynamicModelWithRegistry(params: {
   provider: string;
   modelId: string;
-  modelRegistry: CoreModelRegistry;
+  modelRegistry: ModelRegistry;
   cfg?: OpenClawConfig;
   agentDir?: string;
   workspaceDir?: string;
@@ -1231,7 +1231,7 @@ function normalizeProviderModelRef(params: {
 export function resolveModelWithRegistry(params: {
   provider: string;
   modelId: string;
-  modelRegistry: CoreModelRegistry;
+  modelRegistry: ModelRegistry;
   cfg?: OpenClawConfig;
   agentDir?: string;
   workspaceDir?: string;

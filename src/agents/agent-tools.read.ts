@@ -20,6 +20,7 @@ import {
   wrapToolParamValidation,
 } from "./agent-tools.params.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
+import type { VirtualAgentFs } from "./filesystem/agent-filesystem.js";
 import type { ImageSanitizationLimits } from "./image-sanitization.js";
 import { toRelativeWorkspacePath } from "./path-policy.js";
 import type { AgentToolResult } from "./runtime/index.js";
@@ -37,7 +38,7 @@ export {
 
 // NOTE(steipete): Upstream read now does file-magic MIME detection; we keep the wrapper
 // to sanitize oversized images before they hit providers.
-type ToolContentBlock = AgentToolResult<unknown>["content"][number];
+type ToolContentBlock = AgentToolResult["content"][number];
 type ImageContentBlock = Extract<ToolContentBlock, { type: "image" }>;
 type TextContentBlock = Extract<ToolContentBlock, { type: "text" }>;
 
@@ -96,7 +97,7 @@ function formatBytes(bytes: number): string {
   return `${bytes}B`;
 }
 
-function getToolResultText(result: AgentToolResult<unknown>): string | undefined {
+function getToolResultText(result: AgentToolResult): string | undefined {
   const content = Array.isArray(result.content) ? result.content : [];
   const textBlocks = content
     .map((block) => {
@@ -117,10 +118,7 @@ function getToolResultText(result: AgentToolResult<unknown>): string | undefined
   return textBlocks.join("\n");
 }
 
-function withToolResultText(
-  result: AgentToolResult<unknown>,
-  text: string,
-): AgentToolResult<unknown> {
+function withToolResultText(result: AgentToolResult, text: string): AgentToolResult {
   const content = Array.isArray(result.content) ? result.content : [];
   let replaced = false;
   const nextContent: ToolContentBlock[] = content.map((block) => {
@@ -138,19 +136,17 @@ function withToolResultText(
   if (replaced) {
     return {
       ...result,
-      content: nextContent as unknown as AgentToolResult<unknown>["content"],
+      content: nextContent as unknown as AgentToolResult["content"],
     };
   }
   const textBlock = { type: "text", text } as unknown as TextContentBlock;
   return {
     ...result,
-    content: [textBlock] as unknown as AgentToolResult<unknown>["content"],
+    content: [textBlock] as unknown as AgentToolResult["content"],
   };
 }
 
-function extractReadTruncationDetails(
-  result: AgentToolResult<unknown>,
-): ReadTruncationDetails | null {
+function extractReadTruncationDetails(result: AgentToolResult): ReadTruncationDetails | null {
   const details = (result as { details?: unknown }).details;
   if (!details || typeof details !== "object") {
     return null;
@@ -179,9 +175,7 @@ function stripReadContinuationNotice(text: string): string {
   return text.replace(READ_CONTINUATION_NOTICE_RE, "");
 }
 
-function stripReadTruncationContentDetails(
-  result: AgentToolResult<unknown>,
-): AgentToolResult<unknown> {
+function stripReadTruncationContentDetails(result: AgentToolResult): AgentToolResult {
   const details = (result as { details?: unknown }).details;
   if (!details || typeof details !== "object") {
     return result;
@@ -219,12 +213,12 @@ function isOffsetBeyondEof(error: unknown, args: Record<string, unknown>): boole
   );
 }
 
-function emptyReadResult(): AgentToolResult<unknown> {
+function emptyReadResult(): AgentToolResult {
   const textBlock = { type: "text", text: "" } satisfies TextContentBlock;
   return { content: [textBlock], details: undefined };
 }
 
-function missingDailyMemoryReadResult(relativePath: string): AgentToolResult<unknown> {
+function missingDailyMemoryReadResult(relativePath: string): AgentToolResult {
   return {
     content: [
       {
@@ -266,7 +260,7 @@ async function executeReadPage(params: {
   toolCallId: string;
   args: Record<string, unknown>;
   signal?: AbortSignal;
-}): Promise<AgentToolResult<unknown>> {
+}): Promise<AgentToolResult> {
   try {
     return await params.base.execute(params.toolCallId, params.args, params.signal);
   } catch (error) {
@@ -287,7 +281,7 @@ async function executeReadWithAdaptivePaging(params: {
   args: Record<string, unknown>;
   signal?: AbortSignal;
   maxBytes: number;
-}): Promise<AgentToolResult<unknown>> {
+}): Promise<AgentToolResult> {
   const userLimit = params.args.limit;
   const hasExplicitLimit =
     typeof userLimit === "number" && Number.isFinite(userLimit) && userLimit > 0;
@@ -300,7 +294,7 @@ async function executeReadWithAdaptivePaging(params: {
     typeof offsetRaw === "number" && Number.isFinite(offsetRaw) && offsetRaw > 0
       ? Math.floor(offsetRaw)
       : 1;
-  let firstResult: AgentToolResult<unknown> | null = null;
+  let firstResult: AgentToolResult | null = null;
   let aggregatedText = "";
   let aggregatedBytes = 0;
   let capped = false;
@@ -373,9 +367,9 @@ function rewriteReadImageHeader(text: string, mimeType: string): string {
 }
 
 async function normalizeReadImageResult(
-  result: AgentToolResult<unknown>,
+  result: AgentToolResult,
   filePath: string,
-): Promise<AgentToolResult<unknown>> {
+): Promise<AgentToolResult> {
   const content = Array.isArray(result.content) ? result.content : [];
 
   const image = content.find(
@@ -809,6 +803,13 @@ type SandboxToolParams = {
   imageSanitization?: ImageSanitizationLimits;
 };
 
+type VirtualToolParams = {
+  root: string;
+  scratch: VirtualAgentFs;
+  modelContextWindowTokens?: number;
+  imageSanitization?: ImageSanitizationLimits;
+};
+
 export function createSandboxedReadTool(params: SandboxToolParams) {
   const base = createReadTool(params.root, {
     operations: createSandboxReadOperations(params),
@@ -829,6 +830,60 @@ export function createSandboxedWriteTool(params: SandboxToolParams) {
 export function createSandboxedEditTool(params: SandboxToolParams) {
   const base = createEditTool(params.root, {
     operations: createSandboxEditOperations(params),
+  }) as unknown as AnyAgentTool;
+  return wrapToolParamValidation(base, REQUIRED_PARAM_GROUPS.edit);
+}
+
+export function createVirtualReadTool(params: VirtualToolParams) {
+  const base = createReadTool(params.root, {
+    operations: createVirtualReadOperations(params),
+  }) as unknown as AnyAgentTool;
+  return createOpenClawReadTool(base, {
+    modelContextWindowTokens: params.modelContextWindowTokens,
+    imageSanitization: params.imageSanitization,
+  });
+}
+
+export function createVirtualWriteTool(params: VirtualToolParams) {
+  const base = createWriteTool(params.root, {
+    operations: createVirtualWriteOperations(params),
+  }) as unknown as AnyAgentTool;
+  return wrapToolParamValidation(base, REQUIRED_PARAM_GROUPS.write);
+}
+
+export function createVirtualEditTool(params: VirtualToolParams) {
+  const base = createEditTool(params.root, {
+    operations: createVirtualEditOperations(params),
+  }) as unknown as AnyAgentTool;
+  return wrapToolParamValidation(base, REQUIRED_PARAM_GROUPS.edit);
+}
+
+export function createWorkspaceScratchOverlayReadTool(
+  params: VirtualToolParams & { workspaceOnly?: boolean },
+) {
+  const base = createReadTool(params.root, {
+    operations: createWorkspaceScratchOverlayReadOperations(params),
+  }) as unknown as AnyAgentTool;
+  return createOpenClawReadTool(base, {
+    modelContextWindowTokens: params.modelContextWindowTokens,
+    imageSanitization: params.imageSanitization,
+  });
+}
+
+export function createWorkspaceScratchOverlayWriteTool(
+  params: VirtualToolParams & { workspaceOnly?: boolean },
+) {
+  const base = createWriteTool(params.root, {
+    operations: createWorkspaceScratchOverlayWriteOperations(params),
+  }) as unknown as AnyAgentTool;
+  return wrapToolParamValidation(base, REQUIRED_PARAM_GROUPS.write);
+}
+
+export function createWorkspaceScratchOverlayEditTool(
+  params: VirtualToolParams & { workspaceOnly?: boolean },
+) {
+  const base = createEditTool(params.root, {
+    operations: createWorkspaceScratchOverlayEditOperations(params),
   }) as unknown as AnyAgentTool;
   return wrapToolParamValidation(base, REQUIRED_PARAM_GROUPS.edit);
 }
@@ -1062,6 +1117,181 @@ function createHostEditOperations(root: string, options?: { workspaceOnly?: bool
         }
         throw error;
       }
+    },
+  } as const;
+}
+
+function resolveVirtualPath(root: string, absolutePath: string): string {
+  const relative = toRelativeWorkspacePath(root, absolutePath, { allowRoot: true });
+  return relative ? `/${relative.split(path.sep).join("/")}` : "/";
+}
+
+function isScratchAttachmentPath(vfsPath: string): boolean {
+  return vfsPath === "/.openclaw/attachments" || vfsPath.startsWith("/.openclaw/attachments/");
+}
+
+function hasScratchDirectoryAtOrAbove(params: VirtualToolParams, vfsPath: string): boolean {
+  let current = vfsPath;
+  while (current && current !== "/") {
+    const stat = params.scratch.stat(current);
+    if (stat?.kind === "directory") {
+      return true;
+    }
+    current = path.posix.dirname(current);
+  }
+  return false;
+}
+
+function shouldUseScratchForWorkspacePath(
+  params: VirtualToolParams,
+  absolutePath: string,
+): boolean {
+  let vfsPath: string;
+  try {
+    vfsPath = resolveVirtualPath(params.root, absolutePath);
+  } catch {
+    return false;
+  }
+  const stat = params.scratch.stat(vfsPath);
+  return (
+    stat?.kind === "file" ||
+    stat?.kind === "directory" ||
+    hasScratchDirectoryAtOrAbove(params, vfsPath) ||
+    isScratchAttachmentPath(vfsPath)
+  );
+}
+
+async function readWorkspaceScratchOverlayFile(
+  params: VirtualToolParams & { workspaceOnly?: boolean },
+  absolutePath: string,
+): Promise<Buffer> {
+  if (shouldUseScratchForWorkspacePath(params, absolutePath)) {
+    return params.scratch.readFile(resolveVirtualPath(params.root, absolutePath));
+  }
+  const hostOps = createHostEditOperations(params.root, { workspaceOnly: params.workspaceOnly });
+  return Buffer.from(await hostOps.readFile(absolutePath));
+}
+
+function createVirtualReadOperations(params: VirtualToolParams) {
+  return {
+    readFile: async (absolutePath: string) =>
+      params.scratch.readFile(resolveVirtualPath(params.root, absolutePath)),
+    access: async (absolutePath: string) => {
+      const vfsPath = resolveVirtualPath(params.root, absolutePath);
+      const stat = params.scratch.stat(vfsPath);
+      if (!stat || stat.kind !== "file") {
+        throw createFsAccessError("ENOENT", absolutePath);
+      }
+    },
+    detectImageMimeType: async (absolutePath: string) => {
+      const buffer = params.scratch.readFile(resolveVirtualPath(params.root, absolutePath));
+      const mime = await detectMime({ buffer, filePath: absolutePath });
+      return mime && mime.startsWith("image/") ? mime : undefined;
+    },
+  } as const;
+}
+
+function createWorkspaceScratchOverlayReadOperations(
+  params: VirtualToolParams & { workspaceOnly?: boolean },
+) {
+  const hostOps = createHostEditOperations(params.root, { workspaceOnly: params.workspaceOnly });
+  return {
+    readFile: async (absolutePath: string) =>
+      shouldUseScratchForWorkspacePath(params, absolutePath)
+        ? params.scratch.readFile(resolveVirtualPath(params.root, absolutePath))
+        : hostOps.readFile(absolutePath),
+    access: async (absolutePath: string) => {
+      if (shouldUseScratchForWorkspacePath(params, absolutePath)) {
+        const vfsPath = resolveVirtualPath(params.root, absolutePath);
+        const stat = params.scratch.stat(vfsPath);
+        if (!stat || stat.kind !== "file") {
+          throw createFsAccessError("ENOENT", absolutePath);
+        }
+        return;
+      }
+      await hostOps.access(absolutePath);
+    },
+    detectImageMimeType: async (absolutePath: string) => {
+      const buffer = await readWorkspaceScratchOverlayFile(params, absolutePath);
+      const mime = await detectMime({ buffer, filePath: absolutePath });
+      return mime && mime.startsWith("image/") ? mime : undefined;
+    },
+  } as const;
+}
+
+function createVirtualWriteOperations(params: VirtualToolParams) {
+  return {
+    mkdir: async (dir: string) => {
+      params.scratch.mkdir(resolveVirtualPath(params.root, dir));
+    },
+    writeFile: async (absolutePath: string, content: string) => {
+      params.scratch.writeFile(resolveVirtualPath(params.root, absolutePath), content);
+    },
+  } as const;
+}
+
+function createWorkspaceScratchOverlayWriteOperations(
+  params: VirtualToolParams & { workspaceOnly?: boolean },
+) {
+  const hostOps = createHostWriteOperations(params.root, { workspaceOnly: params.workspaceOnly });
+  return {
+    mkdir: async (dir: string) => {
+      if (shouldUseScratchForWorkspacePath(params, dir)) {
+        params.scratch.mkdir(resolveVirtualPath(params.root, dir));
+        return;
+      }
+      await hostOps.mkdir(dir);
+    },
+    writeFile: async (absolutePath: string, content: string) => {
+      if (shouldUseScratchForWorkspacePath(params, absolutePath)) {
+        params.scratch.writeFile(resolveVirtualPath(params.root, absolutePath), content);
+        return;
+      }
+      await hostOps.writeFile(absolutePath, content);
+    },
+  } as const;
+}
+
+function createVirtualEditOperations(params: VirtualToolParams) {
+  return {
+    readFile: async (absolutePath: string) =>
+      params.scratch.readFile(resolveVirtualPath(params.root, absolutePath)),
+    writeFile: async (absolutePath: string, content: string) => {
+      params.scratch.writeFile(resolveVirtualPath(params.root, absolutePath), content);
+    },
+    access: async (absolutePath: string) => {
+      const vfsPath = resolveVirtualPath(params.root, absolutePath);
+      const stat = params.scratch.stat(vfsPath);
+      if (!stat || stat.kind !== "file") {
+        throw createFsAccessError("ENOENT", absolutePath);
+      }
+    },
+  } as const;
+}
+
+function createWorkspaceScratchOverlayEditOperations(
+  params: VirtualToolParams & { workspaceOnly?: boolean },
+) {
+  const hostOps = createHostEditOperations(params.root, { workspaceOnly: params.workspaceOnly });
+  return {
+    readFile: (absolutePath: string) => readWorkspaceScratchOverlayFile(params, absolutePath),
+    writeFile: async (absolutePath: string, content: string) => {
+      if (shouldUseScratchForWorkspacePath(params, absolutePath)) {
+        params.scratch.writeFile(resolveVirtualPath(params.root, absolutePath), content);
+        return;
+      }
+      await hostOps.writeFile(absolutePath, content);
+    },
+    access: async (absolutePath: string) => {
+      if (shouldUseScratchForWorkspacePath(params, absolutePath)) {
+        const vfsPath = resolveVirtualPath(params.root, absolutePath);
+        const stat = params.scratch.stat(vfsPath);
+        if (!stat || stat.kind !== "file") {
+          throw createFsAccessError("ENOENT", absolutePath);
+        }
+        return;
+      }
+      await hostOps.access(absolutePath);
     },
   } as const;
 }

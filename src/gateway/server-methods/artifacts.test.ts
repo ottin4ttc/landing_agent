@@ -64,8 +64,9 @@ describe("artifacts RPC handlers", () => {
     hoisted.resolveSessionKeyForRun.mockReset();
     hoisted.getTaskSessionLookupByIdForStatus.mockReturnValue(undefined);
     hoisted.loadSessionEntry.mockReturnValue({
-      storePath: "/tmp/sessions.json",
-      entry: { sessionId: "sess-main", sessionFile: "/tmp/sess-main.jsonl" },
+      entry: {
+        sessionId: "sess-main",
+      },
     });
     mockedMessages([
       {
@@ -85,12 +86,10 @@ describe("artifacts RPC handlers", () => {
   });
 
   function mockedMessages(messages: unknown[]) {
-    hoisted.visitSessionMessagesAsync.mockImplementation(
-      async (_sessionId, _storePath, _sessionFile, visit) => {
-        messages.forEach((message, index) => visit(message, index + 1));
-        return messages.length;
-      },
-    );
+    hoisted.visitSessionMessagesAsync.mockImplementation(async (_scope, visit) => {
+      messages.forEach((message, index) => visit(message, index + 1));
+      return messages.length;
+    });
   }
 
   it("lists stable transcript artifact summaries by sessionKey", async () => {
@@ -123,11 +122,15 @@ describe("artifacts RPC handlers", () => {
     expect(artifact?.id).toMatch(/^artifact_/);
     expect(artifact).not.toHaveProperty("data");
     expect(hoisted.visitSessionMessagesAsync).toHaveBeenCalledWith(
-      "sess-main",
-      "/tmp/sessions.json",
-      "/tmp/sess-main.jsonl",
+      {
+        agentId: "main",
+        sessionId: "sess-main",
+      },
       expect.any(Function),
-      expect.objectContaining({ cache: "skip" }),
+      expect.objectContaining({
+        mode: "full",
+        reason: "artifact query transcript scan",
+      }),
     );
   });
 
@@ -144,7 +147,7 @@ describe("artifacts RPC handlers", () => {
     });
 
     expect(calls[0]?.ok).toBe(true);
-    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:main");
+    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:main", { agentId: "work" });
     const payload = calls[0]?.payload as { artifacts?: Array<Record<string, unknown>> };
     expectFields(payload.artifacts?.[0], { sessionKey: "agent:work:main" });
   });
@@ -167,7 +170,9 @@ describe("artifacts RPC handlers", () => {
     });
 
     expect(calls[0]?.ok).toBe(true);
-    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:primary");
+    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:primary", {
+      agentId: "work",
+    });
     const payload = calls[0]?.payload as { artifacts?: Array<Record<string, unknown>> };
     expectFields(payload.artifacts?.[0], { sessionKey: "agent:work:primary" });
   });
@@ -387,9 +392,7 @@ describe("artifacts RPC handlers", () => {
     });
 
     expect(calls[0]?.ok).toBe(true);
-    expect(hoisted.resolveSessionKeyForRun).toHaveBeenCalledWith("run-1", {
-      agentId: "main",
-    });
+    expect(hoisted.resolveSessionKeyForRun).toHaveBeenCalledWith("run-1", undefined);
     const payload = calls[0]?.payload as { artifacts?: Array<Record<string, unknown>> };
     expectFields(payload.artifacts?.[0], { runId: "run-1" });
   });
@@ -417,7 +420,7 @@ describe("artifacts RPC handlers", () => {
     expect(hoisted.resolveSessionKeyForRun).toHaveBeenCalledWith("run-1", {
       agentId: "work",
     });
-    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:main");
+    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:main", { agentId: "work" });
   });
 
   it("preserves task agent scope when taskId resolves through runId", async () => {
@@ -448,7 +451,9 @@ describe("artifacts RPC handlers", () => {
     expect(hoisted.resolveSessionKeyForRun).toHaveBeenCalledWith("run-for-task-1", {
       agentId: "work",
     });
-    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:acp:run-for-task-1");
+    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:acp:run-for-task-1", {
+      agentId: "work",
+    });
   });
 
   it("resolves taskId queries through task status access and filters artifacts by messageTaskId", async () => {
@@ -488,7 +493,7 @@ describe("artifacts RPC handlers", () => {
     expect(list.calls[0]?.ok).toBe(true);
     expect(hoisted.getTaskSessionLookupByIdForStatus).toHaveBeenCalledWith("task-1");
     expect(hoisted.resolveSessionKeyForRun).not.toHaveBeenCalled();
-    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:main:main");
+    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:main:main", { agentId: "main" });
     const listPayload = list.calls[0]?.payload as { artifacts?: Array<Record<string, unknown>> };
     expect(listPayload.artifacts).toHaveLength(1);
     expectFields(listPayload.artifacts?.[0], {
@@ -659,7 +664,7 @@ describe("artifacts RPC handlers", () => {
     });
 
     expect(calls[0]?.ok).toBe(true);
-    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:main");
+    expect(hoisted.loadSessionEntry).toHaveBeenCalledWith("agent:work:main", { agentId: "work" });
     const payload = calls[0]?.payload as { artifacts?: Array<Record<string, unknown>> };
     expectFields(payload.artifacts?.[0], {
       taskId: "task-1",

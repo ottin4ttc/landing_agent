@@ -213,6 +213,13 @@ describe("ci workflow guards", () => {
     );
   });
 
+  it("runs dependency guards in full local checks", () => {
+    const checkScript = readFileSync("scripts/check.mjs", "utf8");
+
+    expect(checkScript).toContain('args: ["deps:pins:check"]');
+    expect(checkScript).toContain('args: ["deps:patches:check"]');
+  });
+
   it("keeps network CodeQL off unrelated source-only refactors", () => {
     const workflow = readCriticalQualityWorkflow();
     const networkConfig = readFileSync(

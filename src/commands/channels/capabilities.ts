@@ -27,6 +27,7 @@ import {
 } from "../../config/config.js";
 import { danger } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { hasPendingPluginInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { defaultRuntime, type RuntimeEnv, writeRuntimeJson } from "../../runtime.js";
 import { resolveInstallableChannelPlugin } from "../channel-setup/channel-plugin-resolution.js";
 import { formatChannelAccountLabel, requireValidConfig } from "./shared.js";
@@ -257,10 +258,7 @@ export async function channelsCapabilitiesCommand(
           });
           if (resolved.configChanged) {
             cfg = resolved.cfg;
-            const shouldMovePluginInstalls = Boolean(
-              cfg.plugins?.installs && Object.keys(cfg.plugins.installs).length > 0,
-            );
-            if (shouldMovePluginInstalls) {
+            if (hasPendingPluginInstallRecords(cfg)) {
               const committed = await commitConfigWithPendingPluginInstalls({
                 nextConfig: cfg,
                 baseHash: (await sourceSnapshotPromise)?.hash,

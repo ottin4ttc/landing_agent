@@ -4,19 +4,17 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { note } from "../../../packages/terminal-core/src/note.js";
 import { formatCliCommand } from "../command-format.js";
+import { formatPluginPackagingRuntimeOutputRecoveryHint } from "../config-recovery-hints.js";
 import { ensureConfigReady, testApi } from "./config-guard.js";
 
-const pluginPackagingRecoveryHint = [
-  "This is a plugin packaging issue, not a local config problem.",
-  "Update or reinstall the plugin after the publisher ships compiled JavaScript, or disable/uninstall the plugin until then.",
-].join("\n");
+const pluginPackagingRecoveryHint = formatPluginPackagingRuntimeOutputRecoveryHint();
 
-const loadAndMaybeMigrateDoctorConfigMock = vi.hoisted(() => vi.fn());
+const runDoctorConfigPreflightMock = vi.hoisted(() => vi.fn());
 const readConfigFileSnapshotMock = vi.hoisted(() => vi.fn());
 const setRuntimeConfigSnapshotMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../commands/doctor-config-preflight.js", () => ({
-  runDoctorConfigPreflight: loadAndMaybeMigrateDoctorConfigMock,
+  runDoctorConfigPreflight: runDoctorConfigPreflightMock,
 }));
 
 vi.mock("../../config/config.js", () => ({
@@ -91,7 +89,7 @@ describe("ensureConfigReady", () => {
       ...overrides,
     };
     readConfigFileSnapshotMock.mockResolvedValue(snapshot);
-    loadAndMaybeMigrateDoctorConfigMock.mockResolvedValue({
+    runDoctorConfigPreflightMock.mockResolvedValue({
       snapshot,
       baseConfig: {},
     });
@@ -130,7 +128,7 @@ describe("ensureConfigReady", () => {
     }
     useTempOpenClawHome();
     readConfigFileSnapshotMock.mockResolvedValue(makeSnapshot());
-    loadAndMaybeMigrateDoctorConfigMock.mockImplementation(async () => ({
+    runDoctorConfigPreflightMock.mockImplementation(async () => ({
       snapshot: makeSnapshot(),
       baseConfig: {},
     }));
@@ -161,23 +159,23 @@ describe("ensureConfigReady", () => {
     {
       name: "skips doctor flow for status task reads without legacy state",
       commandPath: ["status"],
-      expectedDoctorCalls: 0,
+      expectedPreflightCalls: 0,
     },
     {
-      name: "skips doctor flow for update status",
+      name: "skips config preflight for update status",
       commandPath: ["update", "status"],
-      expectedDoctorCalls: 0,
+      expectedPreflightCalls: 0,
     },
     {
       name: "runs doctor flow for commands that may mutate state without legacy state",
       commandPath: ["message"],
-      expectedDoctorCalls: 1,
+      expectedPreflightCalls: 1,
     },
-  ])("$name", async ({ commandPath, expectedDoctorCalls }) => {
+  ])("$name", async ({ commandPath, expectedPreflightCalls }) => {
     await runEnsureConfigReady(commandPath);
-    expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledTimes(expectedDoctorCalls);
-    if (expectedDoctorCalls > 0) {
-      expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledWith({
+    expect(runDoctorConfigPreflightMock).toHaveBeenCalledTimes(expectedPreflightCalls);
+    if (expectedPreflightCalls > 0) {
+      expect(runDoctorConfigPreflightMock).toHaveBeenCalledWith({
         migrateState: true,
         migrateLegacyConfig: false,
         invalidConfigNote: false,
@@ -191,7 +189,7 @@ describe("ensureConfigReady", () => {
 
     await runEnsureConfigReady(["status"]);
 
-    expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledWith({
+    expect(runDoctorConfigPreflightMock).toHaveBeenCalledWith({
       migrateState: true,
       migrateLegacyConfig: false,
       invalidConfigNote: false,
@@ -204,7 +202,7 @@ describe("ensureConfigReady", () => {
 
     await runEnsureConfigReady(["status"]);
 
-    expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledOnce();
+    expect(runDoctorConfigPreflightMock).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -222,7 +220,7 @@ describe("ensureConfigReady", () => {
 
     await runEnsureConfigReady(["status"]);
 
-    expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledOnce();
+    expect(runDoctorConfigPreflightMock).toHaveBeenCalledOnce();
   });
 
   it("uses shared tilde expansion for OPENCLAW_HOME in the startup detector", async () => {
@@ -235,7 +233,7 @@ describe("ensureConfigReady", () => {
 
     await runEnsureConfigReady(["status"]);
 
-    expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledOnce();
+    expect(runDoctorConfigPreflightMock).toHaveBeenCalledOnce();
   });
 
   it("runs doctor flow for read-only commands with configured custom session stores", async () => {
@@ -247,14 +245,14 @@ describe("ensureConfigReady", () => {
       runtimeConfig: { session: { store: customStore } },
     };
     readConfigFileSnapshotMock.mockResolvedValue(snapshot);
-    loadAndMaybeMigrateDoctorConfigMock.mockResolvedValue({
+    runDoctorConfigPreflightMock.mockResolvedValue({
       snapshot,
       baseConfig: {},
     });
 
     await runEnsureConfigReady(["status"]);
 
-    expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledOnce();
+    expect(runDoctorConfigPreflightMock).toHaveBeenCalledOnce();
   });
 
   it("pins a valid preflight snapshot for command code reuse", async () => {
@@ -391,18 +389,18 @@ describe("ensureConfigReady", () => {
 
     await ensureConfigReady({ runtime: runtimeA as never, commandPath: ["message"] });
     await ensureConfigReady({ runtime: runtimeB as never, commandPath: ["message"] });
-    expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledTimes(1);
+    expect(runDoctorConfigPreflightMock).toHaveBeenCalledTimes(1);
   });
 
   it("still runs doctor flow when stdout suppression is enabled", async () => {
     writeLegacyTaskSidecarMarker(useTempOpenClawHome());
     await runEnsureConfigReady(["message"], true);
-    expect(loadAndMaybeMigrateDoctorConfigMock).toHaveBeenCalledTimes(1);
+    expect(runDoctorConfigPreflightMock).toHaveBeenCalledTimes(1);
   });
 
   it("prevents preflight note noise when suppression is enabled", async () => {
     writeLegacyTaskSidecarMarker(useTempOpenClawHome());
-    loadAndMaybeMigrateDoctorConfigMock.mockImplementation(async () => {
+    runDoctorConfigPreflightMock.mockImplementation(async () => {
       note("Doctor warnings", "Config warnings");
       return {
         snapshot: makeSnapshot(),
@@ -417,7 +415,7 @@ describe("ensureConfigReady", () => {
 
   it("allows preflight note noise when suppression is not enabled", async () => {
     writeLegacyTaskSidecarMarker(useTempOpenClawHome());
-    loadAndMaybeMigrateDoctorConfigMock.mockImplementation(async () => {
+    runDoctorConfigPreflightMock.mockImplementation(async () => {
       note("Doctor warnings", "Config warnings");
       return {
         snapshot: makeSnapshot(),
@@ -440,7 +438,7 @@ describe("ensureConfigReady", () => {
     const releasePreflightPromise = new Promise<void>((resolve) => {
       releasePreflight = resolve;
     });
-    loadAndMaybeMigrateDoctorConfigMock.mockImplementation(async () => {
+    runDoctorConfigPreflightMock.mockImplementation(async () => {
       note("Doctor warnings", "Config warnings");
       preflightStarted?.();
       await releasePreflightPromise;

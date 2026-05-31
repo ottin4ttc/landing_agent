@@ -54,7 +54,7 @@ function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean):
 function expectAcceptedRunDetails(details: unknown): string {
   const rec = details as { status?: string; runId?: unknown } | undefined;
   const runId = rec?.runId;
-  expect(rec?.status).toBe("accepted");
+  expect(rec?.status, JSON.stringify(rec)).toBe("accepted");
   expect(typeof runId).toBe("string");
   if (typeof runId !== "string") {
     throw new Error("missing accepted runId");

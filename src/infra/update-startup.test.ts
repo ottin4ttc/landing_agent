@@ -1,9 +1,11 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatCliCommand } from "../cli/command-format.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { captureEnv } from "../test-utils/env.js";
+import {
+  readUpdateCheckStateFromSqlite,
+  writeUpdateCheckStateToSqlite,
+} from "./update-check-state.js";
 import type { UpdateCheckResult } from "./update-check.js";
 
 vi.mock("./openclaw-root.js", async () => {
@@ -150,27 +152,8 @@ describe("update-startup", () => {
       allowInTests: true,
     });
 
-    const statePath = path.join(tempDir, "update-check.json");
-    const parsed = JSON.parse(await fs.readFile(statePath, "utf-8")) as {
-      lastNotifiedVersion?: string;
-      lastNotifiedTag?: string;
-      lastAvailableVersion?: string;
-      lastAvailableTag?: string;
-    };
+    const parsed = readUpdateCheckStateFromSqlite(process.env);
     return { log, parsed };
-  }
-
-  async function expectPathMissing(targetPath: string): Promise<void> {
-    let statError: NodeJS.ErrnoException | undefined;
-    try {
-      await fs.stat(targetPath);
-    } catch (error) {
-      statError = error as NodeJS.ErrnoException;
-    }
-    expect(statError).toBeInstanceOf(Error);
-    expect(statError?.code).toBe("ENOENT");
-    expect(statError?.path).toBe(targetPath);
-    expect(statError?.syscall).toBe("stat");
   }
 
   function createAutoUpdateSuccessMock() {
@@ -253,27 +236,17 @@ describe("update-startup", () => {
       allowInTests: true,
     });
 
-    const statePath = path.join(tempDir, "update-check.json");
-    const parsed = JSON.parse(await fs.readFile(statePath, "utf-8")) as {
-      lastCheckedAt?: string;
-      lastAvailableVersion?: string;
-    };
+    const parsed = readUpdateCheckStateFromSqlite(process.env);
     expect(parsed.lastCheckedAt).toBe("1970-01-01T00:00:00.000Z");
     expect(parsed.lastAvailableVersion).toBe("2.0.0");
   });
 
   it("does not throttle invalid update-check clocks against persisted state", async () => {
-    const statePath = path.join(tempDir, "update-check.json");
-    await fs.writeFile(
-      statePath,
-      JSON.stringify(
-        {
-          lastCheckedAt: "2026-01-17T09:30:00.000Z",
-        },
-        null,
-        2,
-      ),
-      "utf-8",
+    writeUpdateCheckStateToSqlite(
+      {
+        lastCheckedAt: "2026-01-17T09:30:00.000Z",
+      },
+      process.env,
     );
     mockPackageUpdateStatus("latest", "2.0.0");
     vi.spyOn(Date, "now").mockReturnValue(8_640_000_000_000_001);
@@ -286,28 +259,19 @@ describe("update-startup", () => {
     });
 
     expect(checkUpdateStatus).toHaveBeenCalledTimes(1);
-    const parsed = JSON.parse(await fs.readFile(statePath, "utf-8")) as {
-      lastCheckedAt?: string;
-      lastAvailableVersion?: string;
-    };
+    const parsed = readUpdateCheckStateFromSqlite(process.env);
     expect(parsed.lastCheckedAt).toBe("1970-01-01T00:00:00.000Z");
     expect(parsed.lastAvailableVersion).toBe("2.0.0");
   });
 
   it("hydrates cached update from persisted state during throttle window", async () => {
-    const statePath = path.join(tempDir, "update-check.json");
-    await fs.writeFile(
-      statePath,
-      JSON.stringify(
-        {
-          lastCheckedAt: new Date(Date.now()).toISOString(),
-          lastAvailableVersion: "2.0.0",
-          lastAvailableTag: "latest",
-        },
-        null,
-        2,
-      ),
-      "utf-8",
+    writeUpdateCheckStateToSqlite(
+      {
+        lastCheckedAt: new Date(Date.now()).toISOString(),
+        lastAvailableVersion: "2.0.0",
+        lastAvailableTag: "latest",
+      },
+      process.env,
     );
 
     const onUpdateAvailableChange = vi.fn();
@@ -369,7 +333,7 @@ describe("update-startup", () => {
     });
 
     expect(log.info).not.toHaveBeenCalled();
-    await expectPathMissing(path.join(tempDir, "update-check.json"));
+    expect(readUpdateCheckStateFromSqlite(process.env)).toEqual({});
   });
 
   it("defers stable auto-update until rollout window is due", async () => {
@@ -495,7 +459,7 @@ describe("update-startup", () => {
     }
 
     expect(runCommandWithTimeout).toHaveBeenCalledTimes(1);
-    const [argv, options] = requireFirstRunCommandCall();
+    const [argv, options] = vi.mocked(runCommandWithTimeout).mock.calls[0] ?? [];
     expect(argv).toEqual([
       process.execPath,
       "/opt/openclaw/dist/entry.js",

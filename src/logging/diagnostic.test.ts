@@ -385,34 +385,6 @@ describe("stuck session diagnostics threshold", () => {
     );
   });
 
-  it("threads session files from heartbeat state into stuck-session recovery", () => {
-    const recoverStuckSession = vi.fn();
-    const sessionFile = "/tmp/openclaw-heartbeat-session.jsonl";
-
-    startDiagnosticHeartbeat(
-      {
-        diagnostics: {
-          enabled: true,
-          stuckSessionWarnMs: 30_000,
-        },
-      },
-      { recoverStuckSession },
-    );
-    logSessionStateChange({
-      sessionId: "s1",
-      sessionKey: "main",
-      sessionFile,
-      state: "processing",
-    });
-    vi.advanceTimersByTime(61_000);
-
-    expectRecoveryCall(
-      recoverStuckSession,
-      { sessionId: "s1", sessionKey: "main", sessionFile, queueDepth: 0 },
-      ["ageMs", "stateGeneration"],
-    );
-  });
-
   it("does not warn while a processing session continues reporting progress", () => {
     const events: DiagnosticEventPayload[] = [];
     const unsubscribe = onDiagnosticEvent((event) => {
@@ -911,7 +883,6 @@ describe("stuck session diagnostics threshold", () => {
     logSessionStateChange({
       sessionId: "s1",
       sessionKey: "main",
-      sessionFile: "/tmp/openclaw-active-abort-session.jsonl",
       state: "processing",
     });
     markDiagnosticEmbeddedRunStarted({ sessionId: "s1", sessionKey: "main" });
@@ -923,7 +894,6 @@ describe("stuck session diagnostics threshold", () => {
       {
         sessionId: "s1",
         sessionKey: "main",
-        sessionFile: "/tmp/openclaw-active-abort-session.jsonl",
         queueDepth: 0,
         allowActiveAbort: true,
       },

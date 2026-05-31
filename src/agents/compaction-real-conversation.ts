@@ -1,6 +1,6 @@
 import { stripHeartbeatToken } from "../auto-reply/heartbeat.js";
 import { isSilentReplyText } from "../auto-reply/tokens.js";
-import type { AgentMessage } from "./runtime/index.js";
+import type { AgentMessage } from "./agent-core-contract.js";
 
 const TOOL_RESULT_REAL_CONVERSATION_LOOKBACK = 20;
 const NON_CONVERSATION_BLOCK_TYPES = new Set([

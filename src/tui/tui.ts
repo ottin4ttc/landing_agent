@@ -2,16 +2,6 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  CombinedAutocompleteProvider,
-  Container,
-  Key,
-  Loader,
-  matchesKey,
-  ProcessTerminal,
-  Text,
-  TUI,
-} from "@earendil-works/pi-tui";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { CommandEntry } from "../../packages/gateway-protocol/src/index.js";
 import { resolveAgentIdByWorkspacePath, resolveDefaultAgentId } from "../agents/agent-scope.js";
@@ -31,6 +21,16 @@ import { ChatLog } from "./components/chat-log.js";
 import { CustomEditor } from "./components/custom-editor.js";
 import { GatewayChatClient } from "./gateway-chat.js";
 import { resolveLocalRunShutdownGraceMs } from "./local-run-shutdown.js";
+import {
+  CombinedAutocompleteProvider,
+  Container,
+  Key,
+  Loader,
+  matchesKey,
+  ProcessTerminal,
+  Text,
+  TUI,
+} from "./pi-tui-contract.js";
 import { editorTheme, theme } from "./theme/theme.js";
 import type { TuiBackend } from "./tui-backend.js";
 import { createCommandHandlers } from "./tui-command-handlers.js";
@@ -904,6 +904,7 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
     );
   };
 
+  const busyStates = new Set(["sending", "waiting", "streaming", "running"]);
   let statusText: Text | null = null;
   let statusLoader: Loader | null = null;
 
@@ -975,7 +976,7 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
       return;
     }
     statusTimer = setInterval(() => {
-      if (!isTuiBusyActivityStatus(activityStatus)) {
+      if (!busyStates.has(activityStatus)) {
         return;
       }
       updateBusyStatusMessage();
@@ -1029,7 +1030,7 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
   };
 
   const renderStatus = () => {
-    const isBusy = isTuiBusyActivityStatus(activityStatus);
+    const isBusy = busyStates.has(activityStatus);
     if (isBusy) {
       if (!statusStartedAt || lastActivityStatus !== activityStatus) {
         statusStartedAt = Date.now();
@@ -1267,13 +1268,8 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
       resolveTuiShutdownHardExitMs({ localMode: isLocalMode }),
     );
     hardExitTimer.unref?.();
-    void Promise.resolve()
-      .then(() => client.stop())
-      .then(() => drainAndStopTuiSafely(tui))
-      .finally(() => {
-        clearTimeout(hardExitTimer);
-        stopStatusTimeout();
-      })
+    void client.stop();
+    void drainAndStopTuiSafely(tui)
       .catch((err) => {
         if (!isTuiTerminalLossError(err)) {
           try {
@@ -1284,6 +1280,7 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
         }
       })
       .finally(() => {
+        clearTimeout(hardExitTimer);
         deferredFinish.requestFinish();
       });
   };
@@ -1325,14 +1322,8 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
     closeOverlay,
   });
   updateAutocompleteProvider();
-  const canSubmitChatMessage = (message: string) =>
-    canSubmitTuiChatMessage({
-      local: isLocalMode,
-      activeChatRunId: state.activeChatRunId,
-      pendingChatRunId: state.pendingChatRunId,
-      pendingOptimisticUserMessage: state.pendingOptimisticUserMessage,
-      message,
-    });
+  const canSubmitChatMessage = () =>
+    !state.activeChatRunId && !state.pendingChatRunId && !state.pendingOptimisticUserMessage;
   const notifyBlockedChatSubmit = () => {
     chatLog.addSystem("agent is busy — press Esc to abort before sending a new message");
     tui.requestRender();
@@ -1512,12 +1503,8 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
   const sigtermHandler = () => {
     requestExit();
   };
-  const sighupHandler = () => {
-    requestExit();
-  };
   process.on("SIGINT", sigintHandler);
   process.on("SIGTERM", sigtermHandler);
-  process.on("SIGHUP", sighupHandler);
   let cleanupTerminalLossHandler: (() => void) | null = installTuiTerminalLossExitHandler(() =>
     requestExit(),
   );
@@ -1532,7 +1519,6 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
       cleanupTerminalLossHandler = null;
       process.removeListener("SIGINT", sigintHandler);
       process.removeListener("SIGTERM", sigtermHandler);
-      process.removeListener("SIGHUP", sighupHandler);
       process.removeListener("exit", finish);
       deferredFinish.clearFinish();
       resolve();

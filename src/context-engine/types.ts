@@ -1,4 +1,4 @@
-import type { AgentMessage } from "../agents/runtime/index.js";
+import type { AgentMessage } from "../agents/agent-core-contract.js";
 import type { MemoryCitationsMode } from "../config/types.memory.js";
 
 // Result types
@@ -74,8 +74,6 @@ export type CompactResult = {
     details?: unknown;
     /** Session id after compaction, when the runtime rotated transcripts. */
     sessionId?: string;
-    /** Session file after compaction, when the runtime rotated transcripts. */
-    sessionFile?: string;
   };
 };
 
@@ -152,6 +150,12 @@ export type TranscriptRewriteResult = {
 
 export type ContextEngineMaintenanceResult = TranscriptRewriteResult;
 
+export type ContextEngineTranscriptScope = {
+  agentId: string;
+  path?: string;
+  sessionId: string;
+};
+
 type ContextEnginePromptCacheRetention = "none" | "short" | "long" | "in_memory" | "24h";
 
 type ContextEnginePromptCacheUsage = {
@@ -196,8 +200,10 @@ export type ContextEnginePromptCacheInfo = {
 };
 
 export type ContextEngineRuntimeContext = Record<string, unknown> & {
-  /** Runtime task working directory; workspaceDir remains the agent bootstrap workspace. */
-  cwd?: string;
+  /** Runtime-resolved agent id for the active session. */
+  agentId?: string;
+  /** Runtime-resolved SQLite transcript scope for the active session. */
+  transcriptScope?: ContextEngineTranscriptScope;
   /**
    * True when the host has explicitly opted this maintenance run into
    * consuming deferred compaction debt.
@@ -244,7 +250,7 @@ export interface ContextEngine {
   bootstrap?(params: {
     sessionId: string;
     sessionKey?: string;
-    sessionFile: string;
+    transcriptScope?: ContextEngineTranscriptScope;
   }): Promise<BootstrapResult>;
 
   /**
@@ -256,7 +262,7 @@ export interface ContextEngine {
   maintain?(params: {
     sessionId: string;
     sessionKey?: string;
-    sessionFile: string;
+    transcriptScope?: ContextEngineTranscriptScope;
     runtimeContext?: ContextEngineRuntimeContext;
   }): Promise<ContextEngineMaintenanceResult>;
 
@@ -290,7 +296,7 @@ export interface ContextEngine {
   afterTurn?(params: {
     sessionId: string;
     sessionKey?: string;
-    sessionFile: string;
+    transcriptScope?: ContextEngineTranscriptScope;
     messages: AgentMessage[];
     /** Number of messages that existed before the prompt was sent. */
     prePromptMessageCount: number;
@@ -337,7 +343,7 @@ export interface ContextEngine {
   compact(params: {
     sessionId: string;
     sessionKey?: string;
-    sessionFile: string;
+    transcriptScope?: ContextEngineTranscriptScope;
     tokenBudget?: number;
     /** Force compaction even below the default trigger threshold. */
     force?: boolean;
@@ -367,9 +373,9 @@ export interface ContextEngine {
     childSessionKey: string;
     contextMode?: "isolated" | "fork";
     parentSessionId?: string;
-    parentSessionFile?: string;
+    parentTranscriptScope?: ContextEngineTranscriptScope;
     childSessionId?: string;
-    childSessionFile?: string;
+    childTranscriptScope?: ContextEngineTranscriptScope;
     ttlMs?: number;
   }): Promise<SubagentSpawnPreparation | undefined>;
 

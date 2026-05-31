@@ -1,6 +1,17 @@
-export type {
-  OpenKeyedStoreOptions,
-  PluginStateEntry,
-  PluginStateKeyedStore,
-  PluginStateSyncKeyedStore,
+export {
+  createPluginBlobStore,
+  createPluginBlobSyncStore,
+  resetPluginBlobStoreForTests,
+  type PluginBlobEntry,
+  type PluginBlobStore,
+  type PluginBlobSyncStore,
+} from "../plugin-state/plugin-blob-store.js";
+export {
+  createPluginStateKeyedStore,
+  createPluginStateSyncKeyedStore,
+  resetPluginStateStoreForTests,
+  type OpenKeyedStoreOptions,
+  type PluginStateEntry,
+  type PluginStateKeyedStore,
+  type PluginStateSyncKeyedStore,
 } from "../plugin-state/plugin-state-store.js";

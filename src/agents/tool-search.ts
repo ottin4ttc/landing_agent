@@ -8,13 +8,17 @@ import {
 } from "@openclaw/normalization-core/string-normalization";
 import { Type } from "typebox";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type {
+  AgentMessage,
+  AgentToolResult,
+  AgentToolUpdateCallback,
+} from "./agent-core-contract.js";
 import { getPluginToolMeta } from "../plugins/tools.js";
 import {
   isToolWrappedWithBeforeToolCallHook,
   type HookContext,
   wrapToolWithBeforeToolCallHook,
 } from "./agent-tools.before-tool-call.js";
-import type { AgentMessage, AgentToolResult, AgentToolUpdateCallback } from "./runtime/index.js";
 import type { ToolDefinition } from "./sessions/index.js";
 import { asToolParamsRecord, jsonResult, ToolInputError } from "./tools/common.js";
 import type { AnyAgentTool } from "./tools/common.js";
@@ -53,7 +57,7 @@ export type ToolSearchCatalogToolExecutor = (params: {
   input: unknown;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
-}) => Promise<AgentToolResult<unknown>>;
+}) => Promise<AgentToolResult>;
 
 export type ToolSearchTargetTranscriptProjection = {
   parentToolCallId?: string;
@@ -1627,7 +1631,7 @@ export function createToolSearchTools(ctx: ToolSearchToolContext): AnyAgentTool[
         args: unknown,
         signal?: AbortSignal,
         onUpdate?: AgentToolUpdateCallback,
-      ): Promise<AgentToolResult<unknown>> =>
+      ): Promise<AgentToolResult> =>
         jsonResult(
           await runCodeMode({ toolCallId, ctx, code: readCode(args), config, signal, onUpdate }),
         ),
@@ -1640,7 +1644,7 @@ export function createToolSearchTools(ctx: ToolSearchToolContext): AnyAgentTool[
         query: Type.String({ description: "Search query." }),
         limit: Type.Optional(Type.Number({ description: "Maximum number of results." })),
       }),
-      execute: async (_toolCallId: string, args: unknown): Promise<AgentToolResult<unknown>> => {
+      execute: async (_toolCallId: string, args: unknown): Promise<AgentToolResult> => {
         const search = readSearchArgs(args, config);
         return jsonResult(await runtime.search(search.query, { limit: search.limit }));
       },
@@ -1652,7 +1656,7 @@ export function createToolSearchTools(ctx: ToolSearchToolContext): AnyAgentTool[
       parameters: Type.Object({
         id: Type.String({ description: "Tool search result id or tool name." }),
       }),
-      execute: async (_toolCallId: string, args: unknown): Promise<AgentToolResult<unknown>> =>
+      execute: async (_toolCallId: string, args: unknown): Promise<AgentToolResult> =>
         jsonResult(await runtime.describe(readId(args))),
     },
     {
@@ -1670,7 +1674,7 @@ export function createToolSearchTools(ctx: ToolSearchToolContext): AnyAgentTool[
         args: unknown,
         signal?: AbortSignal,
         onUpdate?: AgentToolUpdateCallback,
-      ): Promise<AgentToolResult<unknown>> => {
+      ): Promise<AgentToolResult> => {
         const call = readCallArgs(args);
         return jsonResult(
           await runtime.call(call.id, call.input, {

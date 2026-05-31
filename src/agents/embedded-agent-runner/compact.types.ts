@@ -9,6 +9,7 @@ import type { AgentRuntimePlan } from "../runtime-plan/types.js";
 
 export type CompactEmbeddedAgentSessionParams = {
   sessionId: string;
+  path?: string;
   runId?: string;
   sessionKey?: string;
   /** Caller-resolved owner agent for global session aliases. */
@@ -35,7 +36,8 @@ export type CompactEmbeddedAgentSessionParams = {
   groupSpace?: string | null;
   /** Parent session key for subagent policy inheritance. */
   spawnedBy?: string | null;
-  sessionFile: string;
+  /** Whether the sender is an owner (required for owner-only tools). */
+  senderIsOwner?: boolean;
   /** Optional caller-observed live prompt tokens used for compaction diagnostics. */
   currentTokenCount?: number;
   workspaceDir: string;
@@ -44,7 +46,6 @@ export type CompactEmbeddedAgentSessionParams = {
   agentDir?: string;
   config?: OpenClawConfig;
   skillsSnapshot?: SkillSnapshot;
-  senderIsOwner?: boolean;
   provider?: string;
   model?: string;
   /** Effective model fallback chain for this session attempt. Undefined uses config defaults. */

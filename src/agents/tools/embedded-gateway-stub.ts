@@ -4,7 +4,7 @@ import type {
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { CallGatewayOptions } from "../../gateway/call.js";
-import type { ReadSessionMessagesAsyncOptions } from "../../gateway/session-utils.fs.js";
+import type { ReadSessionMessagesAsyncOptions } from "../../gateway/session-transcript-readers.js";
 import type { SessionsListResult } from "../../gateway/session-utils.types.js";
 import type { SessionsResolveResult } from "../../gateway/sessions-resolve.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
@@ -42,16 +42,16 @@ interface EmbeddedGatewayRuntime {
   capArrayByJsonBytes: (items: unknown[], maxBytes: number) => { items: unknown[] };
   listSessionsFromStoreAsync: (opts: {
     cfg: OpenClawConfig;
-    storePath: string;
+    databasePath?: string;
     store: unknown;
     opts: SessionsListParams;
   }) => Promise<SessionsListResult>;
-  loadCombinedSessionStoreForGateway: (
+  loadCombinedSessionEntriesForGateway: (
     cfg: OpenClawConfig,
     opts?: { agentId?: string },
   ) => {
-    storePath: string;
-    store: unknown;
+    databasePath: string;
+    entries: unknown;
   };
   resolveSessionKeyFromResolveParams: (opts: {
     cfg: OpenClawConfig;
@@ -62,13 +62,10 @@ interface EmbeddedGatewayRuntime {
     opts?: { agentId?: string },
   ) => {
     cfg: OpenClawConfig;
-    storePath: string | undefined;
     entry: Record<string, unknown> | undefined;
   };
   readSessionMessagesAsync: (
-    sessionId: string,
-    storePath: string,
-    sessionFile: string | undefined,
+    scope: { agentId?: string; sessionId: string },
     opts: ReadSessionMessagesAsyncOptions,
   ) => Promise<unknown[]>;
   resolveSessionModelRef: (
@@ -91,12 +88,12 @@ async function handleSessionsList(params: Record<string, unknown>) {
   const rt = await getRuntime();
   const cfg = rt.getRuntimeConfig();
   const opts = params as SessionsListParams;
-  const { storePath, store } = rt.loadCombinedSessionStoreForGateway(cfg, {
+  const { databasePath, entries: store } = rt.loadCombinedSessionEntriesForGateway(cfg, {
     agentId: opts.agentId,
   });
   return rt.listSessionsFromStoreAsync({
     cfg,
-    storePath,
+    databasePath,
     store,
     opts,
   });
@@ -132,7 +129,7 @@ async function handleChatHistory(params: Record<string, unknown>): Promise<{
   const limit = readPositiveIntegerParam(params, "limit");
 
   const sessionLoadOptions = requestedAgentId ? { agentId: requestedAgentId } : undefined;
-  const { cfg, storePath, entry } = rt.loadSessionEntry(sessionKey, sessionLoadOptions);
+  const { cfg, entry } = rt.loadSessionEntry(sessionKey, sessionLoadOptions);
   const sessionId = entry?.sessionId as string | undefined;
   const sessionAgentId = rt.resolveSessionAgentId({
     sessionKey,
@@ -146,19 +143,19 @@ async function handleChatHistory(params: Record<string, unknown>): Promise<{
   const max = Math.min(hardMax, requested);
   const maxHistoryBytes = rt.getMaxChatHistoryMessagesBytes();
 
-  const localMessages =
-    sessionId && storePath
-      ? await rt.readSessionMessagesAsync(
+  const localMessages = sessionId
+    ? await rt.readSessionMessagesAsync(
+        {
+          agentId: sessionAgentId,
           sessionId,
-          storePath,
-          entry?.sessionFile as string | undefined,
-          {
-            mode: "recent",
-            maxMessages: max,
-            maxBytes: Math.max(maxHistoryBytes * 2, 1024 * 1024),
-          },
-        )
-      : [];
+        },
+        {
+          mode: "recent",
+          maxMessages: max,
+          maxBytes: Math.max(maxHistoryBytes * 2, 1024 * 1024),
+        },
+      )
+    : [];
 
   const rawMessages = rt.augmentChatHistoryWithCliSessionImports({
     entry,

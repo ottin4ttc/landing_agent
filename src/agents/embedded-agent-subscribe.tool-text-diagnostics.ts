@@ -1,8 +1,8 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { AssistantMessage } from "../llm/types.js";
 import { extractTextFromChatContent } from "../shared/chat-content.js";
 import { detectToolCallShapedText } from "../shared/text/tool-call-shaped-text.js";
 import type { EmbeddedAgentSubscribeContext } from "./embedded-agent-subscribe.handlers.types.js";
+import type { AssistantMessage } from "./pi-ai-contract.js";
 import { normalizeToolName } from "./tool-policy.js";
 
 function hasStructuredToolInvocation(message: AssistantMessage): boolean {

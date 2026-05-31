@@ -2,12 +2,12 @@ import {
   normalizeOptionalLowercaseString,
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
+import type { StreamFn } from "../../../agents/agent-core-contract.js";
+import { streamSimple } from "../../../agents/pi-ai-contract.js";
 import { resolveProviderRequestPolicy } from "../../../agents/provider-attribution.js";
 import { resolveProviderRequestPolicyConfig } from "../../../agents/provider-request-config.js";
-import type { StreamFn } from "../../../agents/runtime/index.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import { parseStrictFiniteNumber } from "../../../infra/parse-finite-number.js";
-import { streamSimple } from "../../stream.js";
 import { applyAnthropicEphemeralCacheControlMarkers } from "./anthropic-cache-control-payload.js";
 import { isAnthropicModelRef } from "./anthropic-family-cache-semantics.js";
 import { mapThinkingLevelToReasoningEffort } from "./reasoning-effort-utils.js";

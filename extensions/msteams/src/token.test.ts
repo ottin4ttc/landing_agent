@@ -1,12 +1,16 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readAccessToken } from "./token-response.js";
 import {
   hasConfiguredMSTeamsCredentials,
+  loadDelegatedTokens,
+  parseMSTeamsDelegatedTokens,
   resolveDelegatedAccessToken,
   resolveMSTeamsCredentials,
+  saveDelegatedTokens,
 } from "./token.js";
 
 const oauthTokenMocks = vi.hoisted(() => ({
@@ -15,16 +19,6 @@ const oauthTokenMocks = vi.hoisted(() => ({
 
 vi.mock("./oauth.token.js", () => ({
   refreshMSTeamsDelegatedTokens: oauthTokenMocks.refreshMSTeamsDelegatedTokens,
-}));
-
-vi.mock("./storage.js", () => ({
-  resolveMSTeamsStorePath: ({ filename }: { filename: string }) => {
-    const stateDir = process.env.OPENCLAW_STATE_DIR;
-    if (!stateDir) {
-      throw new Error("OPENCLAW_STATE_DIR is required for token tests");
-    }
-    return `${stateDir}/${filename}`;
-  },
 }));
 
 vi.mock("./secret-input.js", () => ({
@@ -278,42 +272,90 @@ describe("token – backward compatibility", () => {
   });
 });
 
-describe("resolveDelegatedAccessToken", () => {
-  let stateDir: string | undefined;
+describe("delegated token storage", () => {
+  const tempDirs: string[] = [];
 
   beforeEach(() => {
     saveAndClearEnv();
-    stateDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-msteams-token-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-msteams-token-"));
+    tempDirs.push(stateDir);
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+  });
+
+  afterEach(() => {
+    resetPluginStateStoreForTests();
+    restoreEnv();
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stores delegated tokens in SQLite plugin state", () => {
+    saveDelegatedTokens({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      expiresAt: 1_900_000_000_000,
+      scopes: ["ChatMessage.Send", "offline_access"],
+      userPrincipalName: "user@example.com",
+    });
+
+    expect(loadDelegatedTokens()).toEqual({
+      accessToken: "access-token",
+      refreshToken: "refresh-token",
+      expiresAt: 1_900_000_000_000,
+      scopes: ["ChatMessage.Send", "offline_access"],
+      userPrincipalName: "user@example.com",
+    });
+  });
+
+  it("rejects invalid delegated token payloads", () => {
+    expect(parseMSTeamsDelegatedTokens({ accessToken: "a" })).toBeNull();
+    expect(
+      parseMSTeamsDelegatedTokens({
+        accessToken: "a",
+        refreshToken: "r",
+        expiresAt: 1,
+        scopes: ["scope"],
+      }),
+    ).toEqual({
+      accessToken: "a",
+      refreshToken: "r",
+      expiresAt: 1,
+      scopes: ["scope"],
+    });
+  });
+});
+
+describe("resolveDelegatedAccessToken", () => {
+  const tempDirs: string[] = [];
+
+  beforeEach(() => {
+    saveAndClearEnv();
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-msteams-token-"));
+    tempDirs.push(stateDir);
     process.env.OPENCLAW_STATE_DIR = stateDir;
     oauthTokenMocks.refreshMSTeamsDelegatedTokens.mockReset();
   });
 
   afterEach(() => {
+    resetPluginStateStoreForTests();
     restoreEnv();
-    if (stateDir) {
-      rmSync(stateDir, { recursive: true, force: true });
-      stateDir = undefined;
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  function writeDelegatedTokens(expiresAt: number) {
-    if (!stateDir) {
-      throw new Error("missing stateDir");
-    }
-    writeFileSync(
-      path.join(stateDir, "msteams-delegated.json"),
-      `${JSON.stringify({
-        accessToken: "stale-access",
-        refreshToken: "refresh-token",
-        expiresAt,
-        scopes: ["User.Read"],
-      })}\n`,
-      "utf8",
-    );
+  function storeDelegatedTokens(expiresAt: number) {
+    saveDelegatedTokens({
+      accessToken: "stale-access",
+      refreshToken: "refresh-token",
+      expiresAt,
+      scopes: ["User.Read"],
+    });
   }
 
   it("reuses a valid delegated access token before expiry", async () => {
-    writeDelegatedTokens(Date.now() + 60_000);
+    storeDelegatedTokens(Date.now() + 60_000);
 
     await expect(
       resolveDelegatedAccessToken({
@@ -326,7 +368,7 @@ describe("resolveDelegatedAccessToken", () => {
   });
 
   it("does not reuse delegated tokens with invalid Date-range expiry", async () => {
-    writeDelegatedTokens(Number.MAX_VALUE);
+    storeDelegatedTokens(Number.MAX_VALUE);
     oauthTokenMocks.refreshMSTeamsDelegatedTokens.mockRejectedValueOnce(new Error("expired"));
 
     await expect(

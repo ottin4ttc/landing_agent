@@ -20,6 +20,7 @@ import { classifyEmbeddedAgentRunResultForModelFallback } from "./embedded-agent
 import type { EmbeddedAgentRunResult } from "./embedded-agent-runner/types.js";
 import { FailoverError } from "./failover-error.js";
 import { MissingAgentHarnessError } from "./harness/errors.js";
+import { clearAgentHarnesses } from "./harness/registry.js";
 import { LiveSessionModelSwitchError } from "./live-model-switch-error.js";
 import {
   FallbackSummaryError,
@@ -29,10 +30,6 @@ import {
 } from "./model-fallback.js";
 import { SessionWriteLockTimeoutError } from "./session-write-lock-error.js";
 import { makeModelFallbackCfg } from "./test-helpers/model-fallback-config-fixture.js";
-
-vi.mock("../infra/file-lock.js", () => ({
-  withFileLock: async <T>(_filePath: string, _options: unknown, run: () => Promise<T>) => run(),
-}));
 
 vi.mock("../plugins/provider-runtime.js", () => ({
   buildProviderMissingAuthMessageWithPlugin: () => undefined,
@@ -180,6 +177,7 @@ afterAll(() => {
 });
 
 function resetModelFallbackTestState(): void {
+  clearAgentHarnesses();
   authRuntimeMock.clear();
   authRuntimeMock.runtime.ensureAuthProfileStore.mockClear();
   authRuntimeMock.runtime.loadAuthProfileStoreForRuntime.mockClear();

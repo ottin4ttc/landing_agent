@@ -14,15 +14,6 @@ import { resolveHomeDir } from "../utils.js";
 import { noteIncludeConfinementWarning } from "./doctor-config-analysis.js";
 import { findDoctorLegacyConfigIssues } from "./doctor/shared/legacy-config-issues.js";
 
-type DoctorStateMigrationsModule = typeof import("./doctor-state-migrations.js");
-
-let doctorStateMigrationsPromise: Promise<DoctorStateMigrationsModule> | null = null;
-
-function loadDoctorStateMigrations(): Promise<DoctorStateMigrationsModule> {
-  doctorStateMigrationsPromise ??= import("./doctor-state-migrations.js");
-  return doctorStateMigrationsPromise;
-}
-
 async function maybeMigrateLegacyConfig(): Promise<string[]> {
   const changes: string[] = [];
   const home = resolveHomeDir();
@@ -112,14 +103,18 @@ export async function runDoctorConfigPreflight(
     migrateState?: boolean;
     migrateLegacyConfig?: boolean;
     repairPrefixedConfig?: boolean;
-    recoverCorruptTargetStore?: boolean;
     invalidConfigNote?: string | false;
   } = {},
 ): Promise<DoctorConfigPreflightResult> {
   if (options.migrateState !== false) {
-    const { autoMigrateLegacyStateDir } = await loadDoctorStateMigrations();
+    const { autoMigrateLegacyStateDir } = await import("./doctor/state-migrations.js");
     const stateDirResult = await autoMigrateLegacyStateDir({ env: process.env });
     noteStateMigrationResult(stateDirResult);
+    // State-dir migration warnings indicate an unresolved legacy layout; fail the
+    // doctor run so callers/CI surface the non-zero exit instead of silently passing.
+    if (stateDirResult.warnings.length > 0) {
+      process.exitCode = 1;
+    }
   }
 
   if (options.migrateLegacyConfig !== false) {
@@ -165,18 +160,6 @@ export async function runDoctorConfigPreflight(
   }
 
   const baseConfig = snapshot.sourceConfig ?? snapshot.config ?? {};
-  if (options.migrateState !== false) {
-    const { autoMigrateLegacyState, autoMigrateLegacyTaskStateSidecars } =
-      await loadDoctorStateMigrations();
-    const stateResult = snapshot.valid
-      ? await autoMigrateLegacyState({
-          cfg: baseConfig,
-          env: process.env,
-          recoverCorruptTargetStore: options.recoverCorruptTargetStore,
-        })
-      : await autoMigrateLegacyTaskStateSidecars({ env: process.env });
-    noteStateMigrationResult(stateResult);
-  }
 
   return {
     snapshot,

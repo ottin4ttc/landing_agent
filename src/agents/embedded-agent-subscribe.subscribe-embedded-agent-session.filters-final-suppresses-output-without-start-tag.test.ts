@@ -1,4 +1,3 @@
-import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import {
   createStubSessionHarness,
@@ -8,6 +7,7 @@ import {
   extractAgentEventPayloads,
 } from "./embedded-agent-subscribe.e2e-harness.js";
 import { subscribeEmbeddedAgentSession } from "./embedded-agent-subscribe.js";
+import type { AssistantMessage } from "./pi-ai-contract.js";
 
 type ReplyMock = ReturnType<typeof vi.fn>;
 type ReplyPayload = { text?: string };

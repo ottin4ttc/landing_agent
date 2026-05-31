@@ -1,61 +1,68 @@
 import type { MemorySourceFileStateRow } from "./manager-source-state.js";
 
-export type MemorySessionStartupFileState = {
-  absPath: string;
-  path: string;
-  mtimeMs: number;
+export type MemorySessionSyncScope = {
+  agentId: string;
+  sessionId: string;
+};
+
+export type MemorySessionStartupTranscriptState = {
+  scopeKey: string;
+  sourceKey: string;
+  updatedAt: number;
   size: number;
 };
 
-export function resolveMemorySessionStartupDirtyFiles(params: {
-  files: MemorySessionStartupFileState[];
+export function resolveMemorySessionStartupDirtyTranscripts(params: {
+  transcripts: MemorySessionStartupTranscriptState[];
   existingRows?: MemorySourceFileStateRow[] | null;
 }): string[] {
-  const indexedRows = new Map((params.existingRows ?? []).map((row) => [row.path, row]));
-  const dirtyFiles: string[] = [];
-  for (const file of params.files) {
-    const existing = indexedRows.get(file.path);
+  const indexedRows = new Map((params.existingRows ?? []).map((row) => [row.sourceKey, row]));
+  const dirtyTranscripts: string[] = [];
+  for (const transcript of params.transcripts) {
+    const existing = indexedRows.get(transcript.sourceKey);
     if (!existing) {
-      dirtyFiles.push(file.absPath);
+      dirtyTranscripts.push(transcript.scopeKey);
       continue;
     }
     const indexedMtimeMs = Number(existing.mtime);
     const indexedSize = Number(existing.size);
     if (!Number.isFinite(indexedMtimeMs) || !Number.isFinite(indexedSize)) {
-      dirtyFiles.push(file.absPath);
+      dirtyTranscripts.push(transcript.scopeKey);
       continue;
     }
-    if (file.size !== indexedSize || file.mtimeMs > indexedMtimeMs) {
-      dirtyFiles.push(file.absPath);
+    if (transcript.size !== indexedSize || transcript.updatedAt > indexedMtimeMs) {
+      dirtyTranscripts.push(transcript.scopeKey);
     }
   }
-  return dirtyFiles;
+  return dirtyTranscripts;
 }
 
 export function resolveMemorySessionSyncPlan(params: {
   needsFullReindex: boolean;
-  files: string[];
-  targetSessionFiles: Set<string> | null;
-  sessionsDirtyFiles: Set<string>;
+  transcripts: MemorySessionSyncScope[];
+  targetSessionTranscriptKeys: Set<string> | null;
+  dirtySessionTranscripts: Set<string>;
   existingRows?: MemorySourceFileStateRow[] | null;
-  sessionPathForFile: (file: string) => string;
+  sessionTranscriptSourceKeyForScope: (scope: MemorySessionSyncScope) => string;
 }): {
-  activePaths: Set<string> | null;
+  activeSourceKeys: Set<string> | null;
   existingRows: MemorySourceFileStateRow[] | null;
   existingHashes: Map<string, string> | null;
   indexAll: boolean;
 } {
-  const activePaths = params.targetSessionFiles
+  const activeSourceKeys = params.targetSessionTranscriptKeys
     ? null
-    : new Set(params.files.map((file) => params.sessionPathForFile(file)));
-  const existingRows = activePaths === null ? null : (params.existingRows ?? []);
+    : new Set(params.transcripts.map((scope) => params.sessionTranscriptSourceKeyForScope(scope)));
+  const existingRows = activeSourceKeys === null ? null : (params.existingRows ?? []);
   return {
-    activePaths,
+    activeSourceKeys,
     existingRows,
-    existingHashes: existingRows ? new Map(existingRows.map((row) => [row.path, row.hash])) : null,
+    existingHashes: existingRows
+      ? new Map(existingRows.map((row) => [row.sourceKey, row.hash]))
+      : null,
     indexAll:
       params.needsFullReindex ||
-      Boolean(params.targetSessionFiles) ||
-      params.sessionsDirtyFiles.size === 0,
+      Boolean(params.targetSessionTranscriptKeys) ||
+      params.dirtySessionTranscripts.size === 0,
   };
 }

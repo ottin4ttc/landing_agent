@@ -1,10 +1,13 @@
-import type { ProviderStreamOptions } from "openclaw/plugin-sdk/llm";
 import {
   describeImageWithModelPayloadTransform,
   describeImagesWithModelPayloadTransform,
   type MediaUnderstandingProvider,
 } from "openclaw/plugin-sdk/media-understanding";
-import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import type { ProviderStreamOptions } from "openclaw/plugin-sdk/provider-ai";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 export function stripOpencodeDisabledResponsesReasoningPayload(payload: unknown): void {
   if (!isRecord(payload)) {

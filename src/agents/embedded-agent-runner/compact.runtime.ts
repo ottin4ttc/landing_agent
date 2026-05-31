@@ -13,3 +13,5 @@ export async function compactEmbeddedAgentSessionDirect(
   const { compactEmbeddedAgentSessionDirect } = await loadCompactRuntime();
   return compactEmbeddedAgentSessionDirect(...args);
 }
+
+export const compactEmbeddedPiSessionDirect = compactEmbeddedAgentSessionDirect;

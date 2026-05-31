@@ -38,3 +38,24 @@ export function resolveMatrixSqliteStateEnv(
     OPENCLAW_STATE_DIR: stateDir,
   };
 }
+
+export function withMatrixSqliteStateEnv<T>(
+  options: MatrixSqliteStateOptions | undefined,
+  action: () => T,
+): T {
+  const stateDir = resolveStateDirOverride(options);
+  if (!stateDir) {
+    return action();
+  }
+  const previous = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  try {
+    return action();
+  } finally {
+    if (previous == null) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previous;
+    }
+  }
+}

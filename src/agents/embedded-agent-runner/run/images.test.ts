@@ -4,6 +4,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { resolvePreferredOpenClawTmpDir } from "../../../infra/tmp-openclaw-dir.js";
+import { saveMediaBuffer } from "../../../media/store.js";
+import { closeOpenClawStateDatabaseForTest } from "../../../state/openclaw-state-db.js";
 import { createHostSandboxFsBridge } from "../../test-helpers/host-sandbox-fs-bridge.js";
 import { createUnsafeMountedSandbox } from "../../test-helpers/unsafe-mounted-sandbox.js";
 import {
@@ -405,19 +407,22 @@ describe("loadImageFromRef", () => {
   it("hydrates managed inbound media URIs before workspace path resolution", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-native-image-uri-"));
     const workspaceDir = path.join(stateDir, "workspace-agent");
-    const inboundDir = path.join(stateDir, "media", "inbound");
-    const mediaId = "telegram-photo.png";
     await fs.mkdir(workspaceDir, { recursive: true });
-    await fs.mkdir(inboundDir, { recursive: true });
-    await fs.writeFile(path.join(inboundDir, mediaId), Buffer.from(TINY_PNG_BASE64, "base64"));
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const saved = await saveMediaBuffer(
+      Buffer.from(TINY_PNG_BASE64, "base64"),
+      "image/png",
+      "inbound",
+      undefined,
+      "telegram-photo.png",
+    );
 
     try {
       const image = await loadImageFromRef(
         {
-          raw: `media://inbound/${mediaId}`,
+          raw: `media://inbound/${saved.id}`,
           type: "media-uri",
-          resolved: `media://inbound/${mediaId}`,
+          resolved: `media://inbound/${saved.id}`,
         },
         workspaceDir,
         { workspaceOnly: true },
@@ -427,6 +432,7 @@ describe("loadImageFromRef", () => {
       expect(image?.mimeType).toBe("image/png");
       expect(image?.data).toBe(TINY_PNG_BASE64);
     } finally {
+      closeOpenClawStateDatabaseForTest();
       vi.unstubAllEnvs();
       await fs.rm(stateDir, { recursive: true, force: true });
     }
@@ -650,17 +656,21 @@ describe("detectAndLoadPromptImages", () => {
   it("loads managed inbound absolute paths when workspaceOnly is enabled", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-native-image-managed-"));
     const workspaceDir = path.join(stateDir, "workspace-agent");
-    const inboundDir = path.join(stateDir, "media", "inbound");
     await fs.mkdir(workspaceDir, { recursive: true });
-    await fs.mkdir(inboundDir, { recursive: true });
-    const imagePath = path.join(inboundDir, "signal-replay.png");
-    const pngB64 = TINY_PNG_BASE64;
-    await fs.writeFile(imagePath, Buffer.from(pngB64, "base64"));
+    const pngB64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const saved = await saveMediaBuffer(
+      Buffer.from(pngB64, "base64"),
+      "image/png",
+      "inbound",
+      undefined,
+      "signal-replay.png",
+    );
 
     try {
       const result = await detectAndLoadPromptImages({
-        prompt: `Inspect ${imagePath}`,
+        prompt: `Inspect ${saved.path}`,
         workspaceDir,
         model: { input: ["text", "image"] },
         workspaceOnly: true,
@@ -671,6 +681,7 @@ describe("detectAndLoadPromptImages", () => {
       expect(result.skippedCount).toBe(0);
       expect(result.images).toHaveLength(1);
     } finally {
+      closeOpenClawStateDatabaseForTest();
       vi.unstubAllEnvs();
       await fs.rm(stateDir, { recursive: true, force: true });
     }

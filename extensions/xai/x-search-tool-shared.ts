@@ -11,7 +11,7 @@ export function buildMissingXSearchApiKeyPayload() {
 }
 
 export function createXSearchToolDefinition(
-  execute: (toolCallId: string, args: Record<string, unknown>) => Promise<AgentToolResult<unknown>>,
+  execute: (toolCallId: string, args: Record<string, unknown>) => Promise<AgentToolResult>,
 ) {
   return {
     label: "X Search",

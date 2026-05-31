@@ -199,6 +199,9 @@ describe("memory search config", () => {
     expect(resolved?.provider).toBe("openai");
     expect(resolved?.model).toBe("text-embedding-3-small");
     expect(resolved?.fallback).toBe("none");
+    expect(resolved?.store.databasePath).toMatch(
+      /agents[/\\]main[/\\]agent[/\\]openclaw-agent\.sqlite$/,
+    );
   });
 
   it("normalizes legacy auto provider config to openai", () => {

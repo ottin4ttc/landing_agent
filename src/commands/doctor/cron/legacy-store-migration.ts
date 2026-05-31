@@ -2,14 +2,26 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { tryCronScheduleIdentity } from "../../../cron/schedule-identity.js";
 import type {
-  CronConfigJobRuntimeEntry,
-  LoadedCronStore,
+  CronRuntimeStateEntry,
   QuarantinedCronConfigJob,
 } from "../../../cron/store.js";
-import type { CronStoreFile } from "../../../cron/types.js";
+import type { CronStoreSnapshot } from "../../../cron/types.js";
 import { isRecord } from "../../../../packages/normalization-core/src/record-coerce.js";
 import { normalizeOptionalString } from "../../../../packages/normalization-core/src/string-coerce.js";
 import { parseJsonWithJson5Fallback } from "../../../utils/parse-json-compat.js";
+
+/**
+ * Parsed legacy JSON cron store plus the runtime-state and quarantine
+ * companions extracted from the same source. The migration consumer in
+ * `index.ts` merges `store.jobs` into the SQLite-backed store.
+ */
+type LoadedCronStore = {
+  store: CronStoreSnapshot;
+  configJobs: Array<Record<string, unknown>>;
+  configJobIndexes: number[];
+  configJobRuntimeEntries: CronRuntimeStateEntry[];
+  invalidConfigRows: QuarantinedCronConfigJob[];
+};
 
 const LEGACY_CRON_ARCHIVE_SUFFIX = ".migrated";
 
@@ -40,7 +52,7 @@ async function archiveLegacyCronFile(filePath: string): Promise<void> {
 
 function parseCronStateFile(raw: string): {
   version: 1;
-  jobs: Record<string, CronConfigJobRuntimeEntry>;
+  jobs: Record<string, CronRuntimeStateEntry>;
 } | null {
   try {
     const parsed = parseJsonWithJson5Fallback(raw);
@@ -58,7 +70,7 @@ function parseCronStateFile(raw: string): {
     }
     return {
       version: 1,
-      jobs: record.jobs as Record<string, CronConfigJobRuntimeEntry>,
+      jobs: record.jobs as Record<string, CronRuntimeStateEntry>,
     };
   } catch {
     return null;
@@ -79,7 +91,7 @@ function cloneConfigJobs(jobs: Array<Record<string, unknown>>): Array<Record<str
 
 async function loadStateFile(
   statePath: string,
-): Promise<{ version: 1; jobs: Record<string, CronConfigJobRuntimeEntry> } | null> {
+): Promise<{ version: 1; jobs: Record<string, CronRuntimeStateEntry> } | null> {
   let raw: string;
   try {
     raw = await fs.readFile(statePath, "utf-8");
@@ -101,20 +113,20 @@ function hasInlineState(jobs: Array<Record<string, unknown> | null | undefined>)
   );
 }
 
-function ensureJobStateObject(job: CronStoreFile["jobs"][number]): void {
+function ensureJobStateObject(job: CronStoreSnapshot["jobs"][number]): void {
   if (!isRecord(job.state)) {
     job.state = {} as never;
   }
 }
 
-function backfillMissingRuntimeFields(job: CronStoreFile["jobs"][number]): void {
+function backfillMissingRuntimeFields(job: CronStoreSnapshot["jobs"][number]): void {
   ensureJobStateObject(job);
   if (typeof job.updatedAtMs !== "number") {
     job.updatedAtMs = typeof job.createdAtMs === "number" ? job.createdAtMs : Date.now();
   }
 }
 
-function resolveUpdatedAtMs(job: CronStoreFile["jobs"][number], updatedAtMs: unknown): number {
+function resolveUpdatedAtMs(job: CronStoreSnapshot["jobs"][number], updatedAtMs: unknown): number {
   if (typeof updatedAtMs === "number" && Number.isFinite(updatedAtMs)) {
     return updatedAtMs;
   }
@@ -126,7 +138,7 @@ function resolveUpdatedAtMs(job: CronStoreFile["jobs"][number], updatedAtMs: unk
     : Date.now();
 }
 
-function mergeStateFileEntry(job: CronStoreFile["jobs"][number], entry: unknown): void {
+function mergeStateFileEntry(job: CronStoreSnapshot["jobs"][number], entry: unknown): void {
   if (!isRecord(entry)) {
     backfillMissingRuntimeFields(job);
     return;
@@ -177,7 +189,7 @@ export async function loadLegacyCronStoreForMigration(storePath: string): Promis
     const rawJobs = getRawCronJobs(parsed);
     const configJobIndexes: number[] = [];
     const configRows: Array<Record<string, unknown>> = [];
-    const configJobRuntimeEntries: CronConfigJobRuntimeEntry[] = [];
+    const configJobRuntimeEntries: CronRuntimeStateEntry[] = [];
     const invalidConfigRows: QuarantinedCronConfigJob[] = [];
     for (const [index, row] of rawJobs.entries()) {
       if (isRecord(row)) {
@@ -191,9 +203,9 @@ export async function loadLegacyCronStoreForMigration(storePath: string): Promis
         });
       }
     }
-    const store: CronStoreFile = {
+    const store: CronStoreSnapshot = {
       version: 1,
-      jobs: configRows as never as CronStoreFile["jobs"],
+      jobs: configRows as never as CronStoreSnapshot["jobs"],
     };
     const jobs = store.jobs as unknown as Array<Record<string, unknown>>;
     const configJobs = cloneConfigJobs(configRows);

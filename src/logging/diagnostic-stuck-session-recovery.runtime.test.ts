@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { saveCronStore } from "../cron/store.js";
+import { appendSqliteSessionTranscriptEvent } from "../config/sessions/transcript-store.sqlite.js";
+import { resolveCronStoreKey, saveCronStore } from "../cron/store.js";
+import type { CronStoreSnapshot } from "../cron/types.js";
+import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 
 const mocks = vi.hoisted(() => ({
   abortEmbeddedAgentRun: vi.fn(),
@@ -12,9 +16,7 @@ const mocks = vi.hoisted(() => ({
   getCommandLaneSnapshot: vi.fn(),
   resetCommandLane: vi.fn(),
   resolveActiveEmbeddedRunSessionId: vi.fn(),
-  resolveActiveEmbeddedRunSessionIdBySessionFile: vi.fn(),
   resolveActiveEmbeddedRunHandleSessionId: vi.fn(),
-  resolveActiveEmbeddedRunHandleSessionIdBySessionFile: vi.fn(),
   resolveEmbeddedSessionLane: vi.fn((key: string) => `session:${key}`),
   waitForEmbeddedAgentRunEnd: vi.fn(),
   getDiagnosticSessionActivitySnapshot: vi.fn(),
@@ -47,11 +49,7 @@ vi.mock("../agents/embedded-agent-runner/runs.js", () => ({
   isEmbeddedAgentRunActive: mocks.isEmbeddedAgentRunActive,
   isEmbeddedAgentRunHandleActive: mocks.isEmbeddedAgentRunHandleActive,
   resolveActiveEmbeddedRunSessionId: mocks.resolveActiveEmbeddedRunSessionId,
-  resolveActiveEmbeddedRunSessionIdBySessionFile:
-    mocks.resolveActiveEmbeddedRunSessionIdBySessionFile,
   resolveActiveEmbeddedRunHandleSessionId: mocks.resolveActiveEmbeddedRunHandleSessionId,
-  resolveActiveEmbeddedRunHandleSessionIdBySessionFile:
-    mocks.resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
   waitForEmbeddedAgentRunEnd: mocks.waitForEmbeddedAgentRunEnd,
 }));
 
@@ -94,9 +92,7 @@ function resetMocks() {
   });
   mocks.resetCommandLane.mockReset();
   mocks.resolveActiveEmbeddedRunSessionId.mockReset();
-  mocks.resolveActiveEmbeddedRunSessionIdBySessionFile.mockReset();
   mocks.resolveActiveEmbeddedRunHandleSessionId.mockReset();
-  mocks.resolveActiveEmbeddedRunHandleSessionIdBySessionFile.mockReset();
   mocks.resolveEmbeddedSessionLane.mockClear();
   mocks.waitForEmbeddedAgentRunEnd.mockReset();
   mocks.getDiagnosticSessionActivitySnapshot.mockReset();
@@ -110,6 +106,28 @@ function warnLogMessages(): string[] {
     expect(typeof message).toBe("string");
     return message as string;
   });
+}
+
+async function writeCronJob(_stateDir: string, id: string, name: string) {
+  const now = Date.now();
+  const store: CronStoreSnapshot = {
+    version: 1,
+    jobs: [
+      {
+        id,
+        name,
+        enabled: true,
+        createdAtMs: now,
+        updatedAtMs: now,
+        schedule: { kind: "every", everyMs: 60_000 },
+        sessionTarget: "main",
+        wakeMode: "next-heartbeat",
+        payload: { kind: "systemEvent", text: "run" },
+        state: {},
+      },
+    ],
+  };
+  await saveCronStore(resolveCronStoreKey(), store);
 }
 
 describe("stuck session recovery", () => {
@@ -135,28 +153,6 @@ describe("stuck session recovery", () => {
       "stuck session recovery skipped: sessionId=session-1 sessionKey=agent:main:main age=180s queueDepth=1 activeSessionId=session-1",
       "stuck session recovery outcome: status=skipped action=observe_only sessionId=session-1 sessionKey=agent:main:main activeSessionId=session-1 activeWorkKind=embedded_run reason=active_embedded_run",
     ]);
-  });
-
-  it("does not release a sibling-key lane while the same session file has an active run", async () => {
-    mocks.resolveActiveEmbeddedRunHandleSessionId.mockReturnValue(undefined);
-    mocks.resolveActiveEmbeddedRunHandleSessionIdBySessionFile.mockReturnValue("session-file-run");
-
-    const outcome = await recoverStuckDiagnosticSession({
-      sessionId: "sibling-session",
-      sessionKey: "agent:main:fallback",
-      sessionFile: "/tmp/openclaw-shared-session.jsonl",
-      ageMs: 180_000,
-      queueDepth: 1,
-    });
-
-    expect(outcome).toMatchObject({
-      status: "skipped",
-      action: "observe_only",
-      reason: "active_embedded_run",
-      activeSessionId: "session-file-run",
-    });
-    expect(mocks.abortEmbeddedAgentRun).not.toHaveBeenCalled();
-    expect(mocks.resetCommandLane).not.toHaveBeenCalled();
   });
 
   it("reclaims a stale active embedded run with queued work and no forward progress (#85639)", async () => {
@@ -231,32 +227,16 @@ describe("stuck session recovery", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-recovery-context-"));
     try {
       process.env.OPENCLAW_STATE_DIR = tempDir;
-      await saveCronStore(path.join(tempDir, "cron", "jobs.json"), {
-        version: 1,
-        jobs: [
-          {
-            id: "job-123",
-            name: "Twitter Mention Moderation Agent",
-            enabled: true,
-            createdAtMs: 1_700_000_000_000,
-            updatedAtMs: 1_700_000_000_000,
-            schedule: { kind: "every", everyMs: 60_000 },
-            sessionTarget: "main",
-            wakeMode: "next-heartbeat",
-            payload: { kind: "systemEvent", text: "tick" },
-            state: {},
-          },
-        ],
-      });
-      fs.mkdirSync(path.join(tempDir, "agents", "clawblocker", "sessions"), {
-        recursive: true,
-      });
-      fs.writeFileSync(
-        path.join(tempDir, "agents", "clawblocker", "sessions", "run-456.jsonl"),
-        JSON.stringify({
+      await writeCronJob(tempDir, "job-123", "Twitter Mention Moderation Agent");
+      appendSqliteSessionTranscriptEvent({
+        agentId: "clawblocker",
+        sessionId: "run-456",
+        event: {
+          type: "message",
+          id: "message-1",
           message: { role: "assistant", content: "There are 40 cached mentions." },
-        }) + "\n",
-      );
+        },
+      });
       mocks.resolveActiveEmbeddedRunHandleSessionId.mockReturnValue("run-456");
       mocks.abortEmbeddedAgentRun.mockReturnValue(true);
       mocks.waitForEmbeddedAgentRunEnd.mockResolvedValue(true);
@@ -268,6 +248,8 @@ describe("stuck session recovery", () => {
         allowActiveAbort: true,
       });
     } finally {
+      closeOpenClawAgentDatabasesForTest();
+      closeOpenClawStateDatabaseForTest();
       if (previousStateDir === undefined) {
         delete process.env.OPENCLAW_STATE_DIR;
       } else {

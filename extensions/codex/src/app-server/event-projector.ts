@@ -7,6 +7,7 @@ import {
   formatToolProgressOutput,
   inferToolMetaFromArgs,
   normalizeUsage,
+  resolveSessionAgentIds,
   runAgentHarnessAfterCompactionHook,
   runAgentHarnessAfterToolCallHook,
   runAgentHarnessBeforeCompactionHook,
@@ -21,7 +22,7 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { generatedImageAssetFromBase64 } from "openclaw/plugin-sdk/image-generation";
-import type { AssistantMessage, Usage } from "openclaw/plugin-sdk/llm";
+import type { AssistantMessage, Usage } from "openclaw/plugin-sdk/provider-ai";
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import { asDateTimestampMs } from "openclaw/plugin-sdk/number-runtime";
 import { resolveCodexLocalRuntimeAttribution } from "./local-runtime-attribution.js";
@@ -538,7 +539,6 @@ export class CodexAppServerEventProjector {
     if (item?.type === "contextCompaction" && itemId) {
       this.activeCompactionItemIds.add(itemId);
       await runAgentHarnessBeforeCompactionHook({
-        sessionFile: this.params.sessionFile,
         messages: await this.readMirroredSessionMessages(),
         ctx: {
           runId: this.params.runId,
@@ -597,7 +597,6 @@ export class CodexAppServerEventProjector {
       this.activeCompactionItemIds.delete(itemId);
       this.completedCompactionCount += 1;
       await runAgentHarnessAfterCompactionHook({
-        sessionFile: this.params.sessionFile,
         messages: await this.readMirroredSessionMessages(),
         compactedCount: -1,
         ctx: {
@@ -831,20 +830,16 @@ export class CodexAppServerEventProjector {
     if (readString(item, "role") !== "assistant") {
       return;
     }
+    if (readString(item, "phase") === "commentary") {
+      return;
+    }
     const text = extractRawAssistantText(item);
     if (!text) {
       return;
     }
     const itemId = readString(item, "id") ?? `raw-assistant-${this.assistantItemOrder.length + 1}`;
-    const phase = readString(item, "phase");
-    if (phase) {
-      this.assistantPhaseByItem.set(itemId, phase);
-    }
     this.rememberAssistantItem(itemId);
     this.assistantTextByItem.set(itemId, text);
-    if (phase === "commentary") {
-      this.emitCommentaryProgress({ itemId, text });
-    }
   }
 
   private recordNativeGeneratedMedia(item: CodexThreadItem | undefined): void {
@@ -1539,7 +1534,18 @@ export class CodexAppServerEventProjector {
   }
 
   private async readMirroredSessionMessages(): Promise<AgentMessage[]> {
-    return (await readCodexMirroredSessionHistoryMessages(this.params.sessionFile)) ?? [];
+    const { sessionAgentId } = resolveSessionAgentIds({
+      agentId: this.params.agentId,
+      config: this.params.config,
+      sessionKey: this.params.sessionKey,
+    });
+    return (
+      (await readCodexMirroredSessionHistoryMessages({
+        agentId: sessionAgentId,
+        path: this.params.path,
+        sessionId: this.params.sessionId,
+      })) ?? []
+    );
   }
 
   private createAssistantMessage(text: string): AssistantMessage {

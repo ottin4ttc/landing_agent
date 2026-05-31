@@ -1,9 +1,8 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { expect, test, vi } from "vitest";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
+import { getSessionEntry } from "../config/sessions.js";
 import { enqueueSystemEvent, peekSystemEvents } from "../infra/system-events.js";
-import { embeddedRunMock, testState, writeSessionStore } from "./test-helpers.js";
+import { embeddedRunMock, seedGatewaySessionEntries } from "./test-helpers.js";
 import {
   setupGatewaySessionsTestHarness,
   bootstrapCacheMocks,
@@ -14,13 +13,13 @@ import {
   acpManagerMocks,
   browserSessionTabMocks,
   bundleMcpRuntimeMocks,
-  writeSingleLineSession,
+  seedSqliteSessionTranscript,
   sessionStoreEntry,
   expectActiveRunCleanup,
   directSessionReq,
 } from "./test/server-sessions.test-helpers.js";
 
-const { createSessionStoreDir, seedActiveMainSession } = setupGatewaySessionsTestHarness();
+const { seedActiveMainSession } = setupGatewaySessionsTestHarness();
 
 function expectResetAcpState(
   acp:
@@ -155,8 +154,7 @@ test("sessions.reset skips browser cleanup when the browser plugin entry is disa
 });
 
 test("sessions.reset closes ACP runtime handles for ACP sessions", async () => {
-  const { dir, storePath } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
+  await seedSqliteSessionTranscript("sess-main", "hello");
   const prepareFreshSession = vi.fn(async () => {});
   acpRuntimeMocks.getAcpRuntimeBackend.mockReturnValue({
     id: "acpx",
@@ -165,7 +163,7 @@ test("sessions.reset closes ACP runtime handles for ACP sessions", async () => {
     },
   });
 
-  await writeSessionStore({
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main", {
         acp: {
@@ -219,7 +217,7 @@ test("sessions.reset closes ACP runtime handles for ACP sessions", async () => {
   expect(reset.ok).toBe(true);
   expectResetAcpState(reset.payload?.entry.acp);
   expect(acpManagerMocks.closeSession).toHaveBeenCalledTimes(1);
-  const closeSessionCall = acpManagerMocks.closeSession.mock.calls.at(0) as unknown as
+  const closeSessionCall = acpManagerMocks.closeSession.mock.calls[0] as unknown as
     | [
         {
           allowBackendUnavailable?: boolean;
@@ -242,9 +240,7 @@ test("sessions.reset closes ACP runtime handles for ACP sessions", async () => {
       }
     | undefined;
   expect(closeSessionParams?.allowBackendUnavailable).toBe(true);
-  if (!closeSessionParams?.cfg) {
-    throw new Error("expected closeSession config");
-  }
+  expect(closeSessionParams?.cfg).toBeTruthy();
   expect(closeSessionParams?.discardPersistentState).toBe(true);
   expect(closeSessionParams?.requireAcpSession).toBe(false);
   expect(closeSessionParams?.reason).toBe("session-reset");
@@ -252,34 +248,11 @@ test("sessions.reset closes ACP runtime handles for ACP sessions", async () => {
   expect(prepareFreshSession).toHaveBeenCalledWith({
     sessionKey: "agent:main:main",
   });
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    {
-      acp?: {
-        backend?: string;
-        agent?: string;
-        runtimeSessionName?: string;
-        identity?: {
-          state?: string;
-          acpxRecordId?: string;
-          acpxSessionId?: string;
-        };
-        mode?: string;
-        runtimeOptions?: {
-          runtimeMode?: string;
-          timeoutSeconds?: number;
-        };
-        cwd?: string;
-        state?: string;
-      };
-    }
-  >;
-  expectResetAcpState(store["agent:main:main"]?.acp);
+  expectResetAcpState(getSessionEntry({ agentId: "main", sessionKey: "agent:main:main" })?.acp);
 });
 
 test("sessions.reset closes child ACP runtime handles spawned from the parent", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
+  await seedSqliteSessionTranscript("sess-main", "hello");
   const prepareFreshSession = vi.fn(async () => {});
   acpRuntimeMocks.getAcpRuntimeBackend.mockReturnValue({
     id: "acpx",
@@ -288,7 +261,7 @@ test("sessions.reset closes child ACP runtime handles spawned from the parent", 
     },
   });
 
-  await writeSessionStore({
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main", {
         acp: {
@@ -362,22 +335,9 @@ test("sessions.reset closes child ACP runtime handles spawned from the parent", 
 });
 
 test("sessions.reset closes a spawned ACP child that lives in a different agent store", async () => {
-  const stateDir = process.env.OPENCLAW_STATE_DIR;
-  if (!stateDir) {
-    throw new Error("OPENCLAW_STATE_DIR is required for gateway session tests");
-  }
-  // Per-agent store layout: ACP children live under the target agent's own
-  // store file, which is different from the parent's store.
-  testState.sessionConfig = {
-    store: path.join(stateDir, "agents", "{agentId}", "sessions", "sessions.json"),
-  };
-  const mainStorePath = path.join(stateDir, "agents", "main", "sessions", "sessions.json");
-  const codexStorePath = path.join(stateDir, "agents", "codex", "sessions", "sessions.json");
-  await fs.mkdir(path.dirname(mainStorePath), { recursive: true });
-  await fs.mkdir(path.dirname(codexStorePath), { recursive: true });
-  await fs.writeFile(
-    mainStorePath,
-    JSON.stringify({
+  await seedGatewaySessionEntries({
+    agentId: "main",
+    entries: {
       main: {
         sessionId: "sess-main",
         updatedAt: Date.now(),
@@ -390,12 +350,11 @@ test("sessions.reset closes a spawned ACP child that lives in a different agent 
           lastActivityAt: Date.now(),
         },
       },
-    }),
-    "utf-8",
-  );
-  await fs.writeFile(
-    codexStorePath,
-    JSON.stringify({
+    },
+  });
+  await seedGatewaySessionEntries({
+    agentId: "codex",
+    entries: {
       "agent:codex:acp:cross-store-child": {
         sessionId: "sess-codex-child",
         updatedAt: Date.now(),
@@ -409,9 +368,8 @@ test("sessions.reset closes a spawned ACP child that lives in a different agent 
           lastActivityAt: Date.now(),
         },
       },
-    }),
-    "utf-8",
-  );
+    },
+  });
 
   const reset = await directSessionReq<{ ok: true }>("sessions.reset", { key: "main" });
   expect(reset.ok).toBe(true);
@@ -425,8 +383,7 @@ test("sessions.reset closes a spawned ACP child that lives in a different agent 
 });
 
 test("sessions.reset closes child ACP runtimes concurrently so stuck children do not serialize cleanup", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
+  await seedSqliteSessionTranscript("sess-main", "hello");
   acpRuntimeMocks.getAcpRuntimeBackend.mockReturnValue({
     id: "acpx",
     runtime: { prepareFreshSession: vi.fn(async () => {}) },
@@ -449,7 +406,7 @@ test("sessions.reset closes child ACP runtimes concurrently so stuck children do
     lastActivityAt: Date.now(),
   });
 
-  await writeSessionStore({
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main", { acp: childAcp("agent:main:main") }),
       // Mix the two real lineage fields: ACP spawns record `spawnedBy`,
@@ -504,9 +461,8 @@ test("sessions.reset closes child ACP runtimes concurrently so stuck children do
 });
 
 test("sessions.reset does not emit lifecycle events when key does not exist", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
-  await writeSessionStore({
+  await seedSqliteSessionTranscript("sess-main", "hello");
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main"),
     },
@@ -526,9 +482,8 @@ test("sessions.reset does not emit lifecycle events when key does not exist", as
 });
 
 test("sessions.reset emits subagent targetKind for subagent sessions", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-subagent", "hello");
-  await writeSessionStore({
+  await seedSqliteSessionTranscript("sess-subagent", "hello");
+  await seedGatewaySessionEntries({
     entries: {
       "agent:main:subagent:worker": sessionStoreEntry("sess-subagent"),
     },
@@ -560,9 +515,8 @@ test("sessions.reset emits subagent targetKind for subagent sessions", async () 
 });
 
 test("sessions.reset directly unbinds thread bindings when hooks are unavailable", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
-  await writeSessionStore({
+  await seedSqliteSessionTranscript("sess-main", "hello");
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main"),
     },

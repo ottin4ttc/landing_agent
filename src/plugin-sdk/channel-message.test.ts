@@ -1,6 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { defineChannelMessageAdapter as defineCoreChannelMessageAdapter } from "../channels/message/index.js";
-import { defineChannelMessageAdapter } from "./channel-outbound.js";
+import { defineChannelMessageAdapter } from "./channel-message.js";
 
 describe("defineChannelMessageAdapter", () => {
   const loadPluginSdkSubpaths = async () =>
@@ -37,7 +36,9 @@ describe("defineChannelMessageAdapter", () => {
     expect(channelMessageRuntime.withDurableMessageSendContext).toBe(
       channelMessage.withDurableMessageSendContext,
     );
-    expect(channelOutbound.defineChannelMessageAdapter).toBe(defineCoreChannelMessageAdapter);
+    expect(channelOutbound.defineChannelMessageAdapter).toBe(
+      channelMessage.defineChannelMessageAdapter,
+    );
     expect(compat.createChannelReplyPipeline).toBe(channelReplyPipeline.createChannelReplyPipeline);
   });
 

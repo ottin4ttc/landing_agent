@@ -11,7 +11,7 @@ const mockState = vi.hoisted(() => ({
   runtimeConvertMarkdownTables: vi.fn((text: string) => text),
   requiresFileConsent: vi.fn(),
   prepareFileConsentActivity: vi.fn(),
-  prepareFileConsentActivityFs: vi.fn(),
+  prepareFileConsentActivityPersistent: vi.fn(),
   extractFilename: vi.fn(async () => "fallback.bin"),
   sendMSTeamsMessages: vi.fn(),
   sendMSTeamsActivityWithReference: vi.fn(async () => ({ id: "message-1" })),
@@ -49,7 +49,7 @@ vi.mock("./send-context.js", () => ({
 vi.mock("./file-consent-helpers.js", () => ({
   requiresFileConsent: mockState.requiresFileConsent,
   prepareFileConsentActivity: mockState.prepareFileConsentActivity,
-  prepareFileConsentActivityFs: mockState.prepareFileConsentActivityFs,
+  prepareFileConsentActivityPersistent: mockState.prepareFileConsentActivityPersistent,
 }));
 
 vi.mock("./media-helpers.js", () => ({
@@ -237,7 +237,7 @@ describe("sendMessageMSTeams", () => {
     mockState.runtimeConvertMarkdownTables.mockImplementation((text: string) => text);
     mockState.requiresFileConsent.mockReset();
     mockState.prepareFileConsentActivity.mockReset();
-    mockState.prepareFileConsentActivityFs.mockReset();
+    mockState.prepareFileConsentActivityPersistent.mockReset();
     mockState.extractFilename.mockReset();
     mockState.sendMSTeamsMessages.mockReset();
     mockState.sendMSTeamsActivityWithReference.mockReset();

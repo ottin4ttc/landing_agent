@@ -20,6 +20,7 @@ import { handleCodexAppServerApprovalRequest } from "./approval-bridge.js";
 import { refreshCodexAppServerAuthTokens } from "./auth-bridge.js";
 import { isCodexAppServerApprovalRequest, type CodexAppServerClient } from "./client.js";
 import {
+  codexSandboxPolicyForTurn,
   readCodexPluginConfig,
   resolveCodexAppServerRuntimeOptions,
   shouldAutoApproveCodexAppServerApprovals,
@@ -126,10 +127,13 @@ export async function runCodexAppServerSideQuestion(
     };
   } = {},
 ): Promise<AgentHarnessSideQuestionResult> {
-  const binding = await readCodexAppServerBinding(params.sessionFile, {
-    agentDir: params.agentDir,
-    config: params.cfg,
-  });
+  const binding = await readCodexAppServerBinding(
+    { sessionKey: params.sessionKey, sessionId: params.sessionId },
+    {
+      agentDir: params.agentDir,
+      config: params.cfg,
+    },
+  );
   if (!binding?.threadId) {
     throw new Error(
       "Codex /btw needs an active Codex thread. Send a normal message first, then try /btw again.",
@@ -360,6 +364,9 @@ export async function runCodexAppServerSideQuestion(
           threadId: childThreadId,
           input: [{ type: "text", text: params.question.trim(), text_elements: [] }],
           cwd,
+          approvalPolicy,
+          approvalsReviewer: appServer.approvalsReviewer,
+          sandboxPolicy: codexSandboxPolicyForTurn(sandbox, cwd),
           model: params.model,
           personality: CODEX_NATIVE_PERSONALITY_NONE,
           ...(serviceTier ? { serviceTier } : {}),
@@ -492,7 +499,6 @@ function buildSideRunAttemptParams(
     modelId: params.model,
     model: params.runtimeModel ?? ({ id: params.model, provider: params.provider } as never),
     sessionId: params.sessionId,
-    sessionFile: params.sessionFile,
     sessionKey: params.sessionKey,
     agentId: params.agentId,
     ...(params.messageChannel ? { messageChannel: params.messageChannel } : {}),

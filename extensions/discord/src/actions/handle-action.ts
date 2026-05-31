@@ -49,7 +49,7 @@ export async function handleDiscordMessageAction(
     | "sessionKey"
     | "inboundEventKind"
   >,
-): Promise<AgentToolResult<unknown>> {
+): Promise<AgentToolResult> {
   const { action, params, cfg } = ctx;
   const accountId = ctx.accountId ?? readStringParam(params, "accountId");
   const actionOptions = {

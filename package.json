@@ -169,6 +169,14 @@
       "types": "./dist/plugin-sdk/provider-setup.d.ts",
       "default": "./dist/plugin-sdk/provider-setup.js"
     },
+    "./plugin-sdk/provider-ai": {
+      "types": "./dist/plugin-sdk/provider-ai.d.ts",
+      "default": "./dist/plugin-sdk/provider-ai.js"
+    },
+    "./plugin-sdk/provider-ai-oauth": {
+      "types": "./dist/plugin-sdk/provider-ai-oauth.d.ts",
+      "default": "./dist/plugin-sdk/provider-ai-oauth.js"
+    },
     "./plugin-sdk/sandbox": {
       "types": "./dist/plugin-sdk/sandbox.d.ts",
       "default": "./dist/plugin-sdk/sandbox.js"
@@ -505,6 +513,18 @@
       "types": "./dist/plugin-sdk/text-chunking.d.ts",
       "default": "./dist/plugin-sdk/text-chunking.js"
     },
+    "./plugin-sdk/agent-core": {
+      "types": "./dist/plugin-sdk/agent-core.d.ts",
+      "default": "./dist/plugin-sdk/agent-core.js"
+    },
+    "./plugin-sdk/agent-sessions": {
+      "types": "./dist/plugin-sdk/agent-sessions.d.ts",
+      "default": "./dist/plugin-sdk/agent-sessions.js"
+    },
+    "./plugin-sdk/llm": {
+      "types": "./dist/plugin-sdk/llm.d.ts",
+      "default": "./dist/plugin-sdk/llm.js"
+    },
     "./plugin-sdk/agent-runtime": {
       "types": "./dist/plugin-sdk/agent-runtime.d.ts",
       "default": "./dist/plugin-sdk/agent-runtime.js"
@@ -652,6 +672,10 @@
     "./plugin-sdk/plugin-state-runtime": {
       "types": "./dist/plugin-sdk/plugin-state-runtime.d.ts",
       "default": "./dist/plugin-sdk/plugin-state-runtime.js"
+    },
+    "./plugin-sdk/sqlite-state-lock": {
+      "types": "./dist/plugin-sdk/sqlite-state-lock.d.ts",
+      "default": "./dist/plugin-sdk/sqlite-state-lock.js"
     },
     "./plugin-sdk/markdown-table-runtime": {
       "types": "./dist/plugin-sdk/markdown-table-runtime.d.ts",
@@ -877,13 +901,13 @@
       "types": "./dist/plugin-sdk/channel-message.d.ts",
       "default": "./dist/plugin-sdk/channel-message.js"
     },
-    "./plugin-sdk/channel-message-runtime": {
-      "types": "./dist/plugin-sdk/channel-message-runtime.d.ts",
-      "default": "./dist/plugin-sdk/channel-message-runtime.js"
-    },
     "./plugin-sdk/channel-outbound": {
       "types": "./dist/plugin-sdk/channel-outbound.d.ts",
       "default": "./dist/plugin-sdk/channel-outbound.js"
+    },
+    "./plugin-sdk/channel-message-runtime": {
+      "types": "./dist/plugin-sdk/channel-message-runtime.d.ts",
+      "default": "./dist/plugin-sdk/channel-message-runtime.js"
     },
     "./plugin-sdk/channel-pairing": {
       "types": "./dist/plugin-sdk/channel-pairing.d.ts",
@@ -944,6 +968,10 @@
     "./plugin-sdk/session-store-runtime": {
       "types": "./dist/plugin-sdk/session-store-runtime.d.ts",
       "default": "./dist/plugin-sdk/session-store-runtime.js"
+    },
+    "./plugin-sdk/sqlite-runtime": {
+      "types": "./dist/plugin-sdk/sqlite-runtime.d.ts",
+      "default": "./dist/plugin-sdk/sqlite-runtime.js"
     },
     "./plugin-sdk/session-transcript-hit": {
       "types": "./dist/plugin-sdk/session-transcript-hit.d.ts",
@@ -1096,6 +1124,10 @@
     "./plugin-sdk/memory-core-host-engine-qmd": {
       "types": "./dist/plugin-sdk/memory-core-host-engine-qmd.d.ts",
       "default": "./dist/plugin-sdk/memory-core-host-engine-qmd.js"
+    },
+    "./plugin-sdk/memory-core-host-engine-session-transcripts": {
+      "types": "./dist/plugin-sdk/memory-core-host-engine-session-transcripts.d.ts",
+      "default": "./dist/plugin-sdk/memory-core-host-engine-session-transcripts.js"
     },
     "./plugin-sdk/memory-core-host-engine-storage": {
       "types": "./dist/plugin-sdk/memory-core-host-engine-storage.d.ts",
@@ -1393,18 +1425,6 @@
       "types": "./dist/plugin-sdk/zod.d.ts",
       "default": "./dist/plugin-sdk/zod.js"
     },
-    "./plugin-sdk/agent-core": {
-      "types": "./dist/plugin-sdk/agent-core.d.ts",
-      "default": "./dist/plugin-sdk/agent-core.js"
-    },
-    "./plugin-sdk/agent-sessions": {
-      "types": "./dist/plugin-sdk/agent-sessions.d.ts",
-      "default": "./dist/plugin-sdk/agent-sessions.js"
-    },
-    "./plugin-sdk/llm": {
-      "types": "./dist/plugin-sdk/llm.d.ts",
-      "default": "./dist/plugin-sdk/llm.js"
-    },
     "./extension-api": "./dist/extensionAPI.js",
     "./cli-entry": "./openclaw.mjs"
   },
@@ -1437,6 +1457,7 @@
     "check:bundled-channel-config-metadata": "node --import tsx scripts/generate-bundled-channel-config-metadata.ts --check",
     "check:changed": "node scripts/check-changed.mjs",
     "check:changelog-attributions": "node scripts/check-changelog-attributions.mjs",
+    "check:database-first-legacy-stores": "node scripts/check-database-first-legacy-stores.mjs",
     "check:deprecated-api-usage": "node scripts/check-deprecated-api-usage.mjs",
     "check:deprecated-jsdoc": "node scripts/check-deprecated-jsdoc.mjs",
     "check:docs": "pnpm format:docs:check && pnpm lint:docs && pnpm docs:check-mdx && pnpm docs:check-i18n-glossary && pnpm docs:check-links",

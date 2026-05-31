@@ -1,10 +1,10 @@
-import type { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import type { Api, Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import { getCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
 import contextPruningExtension from "../agent-hooks/context-pruning.js";
+import type { SessionManager } from "../transcript/session-transcript-contract.js";
 import { buildEmbeddedExtensionFactories } from "./extensions.js";
 
 vi.mock("../../plugins/provider-runtime.js", () => ({

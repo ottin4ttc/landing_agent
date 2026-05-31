@@ -1,6 +1,6 @@
-import type { StreamFn } from "../../../agents/runtime/index.js";
+import type { StreamFn } from "../../../agents/agent-core-contract.js";
+import { streamSimple } from "../../../agents/pi-ai-contract.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
-import { streamSimple } from "../../stream.js";
 import { streamWithPayloadPatch } from "./stream-payload-utils.js";
 
 export {

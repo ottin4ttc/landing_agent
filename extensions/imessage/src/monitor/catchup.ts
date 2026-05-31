@@ -1,10 +1,5 @@
 import { createHash } from "node:crypto";
-import path from "node:path";
-import type { FileLockOptions } from "openclaw/plugin-sdk/file-lock";
-import { withFileLock } from "openclaw/plugin-sdk/file-lock";
-import { readJsonFileWithFallback, writeJsonFileAtomically } from "openclaw/plugin-sdk/json-store";
-import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
+import { createPluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 
 // iMessage inbound catchup. When the gateway is offline (crash, restart, mac
 // sleep, machine off), `imsg watch` resumes from current state and ignores
@@ -25,21 +20,16 @@ const MAX_PER_RUN_LIMIT = 500;
 const DEFAULT_FIRST_RUN_LOOKBACK_MINUTES = 30;
 const DEFAULT_MAX_FAILURE_RETRIES = 10;
 const MAX_MAX_FAILURE_RETRIES = 1_000;
+const CATCHUP_CURSOR_STORE_MAX = 256;
 // Defense-in-depth bound on the retry map. A storm of unique failing GUIDs
-// should not balloon the cursor file. When over the bound, keep only the
+// should not balloon the persisted cursor. When over the bound, keep only the
 // highest-count entries (closest to give-up) and drop the rest.
 const MAX_FAILURE_RETRY_MAP_SIZE = 5_000;
-const CATCHUP_CURSOR_LOCK_OPTIONS: FileLockOptions = {
-  retries: {
-    retries: 6,
-    factor: 1.35,
-    minTimeout: 8,
-    maxTimeout: 180,
-    randomize: true,
-  },
-  stale: 60_000,
-};
-const cursorWriteQueues = new Map<string, Promise<unknown>>();
+
+const CATCHUP_CURSOR_STORE = createPluginStateSyncKeyedStore<IMessageCatchupCursor>("imessage", {
+  namespace: "catchup-cursors",
+  maxEntries: CATCHUP_CURSOR_STORE_MAX,
+});
 
 export type IMessageCatchupConfig = {
   enabled?: boolean;
@@ -105,41 +95,10 @@ export type IMessageCatchupSummary = {
   windowEndMs: number;
 };
 
-function resolveStateDirFromEnv(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.OPENCLAW_STATE_DIR?.trim()) {
-    return resolveStateDir(env);
-  }
-  // Default test isolation: per-pid tmpdir. Mirrors the BB catchup pattern so
-  // the tmpdir-path-guard test that flags dynamic template-literal suffixes
-  // on os.tmpdir() paths stays green.
-  if (env.VITEST || env.NODE_ENV === "test") {
-    const name = "openclaw-vitest-" + process.pid;
-    return path.join(resolvePreferredOpenClawTmpDir(), name);
-  }
-  return resolveStateDir(env);
-}
-
-function resolveCursorFilePath(accountId: string): string {
-  // Layout matches inbound-dedupe / persisted-echo-cache so a replayed GUID
-  // is recognized by the existing dedupe after catchup re-feeds the message
-  // through the live dispatch path.
+export function iMessageCatchupCursorKey(accountId: string): string {
   const safePrefix = accountId.replace(/[^a-zA-Z0-9_-]/g, "_") || "account";
   const hash = createHash("sha256").update(accountId, "utf8").digest("hex").slice(0, 12);
-  return path.join(resolveStateDirFromEnv(), "imessage", "catchup", `${safePrefix}__${hash}.json`);
-}
-
-function enqueueCursorWrite<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
-  const prev = cursorWriteQueues.get(filePath) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  cursorWriteQueues.set(filePath, next);
-  next
-    .finally(() => {
-      if (cursorWriteQueues.get(filePath) === next) {
-        cursorWriteQueues.delete(filePath);
-      }
-    })
-    .catch(() => {});
-  return next;
+  return `${safePrefix}__${hash}`;
 }
 
 function sanitizeFailureRetriesInput(raw: unknown): Record<string, number> {
@@ -159,54 +118,37 @@ function sanitizeFailureRetriesInput(raw: unknown): Record<string, number> {
   return out;
 }
 
-/**
- * Cursor file path: `<openclawStateDir>/imessage/catchup/<safePrefix>__<sha256[:12]>.json`.
- * `openclawStateDir` resolves through `OPENCLAW_STATE_DIR` (or the plugin-sdk default,
- * `~/.openclaw`). On a default install the cursor lands at
- * `~/.openclaw/imessage/catchup/<safePrefix>__<sha256[:12]>.json`.
- */
-export async function loadIMessageCatchupCursor(
-  accountId: string,
-): Promise<IMessageCatchupCursor | null> {
-  const filePath = resolveCursorFilePath(accountId);
-  return await loadIMessageCatchupCursorFromPath(filePath);
-}
-
-async function loadIMessageCatchupCursorFromPath(
-  filePath: string,
-): Promise<IMessageCatchupCursor | null> {
-  const { value } = await readJsonFileWithFallback<IMessageCatchupCursor | null>(filePath, null);
+export function normalizeIMessageCatchupCursor(value: unknown): IMessageCatchupCursor | null {
   if (!value || typeof value !== "object") {
     return null;
   }
-  if (typeof value.lastSeenMs !== "number" || !Number.isFinite(value.lastSeenMs)) {
+  const cursor = value as Partial<IMessageCatchupCursor>;
+  if (typeof cursor.lastSeenMs !== "number" || !Number.isFinite(cursor.lastSeenMs)) {
     return null;
   }
-  if (typeof value.lastSeenRowid !== "number" || !Number.isFinite(value.lastSeenRowid)) {
+  if (typeof cursor.lastSeenRowid !== "number" || !Number.isFinite(cursor.lastSeenRowid)) {
     return null;
   }
-  const failureRetries = sanitizeFailureRetriesInput(value.failureRetries);
+  const failureRetries = sanitizeFailureRetriesInput(cursor.failureRetries);
   const hasRetries = Object.keys(failureRetries).length > 0;
   return {
-    lastSeenMs: value.lastSeenMs,
-    lastSeenRowid: value.lastSeenRowid,
-    updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : 0,
+    lastSeenMs: cursor.lastSeenMs,
+    lastSeenRowid: cursor.lastSeenRowid,
+    updatedAt: typeof cursor.updatedAt === "number" ? cursor.updatedAt : 0,
     ...(hasRetries ? { failureRetries } : {}),
   };
 }
 
-export async function saveIMessageCatchupCursor(
-  accountId: string,
-  next: { lastSeenMs: number; lastSeenRowid: number; failureRetries?: Record<string, number> },
-): Promise<void> {
-  const filePath = resolveCursorFilePath(accountId);
-  await saveIMessageCatchupCursorToPath(filePath, next);
+function loadIMessageCatchupCursorSync(accountId: string): IMessageCatchupCursor | null {
+  return normalizeIMessageCatchupCursor(
+    CATCHUP_CURSOR_STORE.lookup(iMessageCatchupCursorKey(accountId)),
+  );
 }
 
-async function saveIMessageCatchupCursorToPath(
-  filePath: string,
+function saveIMessageCatchupCursorSync(
+  accountId: string,
   next: { lastSeenMs: number; lastSeenRowid: number; failureRetries?: Record<string, number> },
-): Promise<void> {
+): void {
   const sanitized = sanitizeFailureRetriesInput(next.failureRetries);
   const hasRetries = Object.keys(sanitized).length > 0;
   const cursor: IMessageCatchupCursor = {
@@ -215,7 +157,20 @@ async function saveIMessageCatchupCursorToPath(
     updatedAt: Date.now(),
     ...(hasRetries ? { failureRetries: sanitized } : {}),
   };
-  await writeJsonFileAtomically(filePath, cursor);
+  CATCHUP_CURSOR_STORE.register(iMessageCatchupCursorKey(accountId), cursor);
+}
+
+export async function loadIMessageCatchupCursor(
+  accountId: string,
+): Promise<IMessageCatchupCursor | null> {
+  return loadIMessageCatchupCursorSync(accountId);
+}
+
+export async function saveIMessageCatchupCursor(
+  accountId: string,
+  next: { lastSeenMs: number; lastSeenRowid: number; failureRetries?: Record<string, number> },
+): Promise<void> {
+  saveIMessageCatchupCursorSync(accountId, next);
 }
 
 /**
@@ -329,29 +284,24 @@ export async function advanceIMessageCatchupCursor(
     return false;
   }
 
-  const filePath = resolveCursorFilePath(accountId);
-  return await enqueueCursorWrite(filePath, () =>
-    withFileLock(filePath, CATCHUP_CURSOR_LOCK_OPTIONS, async () => {
-      const cursor = await loadIMessageCatchupCursorFromPath(filePath);
-      if (cursor && next.lastSeenRowid <= cursor.lastSeenRowid) {
-        return false;
-      }
+  const cursor = loadIMessageCatchupCursorSync(accountId);
+  if (cursor && next.lastSeenRowid <= cursor.lastSeenRowid) {
+    return false;
+  }
 
-      const blockingFailure = Object.values(cursor?.failureRetries ?? {}).some(
-        (count) => count < config.maxFailureRetries,
-      );
-      if (blockingFailure) {
-        return false;
-      }
-
-      await saveIMessageCatchupCursorToPath(filePath, {
-        lastSeenMs: Math.max(cursor?.lastSeenMs ?? next.lastSeenMs, next.lastSeenMs),
-        lastSeenRowid: next.lastSeenRowid,
-        failureRetries: cursor?.failureRetries,
-      });
-      return true;
-    }),
+  const blockingFailure = Object.values(cursor?.failureRetries ?? {}).some(
+    (count) => count < config.maxFailureRetries,
   );
+  if (blockingFailure) {
+    return false;
+  }
+
+  saveIMessageCatchupCursorSync(accountId, {
+    lastSeenMs: Math.max(cursor?.lastSeenMs ?? next.lastSeenMs, next.lastSeenMs),
+    lastSeenRowid: next.lastSeenRowid,
+    failureRetries: cursor?.failureRetries,
+  });
+  return true;
 }
 
 /**

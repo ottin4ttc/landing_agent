@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
+import { createAssistantMessageEventStream } from "./pi-ai-contract.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { truncateErrorDetail } from "./provider-http-errors.js";
 

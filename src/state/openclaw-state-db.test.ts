@@ -204,6 +204,38 @@ describe("openclaw state database", () => {
     expect(fs.existsSync(databasePath)).toBe(true);
   });
 
+  it("adds columns needed by schema indexes before creating indexes", () => {
+    const stateDir = createTempStateDir();
+    const databasePath = path.join(stateDir, "state", "openclaw.sqlite");
+    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+    const { DatabaseSync } = requireNodeSqlite();
+    const db = new DatabaseSync(databasePath);
+    db.exec(`
+      CREATE TABLE agent_model_catalogs (
+        catalog_key TEXT NOT NULL PRIMARY KEY,
+        agent_dir TEXT NOT NULL,
+        raw_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    db.close();
+
+    const database = openOpenClawStateDatabase({
+      env: { OPENCLAW_STATE_DIR: stateDir },
+    });
+    const columns = database.db.prepare("PRAGMA table_info(agent_model_catalogs)").all() as Array<{
+      name?: unknown;
+    }>;
+    const indexes = database.db.prepare("PRAGMA index_list(agent_model_catalogs)").all() as Array<{
+      name?: unknown;
+    }>;
+
+    expect(columns.some((column) => column.name === "relative_path")).toBe(true);
+    expect(
+      indexes.some((index) => index.name === "idx_agent_model_catalogs_agent_relative_path"),
+    ).toBe(true);
+  });
+
   it("keeps cached handles open when another state path is opened", () => {
     const firstPath = path.join(
       createTempStateDir(),

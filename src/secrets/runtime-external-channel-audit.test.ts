@@ -17,6 +17,7 @@ const {
 
 vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
   loadPluginMetadataSnapshot: loadPluginMetadataSnapshotMock,
+  resolvePluginMetadataSnapshot: loadPluginMetadataSnapshotMock,
   listPluginOriginsFromMetadataSnapshot: (snapshot: {
     plugins: Array<{ id: string; origin: PluginOrigin }>;
   }) => new Map(snapshot.plugins.map((record) => [record.id, record.origin])),

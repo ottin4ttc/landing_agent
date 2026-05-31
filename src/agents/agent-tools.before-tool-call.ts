@@ -32,8 +32,6 @@ import {
   PluginApprovalResolutions,
   type PluginApprovalResolution,
   type PluginHookBeforeToolCallResult,
-  type PluginHookToolInputKind,
-  type PluginHookToolKind,
 } from "../plugins/types.js";
 import { createLazyRuntimeSurface } from "../shared/lazy-runtime.js";
 import {
@@ -45,13 +43,7 @@ import { resolveSkillWorkshopToolApproval } from "../skills/workshop/policy.js";
 import { isPlainObject } from "../utils.js";
 import { adjustedParamsByToolCallId } from "./agent-tools.before-tool-call.state.js";
 import { copyChannelAgentToolMeta, getChannelAgentToolMeta } from "./channel-tools.js";
-import {
-  getCodeModeExecBeforeHookMetadata,
-  getCodeModeExecBeforeHookMetadataForToolKind,
-  normalizeCodeModeExecBeforeHookParams,
-  normalizeCodeModeExecBeforeHookParamsForToolKind,
-  reconcileCodeModeExecBeforeHookParams,
-} from "./code-mode-control-tools.js";
+import type { AgentToolArtifactStore } from "./filesystem/agent-filesystem.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import { normalizeToolName } from "./tool-policy.js";
 import type { AnyAgentTool } from "./tools/common.js";
@@ -78,29 +70,25 @@ export function isAbortSignalCancellation(err: unknown, signal?: AbortSignal): b
 export type HookContext = {
   agentId?: string;
   config?: OpenClawConfig;
-  /** Tool execution cwd for host-derived path facts. */
-  cwd?: string;
-  /** Host workspace used to resolve relative tool params for diagnostics only. */
-  workspaceDir?: string;
   sessionKey?: string;
   /** Ephemeral session UUID — regenerated on /new and /reset. */
   sessionId?: string;
   runId?: string;
   trace?: DiagnosticTraceContext;
   channelId?: string;
+  cwd?: string;
+  workspaceDir?: string;
+  sandbox?: { root: string; bridge: SandboxFsBridge };
   loopDetection?: ToolLoopDetectionConfig;
   onToolOutcome?: ToolOutcomeObserver;
-  skillsSnapshot?: SkillSnapshot;
+  artifactStore?: AgentToolArtifactStore;
   skillCommand?: {
-    commandName: string;
+    commandName?: string;
     skillName: string;
     skillSource?: SkillTelemetrySource;
     toolName?: string;
   };
-  sandbox?: {
-    root: string;
-    bridge: SandboxFsBridge;
-  };
+  skillsSnapshot?: SkillSnapshot;
 };
 
 type HookBlockedKind = "veto" | "failure";
@@ -193,6 +181,7 @@ const BEFORE_TOOL_CALL_HOOK_FAILURE_REASON =
 const MAX_TRACKED_ADJUSTED_PARAMS = 1024;
 const LOOP_WARNING_BUCKET_SIZE = 10;
 const MAX_LOOP_WARNING_KEYS = 256;
+const MAX_TOOL_MEDIA_ARTIFACT_URLS = 64;
 
 /**
  * Error used when before_tool_call intentionally vetoes a tool call.
@@ -201,24 +190,6 @@ export class BeforeToolCallBlockedError extends Error {
   constructor(readonly reason: string) {
     super(reason);
     this.name = "BeforeToolCallBlockedError";
-  }
-}
-
-export function recordAdjustedParamsForToolCall(
-  toolCallId: string | undefined,
-  params: unknown,
-  runId?: string,
-): void {
-  if (!toolCallId) {
-    return;
-  }
-  const adjustedParamsKey = buildAdjustedParamsKey({ runId, toolCallId });
-  adjustedParamsByToolCallId.set(adjustedParamsKey, params);
-  if (adjustedParamsByToolCallId.size > MAX_TRACKED_ADJUSTED_PARAMS) {
-    const oldest = adjustedParamsByToolCallId.keys().next().value;
-    if (oldest) {
-      adjustedParamsByToolCallId.delete(oldest);
-    }
   }
 }
 
@@ -771,13 +742,101 @@ async function recordLoopOutcome(args: {
   if (recordedOutcome) {
     args.ctx.onToolOutcome?.(recordedOutcome);
   }
+  recordToolMediaArtifact({
+    ctx: args.ctx,
+    toolName: args.toolName,
+    toolCallId: args.toolCallId,
+    outcome: recordedOutcome,
+    result: args.result,
+  });
+}
+
+function recordToolMediaArtifact(params: {
+  ctx?: HookContext;
+  toolName: string;
+  toolCallId?: string;
+  outcome?: ToolOutcomeObservation;
+  result?: unknown;
+}): void {
+  const artifactStore = params.ctx?.artifactStore;
+  if (!artifactStore || params.result === undefined) {
+    return;
+  }
+  const mediaUrls = extractToolResultMediaUrls(params.result);
+  if (mediaUrls.length === 0) {
+    return;
+  }
+  const artifactId = normalizeToolArtifactId({
+    toolName: params.toolName,
+    toolCallId: params.toolCallId,
+    resultHash: params.outcome?.resultHash,
+  });
+  const metadata = {
+    traceSchema: "openclaw-tool-artifact",
+    schemaVersion: 1,
+    toolName: params.toolName,
+    ...(params.toolCallId ? { toolCallId: params.toolCallId } : {}),
+    ...(params.ctx?.sessionKey ? { sessionKey: params.ctx.sessionKey } : {}),
+    ...(params.ctx?.sessionId ? { sessionId: params.ctx.sessionId } : {}),
+    ...(params.ctx?.runId ? { runId: params.ctx.runId } : {}),
+    ...(params.outcome?.argsHash ? { argsHash: params.outcome.argsHash } : {}),
+    ...(params.outcome?.resultHash ? { resultHash: params.outcome.resultHash } : {}),
+    mediaUrls: mediaUrls.slice(0, MAX_TOOL_MEDIA_ARTIFACT_URLS),
+    mediaUrlCount: mediaUrls.length,
+    truncated: mediaUrls.length > MAX_TOOL_MEDIA_ARTIFACT_URLS,
+  };
+  try {
+    artifactStore.write({
+      artifactId,
+      kind: "tool/media-manifest",
+      metadata,
+      blob: `${JSON.stringify(metadata)}\n`,
+    });
+  } catch (err) {
+    log.warn(`tool media artifact recording failed: tool=${params.toolName} error=${String(err)}`);
+  }
+}
+
+function normalizeToolArtifactId(params: {
+  toolName: string;
+  toolCallId?: string;
+  resultHash?: string;
+}): string {
+  const source = `${params.toolName}-${params.toolCallId ?? params.resultHash ?? "result"}`;
+  const normalized = source.replaceAll(/[^A-Za-z0-9._:-]+/g, "-").slice(0, 160);
+  return normalized && /[A-Za-z0-9]/u.test(normalized) ? normalized : "tool-result";
+}
+
+function extractToolResultMediaUrls(result: unknown): string[] {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return [];
+  }
+  const record = result as Record<string, unknown>;
+  const details = record.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return [];
+  }
+  const detailRecord = details as Record<string, unknown>;
+  const media = detailRecord.media;
+  const values: unknown[] = [];
+  if (media && typeof media === "object" && !Array.isArray(media)) {
+    const mediaRecord = media as Record<string, unknown>;
+    values.push(mediaRecord.mediaUrl, mediaRecord.mediaUrls);
+  }
+  values.push(detailRecord.mediaUrl, detailRecord.mediaUrls);
+  return Array.from(
+    new Set(
+      values
+        .flatMap((value) => (Array.isArray(value) ? value : [value]))
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim()),
+    ),
+  );
 }
 
 export async function runBeforeToolCallHook(args: {
   toolName: string;
   params: unknown;
-  toolKind?: PluginHookToolKind;
-  toolInputKind?: PluginHookToolInputKind;
   toolCallId?: string;
   ctx?: HookContext;
   signal?: AbortSignal;
@@ -857,36 +916,21 @@ export async function runBeforeToolCallHook(args: {
 
   const hookRunner = getGlobalHookRunner();
   try {
-    const hasBeforeToolCallHooks = hookRunner?.hasHooks("before_tool_call") === true;
-    const shouldRunTrustedPolicies = hasTrustedToolPolicies();
-    const normalizedParams = isPlainObject(params) ? params : {};
-    const initialCorePolicyResult = resolveSkillWorkshopToolApproval({
-      toolName,
-      toolParams: normalizedParams,
-      ...(args.ctx?.config ? { config: args.ctx.config } : {}),
-    });
-    if (!initialCorePolicyResult && !shouldRunTrustedPolicies && !hasBeforeToolCallHooks) {
+    const hasBeforeToolCallHooks = Boolean(hookRunner?.hasHooks("before_tool_call"));
+    const hasTrustedPolicies = hasTrustedToolPolicies();
+    if (!hasBeforeToolCallHooks && !hasTrustedPolicies) {
       return { blocked: false, params };
     }
-    const deriveOptions =
-      args.ctx?.cwd || args.ctx?.sandbox
-        ? {
-            ...(args.ctx.cwd ? { cwd: args.ctx.cwd } : {}),
-            ...(args.ctx.sandbox ? { sandbox: args.ctx.sandbox } : {}),
-          }
-        : undefined;
-    const derivedToolParams = deriveToolParams(toolName, normalizedParams, deriveOptions);
-    const deriveToolEventParams = (candidateParams: Record<string, unknown>) => {
-      const derived = deriveToolParams(toolName, candidateParams, deriveOptions);
-      return derived.derivedPaths ? { derivedPaths: derived.derivedPaths } : {};
+    const normalizedParams = isPlainObject(params) ? params : {};
+    const deriveOptions = {
+      ...(args.ctx?.cwd ? { cwd: args.ctx.cwd } : {}),
+      ...(args.ctx?.sandbox ? { sandbox: args.ctx.sandbox } : {}),
     };
-    const toolIdentity = {
-      ...(args.toolKind && { toolKind: args.toolKind }),
-      ...(args.toolInputKind && { toolInputKind: args.toolInputKind }),
-    };
-    const buildToolContext = (identity: typeof toolIdentity) => ({
+    const deriveHostToolParams = (eventParams: Record<string, unknown>) =>
+      deriveToolParams(toolName, eventParams, deriveOptions);
+    const trustedDerivedParams = hasTrustedPolicies ? deriveHostToolParams(normalizedParams) : {};
+    const toolContext = {
       toolName,
-      ...identity,
       ...(args.ctx?.agentId && { agentId: args.ctx.agentId }),
       ...(args.ctx?.sessionKey && { sessionKey: args.ctx.sessionKey }),
       ...(args.ctx?.sessionId && { sessionId: args.ctx.sessionId }),
@@ -894,43 +938,20 @@ export async function runBeforeToolCallHook(args: {
       ...(args.ctx?.trace && { trace: freezeDiagnosticTraceContext(args.ctx.trace) }),
       ...(args.toolCallId && { toolCallId: args.toolCallId }),
       ...(args.ctx?.channelId && { channelId: args.ctx.channelId }),
-    });
-    const toolContext = buildToolContext(toolIdentity);
-    const trustedPolicyResult = shouldRunTrustedPolicies
+    };
+    const trustedPolicyResult = hasTrustedPolicies
       ? await runTrustedToolPolicies(
           {
             toolName,
             params: normalizedParams,
-            ...toolIdentity,
+            ...trustedDerivedParams,
             ...(args.ctx?.runId && { runId: args.ctx.runId }),
             ...(args.toolCallId && { toolCallId: args.toolCallId }),
-            ...(derivedToolParams.derivedPaths
-              ? { derivedPaths: derivedToolParams.derivedPaths }
-              : {}),
           },
           toolContext,
           {
             ...(args.ctx?.config ? { config: args.ctx.config } : {}),
-            deriveEvent: deriveToolEventParams,
-            normalizeEvent(eventValue) {
-              const normalizedEventParams = normalizeCodeModeExecBeforeHookParamsForToolKind({
-                toolKind: eventValue.toolKind,
-                params: eventValue.params,
-              });
-              if (!isPlainObject(normalizedEventParams)) {
-                return undefined;
-              }
-              const normalizedEventIdentity = getCodeModeExecBeforeHookMetadataForToolKind({
-                toolKind: eventValue.toolKind,
-                params: normalizedEventParams,
-              });
-              return {
-                params: normalizedEventParams,
-                ...(normalizedEventIdentity
-                  ? { event: normalizedEventIdentity, ctx: normalizedEventIdentity }
-                  : {}),
-              };
-            },
+            deriveEvent: deriveHostToolParams,
           },
         )
       : undefined;
@@ -966,22 +987,8 @@ export async function runBeforeToolCallHook(args: {
         trustedApprovalResolution = approvalOutcome.approvalResolution;
       }
     }
-    const rawPolicyAdjustedParams = trustedApprovalParams ?? trustedPolicyResult?.params ?? params;
-    const policyAdjustedParams = normalizeCodeModeExecBeforeHookParamsForToolKind({
-      toolKind: args.toolKind,
-      params: rawPolicyAdjustedParams,
-    });
-    const policyAdjustedToolIdentity =
-      getCodeModeExecBeforeHookMetadataForToolKind({
-        toolKind: args.toolKind,
-        params: policyAdjustedParams,
-      }) ?? toolIdentity;
-    const policyAdjustedToolContext = buildToolContext(policyAdjustedToolIdentity);
-    const policyAdjustedDerivedToolParams =
-      trustedPolicyResult?.params && isPlainObject(policyAdjustedParams)
-        ? deriveToolParams(toolName, policyAdjustedParams, deriveOptions)
-        : derivedToolParams;
-    if (!hasBeforeToolCallHooks) {
+    const policyAdjustedParams = trustedApprovalParams ?? trustedPolicyResult?.params ?? params;
+    if (!hookRunner || !hasBeforeToolCallHooks) {
       const finalApprovalOutcome = await resolveSkillWorkshopApprovalForFinalParams({
         toolName,
         params: policyAdjustedParams,
@@ -1003,18 +1010,16 @@ export async function runBeforeToolCallHook(args: {
       return allowed;
     }
     const hookEventParams = isPlainObject(policyAdjustedParams) ? policyAdjustedParams : {};
+    const hookDerivedParams = deriveToolParams(toolName, hookEventParams, deriveOptions);
     const hookResult = await hookRunner.runBeforeToolCall(
       {
         toolName,
         params: hookEventParams,
-        ...policyAdjustedToolIdentity,
+        ...hookDerivedParams,
         ...(args.ctx?.runId && { runId: args.ctx.runId }),
         ...(args.toolCallId && { toolCallId: args.toolCallId }),
-        ...(policyAdjustedDerivedToolParams.derivedPaths
-          ? { derivedPaths: policyAdjustedDerivedToolParams.derivedPaths }
-          : {}),
       },
-      policyAdjustedToolContext,
+      toolContext,
     );
 
     if (hookResult?.block) {
@@ -1105,12 +1110,9 @@ export function wrapToolWithBeforeToolCallHook(
   const wrappedTool: AnyAgentTool = {
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate) => {
-      const hookParams = normalizeCodeModeExecBeforeHookParams({ tool, params });
-      const hookMetadata = getCodeModeExecBeforeHookMetadata({ tool, params });
       const outcome = await runBeforeToolCallHook({
         toolName,
-        params: hookParams,
-        ...hookMetadata,
+        params,
         toolCallId,
         ctx,
         signal,
@@ -1132,7 +1134,7 @@ export function wrapToolWithBeforeToolCallHook(
           toolName: normalizedToolName,
           ...diagnosticIdentity,
           ...(toolCallId && { toolCallId }),
-          paramsSummary: summarizeToolParams(outcome.params ?? hookParams),
+          paramsSummary: summarizeToolParams(outcome.params ?? params),
         };
         if (hookOptions.emitDiagnostics) {
           emitTrustedDiagnosticEvent({
@@ -1149,19 +1151,22 @@ export function wrapToolWithBeforeToolCallHook(
         await recordLoopOutcome({
           ctx,
           toolName: normalizedToolName,
-          toolParams: outcome.params ?? hookParams,
+          toolParams: outcome.params ?? params,
           toolCallId,
           result: blockedResult,
         });
         return blockedResult;
       }
-      const executeParams = reconcileCodeModeExecBeforeHookParams({
-        tool,
-        originalParams: params,
-        hookParams,
-        adjustedParams: outcome.params,
-      });
-      recordAdjustedParamsForToolCall(toolCallId, executeParams, ctx?.runId);
+      if (toolCallId) {
+        const adjustedParamsKey = buildAdjustedParamsKey({ runId: ctx?.runId, toolCallId });
+        adjustedParamsByToolCallId.set(adjustedParamsKey, outcome.params);
+        if (adjustedParamsByToolCallId.size > MAX_TRACKED_ADJUSTED_PARAMS) {
+          const oldest = adjustedParamsByToolCallId.keys().next().value;
+          if (oldest) {
+            adjustedParamsByToolCallId.delete(oldest);
+          }
+        }
+      }
       const normalizedToolName = normalizeToolName(toolName || "tool");
       const trace = ctx?.trace
         ? freezeDiagnosticTraceContext(createChildDiagnosticTraceContext(ctx.trace))
@@ -1174,7 +1179,7 @@ export function wrapToolWithBeforeToolCallHook(
         toolName: normalizedToolName,
         ...diagnosticIdentity,
         ...(toolCallId && { toolCallId }),
-        paramsSummary: summarizeToolParams(executeParams),
+        paramsSummary: summarizeToolParams(outcome.params),
       };
       if (hookOptions.emitDiagnostics) {
         emitTrustedDiagnosticEvent({
@@ -1184,18 +1189,18 @@ export function wrapToolWithBeforeToolCallHook(
       }
       const startedAt = Date.now();
       try {
-        const result = await execute(toolCallId, executeParams, signal, onUpdate);
+        const result = await execute(toolCallId, outcome.params, signal, onUpdate);
         const durationMs = Date.now() - startedAt;
         await recordLoopOutcome({
           ctx,
           toolName: normalizedToolName,
-          toolParams: executeParams,
+          toolParams: outcome.params,
           toolCallId,
           result,
         });
         const skillMatch = findSkillUsageMatch({
           toolName: normalizedToolName,
-          toolParams: executeParams,
+          toolParams: outcome.params,
           ctx,
         });
         if (hookOptions.emitDiagnostics) {
@@ -1229,7 +1234,7 @@ export function wrapToolWithBeforeToolCallHook(
         await recordLoopOutcome({
           ctx,
           toolName: normalizedToolName,
-          toolParams: executeParams,
+          toolParams: outcome.params,
           toolCallId,
           error: err,
         });
@@ -1318,6 +1323,21 @@ export function consumeAdjustedParamsForToolCall(toolCallId: string, runId?: str
   const params = adjustedParamsByToolCallId.get(adjustedParamsKey);
   adjustedParamsByToolCallId.delete(adjustedParamsKey);
   return params;
+}
+
+export function recordAdjustedParamsForToolCall(
+  toolCallId: string,
+  params: unknown,
+  runId?: string,
+): void {
+  const adjustedParamsKey = buildAdjustedParamsKey({ runId, toolCallId });
+  adjustedParamsByToolCallId.set(adjustedParamsKey, params);
+  if (adjustedParamsByToolCallId.size > MAX_TRACKED_ADJUSTED_PARAMS) {
+    const oldest = adjustedParamsByToolCallId.keys().next().value;
+    if (oldest) {
+      adjustedParamsByToolCallId.delete(oldest);
+    }
+  }
 }
 
 export const testing = {

@@ -12,7 +12,7 @@ import {
   parseAgentSessionKey,
 } from "../../sessions/session-key-utils.js";
 import type { SessionMaintenanceConfig, SessionMaintenanceMode } from "../types.base.js";
-import { parseSessionThreadInfoFast } from "./thread-info.js";
+import { resolveLoadedSessionThreadInfo } from "../../channels/plugins/session-thread-info-loaded.js";
 import type { SessionEntry } from "./types.js";
 
 const log = createSubsystemLogger("sessions/store");
@@ -296,7 +296,7 @@ export function isProtectedSessionMaintenanceEntry(
   if (isSyntheticSessionMaintenanceKey(sessionKey)) {
     return false;
   }
-  if (parseSessionThreadInfoFast(sessionKey).threadId) {
+  if (resolveLoadedSessionThreadInfo(sessionKey).threadId) {
     return true;
   }
   if (isTelegramTopicSessionKey(sessionKey)) {

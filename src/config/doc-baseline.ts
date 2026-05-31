@@ -3,7 +3,6 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { sortUniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { resolveOpenClawPackageRootSync } from "../infra/openclaw-root.js";
 import { replaceFileAtomicSync } from "../infra/replace-file.js";
 import type { ConfigSchemaResponse } from "./schema.js";
@@ -109,6 +108,16 @@ function logConfigDocBaselineDebug(message: string): void {
   if (process.env.OPENCLAW_CONFIG_DOC_BASELINE_DEBUG === "1") {
     console.error(`[config-doc-baseline] ${message}`);
   }
+}
+
+function compareConfigDocBaselineStrings(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
 }
 
 function resolveRepoRoot(): string {
@@ -271,7 +280,7 @@ function normalizeTypeValue(value: string | string[] | undefined): string | stri
     return undefined;
   }
   if (Array.isArray(value)) {
-    const normalized = sortUniqueStrings(value);
+    const normalized = [...new Set(value)].toSorted(compareConfigDocBaselineStrings);
     return normalized.length === 1 ? normalized[0] : normalized;
   }
   return value;
@@ -340,7 +349,7 @@ function mergeConfigDocBaselineEntry(
     defaultValue,
     deprecated: current.deprecated || next.deprecated,
     sensitive: current.sensitive || next.sensitive,
-    tags: sortUniqueStrings([...current.tags, ...next.tags]),
+    tags: [...new Set([...current.tags, ...next.tags])].toSorted(compareConfigDocBaselineStrings),
     label,
     help,
     hasChildren: current.hasChildren || next.hasChildren,

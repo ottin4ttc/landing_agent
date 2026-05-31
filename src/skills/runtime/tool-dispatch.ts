@@ -11,6 +11,7 @@ import { resolveSenderToolPolicy } from "../../agents/sender-tool-policy.js";
 import {
   isSubagentEnvelopeSession,
   resolveSubagentCapabilityStore,
+  type SessionCapabilityStore,
 } from "../../agents/subagent-capabilities.js";
 import {
   applyToolPolicyPipeline,
@@ -124,12 +125,17 @@ export function resolveSkillDispatchTools(params: {
     sessionKey: params.sessionKey,
   });
   const sandboxPolicy = sandboxRuntime.sandboxed ? sandboxRuntime.toolPolicy : undefined;
+  const currentSessionStore: SessionCapabilityStore | undefined = params.sessionEntry
+    ? { [params.sessionKey]: params.sessionEntry }
+    : undefined;
   const subagentStore = resolveSubagentCapabilityStore(params.sessionKey, {
     cfg: params.cfg,
+    store: currentSessionStore,
   });
   const subagentPolicy = isSubagentEnvelopeSession(params.sessionKey, {
     cfg: params.cfg,
     store: subagentStore,
+    entry: params.sessionEntry,
   })
     ? resolveSubagentToolPolicyForSession(params.cfg, params.sessionKey, {
         store: subagentStore,

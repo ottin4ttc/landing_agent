@@ -1,29 +1,40 @@
 import "../infra/fs-safe-defaults.js";
 import crypto from "node:crypto";
-import { createWriteStream } from "node:fs";
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
+import type { DatabaseSync } from "node:sqlite";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { fileStore } from "../infra/file-store.js";
+import type { Insertable } from "kysely";
 import { sanitizeUntrustedFileName } from "../infra/fs-safe-advanced.js";
-import { isPathInside } from "../infra/fs-safe.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "../infra/kysely-sync.js";
 import { retainSafeHeadersForCrossOriginRedirect } from "../infra/net/redirect-headers.js";
 import { resolvePinnedHostname } from "../infra/net/ssrf.js";
 import { writeSiblingTempFile } from "../infra/sibling-temp-file.js";
+import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabaseOptions,
+} from "../state/openclaw-state-db.js";
 import { resolveConfigDir } from "../utils.js";
 import { basenameFromAnyPath, extnameFromAnyPath, nameFromAnyPath } from "./file-name.js";
 import { detectMime, extensionForMime } from "./mime.js";
 import { isFsSafeError, readLocalFileSafely, type FsSafeLikeError } from "./store.runtime.js";
 
-const resolveMediaDir = () => path.join(resolveConfigDir(), "media");
+const resolveMediaMaterializationRoot = () => path.join(resolvePreferredOpenClawTmpDir(), "media");
 export const MEDIA_MAX_BYTES = 5 * 1024 * 1024; // 5MB default
 const MAX_BYTES = MEDIA_MAX_BYTES;
 const DEFAULT_TTL_MS = 2 * 60 * 1000; // 2 minutes
-// Files are intentionally readable by non-owner UIDs so Docker sandbox containers can access
-// inbound media. The containing state/media directories remain 0o700, which is the trust boundary.
+// Temp materializations are intentionally readable by non-owner UIDs so Docker sandbox containers
+// can access inbound media. SQLite remains the canonical store.
 const MEDIA_FILE_MODE = 0o644;
 type CleanOldMediaOptions = {
   recursive?: boolean;
@@ -31,6 +42,22 @@ type CleanOldMediaOptions = {
 };
 type RequestImpl = typeof httpRequest;
 type ResolvePinnedHostnameImpl = typeof resolvePinnedHostname;
+type MediaKyselyDatabase = Pick<OpenClawStateKyselyDatabase, "media_blobs">;
+type MediaBlobRow = {
+  id: string;
+  subdir: string;
+  content_type: string | null;
+  size_bytes: number;
+  blob: Uint8Array;
+  created_at: number;
+  updated_at: number;
+};
+export type LegacyMediaImportResult = {
+  files: number;
+  imported: number;
+  removed: number;
+  skipped: number;
+};
 
 const defaultHttpRequestImpl: RequestImpl = httpRequest;
 const defaultHttpsRequestImpl: RequestImpl = httpsRequest;
@@ -63,13 +90,14 @@ function resolveMediaSubdir(subdir: string, caller: string): string {
 }
 
 function resolveMediaScopedDir(subdir: string, caller: string): string {
-  const mediaDir = resolveMediaDir();
+  const mediaDir = resolveMediaMaterializationRoot();
   const safeSubdir = resolveMediaSubdir(subdir, caller);
   const dir = safeSubdir ? path.join(mediaDir, safeSubdir) : mediaDir;
-  if (!isPathInside(mediaDir, dir)) {
-    throw new Error(`${caller}: media subdir escapes media directory: ${JSON.stringify(subdir)}`);
-  }
   return dir;
+}
+
+function resolveLegacyMediaDir(env: NodeJS.ProcessEnv): string {
+  return path.join(resolveConfigDir(env), "media");
 }
 
 function resolveMediaRelativePath(id: string, subdir: string, caller: string): string {
@@ -80,18 +108,171 @@ function resolveMediaRelativePath(id: string, subdir: string, caller: string): s
   return safeSubdir ? path.join(safeSubdir, id) : id;
 }
 
-function openMediaStore(maxBytes = MAX_BYTES) {
-  return fileStore({
-    rootDir: resolveMediaDir(),
-    dirMode: 0o700,
-    maxBytes,
-    mode: MEDIA_FILE_MODE,
-  });
-}
-
 let httpRequestImpl: RequestImpl = defaultHttpRequestImpl;
 let httpsRequestImpl: RequestImpl = defaultHttpsRequestImpl;
 let resolvePinnedHostnameImpl: ResolvePinnedHostnameImpl = defaultResolvePinnedHostnameImpl;
+
+function getMediaKysely(db: DatabaseSync) {
+  return getNodeSqliteKysely<MediaKyselyDatabase>(db);
+}
+
+function getMediaBlobRow(params: {
+  subdir: string;
+  id: string;
+  state?: OpenClawStateDatabaseOptions;
+}): MediaBlobRow | undefined {
+  const database = openOpenClawStateDatabase(params.state);
+  return executeSqliteQueryTakeFirstSync(
+    database.db,
+    getMediaKysely(database.db)
+      .selectFrom("media_blobs")
+      .selectAll()
+      .where("subdir", "=", params.subdir)
+      .where("id", "=", params.id),
+  );
+}
+
+async function legacyMediaFileCandidates(
+  root: string,
+): Promise<Array<{ path: string; subdir: string; id: string }>> {
+  const candidates: Array<{ path: string; subdir: string; id: string }> = [];
+  async function visit(dir: string): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if (isMissingPathError(error)) {
+        return;
+      }
+      throw error;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(entryPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      const relativeDir = path.relative(root, dir);
+      const posixRelativeDir = relativeDir.split(path.sep).join("/");
+      if (
+        posixRelativeDir === "outgoing/records" ||
+        posixRelativeDir.startsWith("outgoing/records/")
+      ) {
+        continue;
+      }
+      const subdir = relativeDir === "" ? "" : relativeDir;
+      candidates.push({ path: entryPath, subdir, id: entry.name });
+    }
+  }
+  await visit(root);
+  return candidates;
+}
+
+async function pruneEmptyMediaDirs(dir: string, root: string): Promise<void> {
+  if (dir === root || !dir.startsWith(root + path.sep)) {
+    return;
+  }
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return;
+  }
+  if (entries.length > 0) {
+    return;
+  }
+  await fs.rmdir(dir).catch(() => {});
+  await pruneEmptyMediaDirs(path.dirname(dir), root);
+}
+
+async function collectExpiredMaterializedMediaFiles(params: {
+  dir: string;
+  cutoff: number;
+  recursive: boolean;
+}): Promise<string[]> {
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(params.dir, { withFileTypes: true });
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return [];
+    }
+    throw error;
+  }
+  const expired: string[] = [];
+  for (const entry of entries) {
+    const entryPath = path.join(params.dir, entry.name);
+    if (entry.isDirectory()) {
+      if (params.recursive) {
+        expired.push(
+          ...(await collectExpiredMaterializedMediaFiles({
+            dir: entryPath,
+            cutoff: params.cutoff,
+            recursive: params.recursive,
+          })),
+        );
+      }
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+    const stat = await fs.stat(entryPath).catch(() => null);
+    if (stat?.isFile() && stat.mtimeMs < params.cutoff) {
+      expired.push(entryPath);
+    }
+  }
+  return expired;
+}
+
+function upsertMediaBlob(params: {
+  subdir: string;
+  id: string;
+  buffer: Buffer;
+  contentType?: string;
+  state?: OpenClawStateDatabaseOptions;
+}): void {
+  const now = Date.now();
+  runOpenClawStateWriteTransaction((database) => {
+    const row: Insertable<MediaKyselyDatabase["media_blobs"]> = {
+      subdir: params.subdir,
+      id: params.id,
+      content_type: params.contentType ?? null,
+      size_bytes: params.buffer.byteLength,
+      blob: params.buffer,
+      created_at: now,
+      updated_at: now,
+    };
+    executeSqliteQuerySync(
+      database.db,
+      getMediaKysely(database.db)
+        .insertInto("media_blobs")
+        .values(row)
+        .onConflict((conflict) =>
+          conflict.columns(["subdir", "id"]).doUpdateSet({
+            content_type: (eb) => eb.ref("excluded.content_type"),
+            size_bytes: (eb) => eb.ref("excluded.size_bytes"),
+            blob: (eb) => eb.ref("excluded.blob"),
+            created_at: (eb) => eb.ref("excluded.created_at"),
+            updated_at: (eb) => eb.ref("excluded.updated_at"),
+          }),
+        ),
+    );
+  }, params.state);
+}
+
+function deleteExpiredMediaBlobs(params: { cutoff: number; recursive: boolean }): void {
+  runOpenClawStateWriteTransaction((database) => {
+    const baseQuery = getMediaKysely(database.db)
+      .deleteFrom("media_blobs")
+      .where("updated_at", "<", params.cutoff);
+    const query = params.recursive ? baseQuery : baseQuery.where("subdir", "=", "");
+    executeSqliteQuerySync(database.db, query);
+  });
+}
 
 export function setMediaStoreNetworkDepsForTest(deps?: {
   httpRequest?: RequestImpl;
@@ -143,14 +324,67 @@ export function extractOriginalFilename(filePath: string): string {
   return basename; // Fallback: use as-is
 }
 
+export function getMediaMaterializationDir() {
+  return resolveMediaMaterializationRoot();
+}
+
+/** @deprecated Use getMediaMaterializationDir. */
 export function getMediaDir() {
-  return resolveMediaDir();
+  return getMediaMaterializationDir();
 }
 
 export async function ensureMediaDir() {
-  const mediaDir = resolveMediaDir();
+  const mediaDir = resolveMediaMaterializationRoot();
   await fs.mkdir(mediaDir, { recursive: true, mode: 0o700 });
   return mediaDir;
+}
+
+export async function legacyMediaFilesExist(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  const root = resolveLegacyMediaDir(env);
+  const candidates = await legacyMediaFileCandidates(root);
+  return candidates.length > 0;
+}
+
+export async function importLegacyMediaFilesToSqlite(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<LegacyMediaImportResult> {
+  const root = resolveLegacyMediaDir(env);
+  const candidates = await legacyMediaFileCandidates(root);
+  const result: LegacyMediaImportResult = {
+    files: candidates.length,
+    imported: 0,
+    removed: 0,
+    skipped: 0,
+  };
+
+  for (const candidate of candidates) {
+    try {
+      const safeSubdir = resolveMediaSubdir(candidate.subdir, "importLegacyMediaFilesToSqlite");
+      resolveMediaRelativePath(candidate.id, safeSubdir, "importLegacyMediaFilesToSqlite");
+      const { buffer } = await readLocalFileSafely({
+        filePath: candidate.path,
+        maxBytes: MAX_BYTES,
+      });
+      const contentType = await detectMime({ buffer, filePath: candidate.path });
+      upsertMediaBlob({
+        subdir: safeSubdir,
+        id: candidate.id,
+        buffer,
+        contentType,
+        state: { env },
+      });
+      result.imported += 1;
+      await fs.rm(candidate.path, { force: true });
+      result.removed += 1;
+      await pruneEmptyMediaDirs(path.dirname(candidate.path), root);
+    } catch {
+      result.skipped += 1;
+    }
+  }
+
+  return result;
 }
 
 function findErrorWithCode(err: unknown, code: string): NodeJS.ErrnoException | undefined {
@@ -186,12 +420,25 @@ async function retryAfterRecreatingDir<T>(dir: string, run: () => Promise<T>): P
 }
 
 export async function cleanOldMedia(ttlMs = DEFAULT_TTL_MS, options: CleanOldMediaOptions = {}) {
-  await openMediaStore().pruneExpired({
-    maxDepth: options.recursive ? undefined : 1,
-    ttlMs,
-    recursive: options.recursive ?? true,
-    pruneEmptyDirs: options.pruneEmptyDirs,
+  const cutoff = Date.now() - ttlMs;
+  const materializationRoot = resolveMediaMaterializationRoot();
+  const recursive = options.recursive ?? true;
+  deleteExpiredMediaBlobs({ cutoff, recursive });
+  const removedDirs = new Set<string>();
+  const expiredMaterializedFiles = await collectExpiredMaterializedMediaFiles({
+    dir: materializationRoot,
+    cutoff,
+    recursive,
   });
+  for (const filePath of expiredMaterializedFiles) {
+    await fs.rm(filePath, { force: true }).catch(() => {});
+    removedDirs.add(path.dirname(filePath));
+  }
+  if (options.pruneEmptyDirs || recursive) {
+    for (const dir of removedDirs) {
+      await pruneEmptyMediaDirs(dir, materializationRoot);
+    }
+  }
 }
 
 function looksLikeUrl(src: string) {
@@ -203,15 +450,14 @@ function discardIgnoredHttpResponse(res: NodeJS.ReadableStream): void {
 }
 
 /**
- * Download media to disk while capturing the first few KB for mime sniffing.
+ * Download media into memory while capturing the first few KB for mime sniffing.
  */
-async function downloadToFile(
+async function downloadToBuffer(
   url: string,
-  dest: string,
   headers?: Record<string, string>,
   maxRedirects = 5,
   maxBytes = MAX_BYTES,
-): Promise<{ headerMime?: string; sniffBuffer: Buffer; size: number }> {
+): Promise<{ headerMime?: string; sniffBuffer: Buffer; buffer: Buffer; size: number }> {
   return await new Promise((resolve, reject) => {
     let parsedUrl: URL;
     try {
@@ -249,7 +495,7 @@ async function downloadToFile(
                 : retainSafeHeadersForCrossOriginRedirect(headers);
             discardIgnoredHttpResponse(res);
             resolve(
-              downloadToFile(redirectUrl.href, dest, redirectHeaders, maxRedirects - 1, maxBytes),
+              downloadToBuffer(redirectUrl.toString(), redirectHeaders, maxRedirects - 1, maxBytes),
             );
             return;
           }
@@ -259,11 +505,12 @@ async function downloadToFile(
             return;
           }
           let total = 0;
+          const chunks: Buffer[] = [];
           const sniffChunks: Buffer[] = [];
           let sniffLen = 0;
-          const out = createWriteStream(dest, { mode: MEDIA_FILE_MODE });
           res.on("data", (chunk) => {
             total += chunk.length;
+            chunks.push(chunk);
             if (sniffLen < 16384) {
               sniffChunks.push(chunk);
               sniffLen += chunk.length;
@@ -272,21 +519,23 @@ async function downloadToFile(
               req.destroy(new Error(`Media exceeds ${formatMediaLimitMb(maxBytes)} limit`));
             }
           });
-          pipeline(res, out)
-            .then(() => {
+          res.on("end", () => {
+            try {
               const sniffBuffer = Buffer.concat(sniffChunks, Math.min(sniffLen, 16384));
               const rawHeader = res.headers["content-type"];
               const headerMime = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+              const buffer = Buffer.concat(chunks, total);
               resolve({
                 headerMime,
                 sniffBuffer,
+                buffer,
                 size: total,
               });
-            })
-            .catch(async (err) => {
-              await fs.rm(dest, { force: true }).catch(() => {});
+            } catch (err) {
               reject(err);
-            });
+            }
+          });
+          res.on("error", reject);
         });
         req.on("error", reject);
         req.end();
@@ -370,48 +619,59 @@ function buildSavedMediaResult(params: {
   id: string;
   size: number;
   contentType?: string;
+  path?: string;
 }): SavedMedia {
   return {
     id: params.id,
-    path: path.join(params.dir, params.id),
+    path: params.path ?? path.join(params.dir, params.id),
     size: params.size,
     contentType: params.contentType,
   };
-}
-
-type SavedMediaTempWriteResult = Omit<SavedMedia, "path">;
-
-async function saveMediaSiblingTempFile(params: {
-  dir: string;
-  tempPrefix: string;
-  writeTemp: (tempPath: string) => Promise<SavedMediaTempWriteResult>;
-}): Promise<SavedMedia> {
-  const { result } = await retryAfterRecreatingDir(params.dir, () =>
-    writeSiblingTempFile<SavedMediaTempWriteResult>({
-      dir: params.dir,
-      mode: MEDIA_FILE_MODE,
-      tempPrefix: params.tempPrefix,
-      writeTemp: params.writeTemp,
-      resolveFinalPath: (result) => path.join(params.dir, result.id),
-    }),
-  );
-  return buildSavedMediaResult({ dir: params.dir, ...result });
 }
 
 async function writeSavedMediaBuffer(params: {
   subdir: string;
   id: string;
   buffer: Buffer;
+  contentType?: string;
+  state?: OpenClawStateDatabaseOptions;
 }): Promise<string> {
-  const dir = resolveMediaScopedDir(params.subdir, "writeSavedMediaBuffer");
-  const relativePath = resolveMediaRelativePath(params.id, params.subdir, "writeSavedMediaBuffer");
-  return await retryAfterRecreatingDir(
-    dir,
-    async () =>
-      await openMediaStore(params.buffer.byteLength).write(relativePath, params.buffer, {
-        tempPrefix: `.${params.id}`,
-      }),
-  );
+  const safeSubdir = resolveMediaSubdir(params.subdir, "writeSavedMediaBuffer");
+  resolveMediaRelativePath(params.id, params.subdir, "writeSavedMediaBuffer");
+  upsertMediaBlob({
+    subdir: safeSubdir,
+    id: params.id,
+    buffer: params.buffer,
+    contentType: params.contentType,
+    state: params.state,
+  });
+  return await materializeMediaBufferPath({
+    subdir: safeSubdir,
+    id: params.id,
+    buffer: params.buffer,
+  });
+}
+
+async function materializeMediaBufferPath(params: {
+  subdir: string;
+  id: string;
+  buffer: Buffer;
+}): Promise<string> {
+  const dir = resolveMediaScopedDir(params.subdir, "materializeMediaBufferPath");
+  return await retryAfterRecreatingDir(dir, async () => {
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    const written = await writeSiblingTempFile({
+      dir,
+      mode: MEDIA_FILE_MODE,
+      tempPrefix: `.${params.id}`,
+      writeTemp: async (tempPath) => {
+        await fs.writeFile(tempPath, params.buffer, { mode: MEDIA_FILE_MODE });
+        return undefined;
+      },
+      resolveFinalPath: () => path.join(dir, params.id),
+    });
+    return written.filePath;
+  });
 }
 
 async function writeMediaStreamToFile(params: {
@@ -514,32 +774,34 @@ export async function saveMediaSource(
   headers?: Record<string, string>,
   subdir = "",
   maxBytes = MAX_BYTES,
+  state?: OpenClawStateDatabaseOptions,
 ): Promise<SavedMedia> {
   const dir = resolveMediaScopedDir(subdir, "saveMediaSource");
-  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   await cleanOldMedia(DEFAULT_TTL_MS, { recursive: false });
   const baseId = crypto.randomUUID();
   if (looksLikeUrl(source)) {
-    return await saveMediaSiblingTempFile({
+    const { headerMime, sniffBuffer, buffer, size } = await downloadToBuffer(
+      source,
+      headers,
+      5,
+      maxBytes,
+    );
+    const mime = await detectMime({
+      buffer: sniffBuffer,
+      headerMime,
+      filePath: source,
+    });
+    const ext = extensionForMime(mime) ?? path.extname(new URL(source).pathname);
+    const id = buildSavedMediaId({ baseId, ext });
+    const materializedPath = await retryAfterRecreatingDir(dir, () =>
+      writeSavedMediaBuffer({ subdir, id, buffer, contentType: mime, state }),
+    );
+    return buildSavedMediaResult({
       dir,
-      tempPrefix: `.${baseId}`,
-      writeTemp: async (tempPath) => {
-        const { headerMime, sniffBuffer, size } = await downloadToFile(
-          source,
-          tempPath,
-          headers,
-          5,
-          maxBytes,
-        );
-        const mime = await detectMime({
-          buffer: sniffBuffer,
-          headerMime,
-          filePath: source,
-        });
-        const ext = extensionForMime(mime) ?? path.extname(new URL(source).pathname);
-        const id = buildSavedMediaId({ baseId, ext });
-        return { id, size, contentType: mime };
-      },
+      id,
+      size,
+      contentType: mime,
+      path: materializedPath,
     });
   }
   try {
@@ -547,8 +809,20 @@ export async function saveMediaSource(
     const mime = await detectMime({ buffer, filePath: source });
     const ext = extensionForMime(mime) ?? path.extname(source);
     const id = buildSavedMediaId({ baseId, ext });
-    await writeSavedMediaBuffer({ subdir, id, buffer });
-    return buildSavedMediaResult({ dir, id, size: stat.size, contentType: mime });
+    const materializedPath = await writeSavedMediaBuffer({
+      subdir,
+      id,
+      buffer,
+      contentType: mime,
+      state,
+    });
+    return buildSavedMediaResult({
+      dir,
+      id,
+      size: stat.size,
+      contentType: mime,
+      path: materializedPath,
+    });
   } catch (err) {
     if (isFsSafeError(err)) {
       throw toSaveMediaSourceError(err, maxBytes);
@@ -564,12 +838,12 @@ export async function saveMediaBuffer(
   maxBytes = MAX_BYTES,
   originalFilename?: string,
   detectionFilePathHint?: string,
+  state?: OpenClawStateDatabaseOptions,
 ): Promise<SavedMedia> {
   if (buffer.byteLength > maxBytes) {
     throw new Error(`Media exceeds ${formatMediaLimitMb(maxBytes)} limit`);
   }
   const dir = resolveMediaScopedDir(subdir, "saveMediaBuffer");
-  await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const uuid = crypto.randomUUID();
   const headerExt = extensionForAuthoritativeHeaderMime(contentType);
   const mime = await detectMime({
@@ -584,8 +858,52 @@ export async function saveMediaBuffer(
     originalFilename,
   });
   const id = buildSavedMediaId({ baseId: uuid, ext, originalFilename });
-  await writeSavedMediaBuffer({ subdir, id, buffer });
-  return buildSavedMediaResult({ dir, id, size: buffer.byteLength, contentType: mime });
+  const materializedPath = await writeSavedMediaBuffer({
+    subdir,
+    id,
+    buffer,
+    contentType: mime,
+    state,
+  });
+  return buildSavedMediaResult({
+    dir,
+    id,
+    size: buffer.byteLength,
+    contentType: mime,
+    path: materializedPath,
+  });
+}
+
+export async function saveMediaBufferWithId(params: {
+  subdir: string;
+  id: string;
+  buffer: Buffer;
+  contentType?: string;
+  maxBytes?: number;
+  state?: OpenClawStateDatabaseOptions;
+}): Promise<SavedMedia> {
+  const maxBytes = params.maxBytes ?? MAX_BYTES;
+  if (params.buffer.byteLength > maxBytes) {
+    throw new Error(`Media exceeds ${formatMediaLimitMb(maxBytes)} limit`);
+  }
+  const safeSubdir = resolveMediaSubdir(params.subdir, "saveMediaBufferWithId");
+  resolveMediaRelativePath(params.id, safeSubdir, "saveMediaBufferWithId");
+  const dir = resolveMediaScopedDir(safeSubdir, "saveMediaBufferWithId");
+  const mime = await detectMime({ buffer: params.buffer, headerMime: params.contentType });
+  const materializedPath = await writeSavedMediaBuffer({
+    subdir: safeSubdir,
+    id: params.id,
+    buffer: params.buffer,
+    contentType: mime,
+    state: params.state,
+  });
+  return buildSavedMediaResult({
+    dir,
+    id: params.id,
+    size: params.buffer.byteLength,
+    contentType: mime,
+    path: materializedPath,
+  });
 }
 
 export async function saveMediaStream(
@@ -600,29 +918,46 @@ export async function saveMediaStream(
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   const baseId = crypto.randomUUID();
   const headerExt = extensionForAuthoritativeHeaderMime(contentType);
-  return await saveMediaSiblingTempFile({
+  const saved = await retryAfterRecreatingDir(dir, () =>
+    writeSiblingTempFile<{ id: string; size: number; contentType?: string }>({
+      dir,
+      mode: MEDIA_FILE_MODE,
+      tempPrefix: `.${baseId}`,
+      writeTemp: async (tempPath) => {
+        const { sniffBuffer, size } = await writeMediaStreamToFile({
+          stream,
+          tempPath,
+          maxBytes,
+        });
+        const mime = await detectMime({
+          buffer: sniffBuffer,
+          headerMime: contentType,
+          filePath: originalFilename ?? detectionFilePathHint,
+        });
+        const ext = resolveSavedMediaExtension({
+          detectedMime: mime,
+          headerExt,
+          contentType,
+          originalFilename,
+        });
+        const id = buildSavedMediaId({ baseId, ext, originalFilename });
+        return { id, size, contentType: mime };
+      },
+      resolveFinalPath: (result) => path.join(dir, result.id),
+    }),
+  );
+  const buffer = await fs.readFile(saved.filePath);
+  upsertMediaBlob({
+    subdir: resolveMediaSubdir(subdir, "saveMediaStream"),
+    id: saved.result.id,
+    buffer,
+    contentType: saved.result.contentType,
+  });
+  return buildSavedMediaResult({
     dir,
-    tempPrefix: `.${baseId}`,
-    writeTemp: async (tempPath) => {
-      const { sniffBuffer, size } = await writeMediaStreamToFile({
-        stream,
-        tempPath,
-        maxBytes,
-      });
-      const mime = await detectMime({
-        buffer: sniffBuffer,
-        headerMime: contentType,
-        filePath: originalFilename ?? detectionFilePathHint,
-      });
-      const ext = resolveSavedMediaExtension({
-        detectedMime: mime,
-        headerExt,
-        contentType,
-        originalFilename,
-      });
-      const id = buildSavedMediaId({ baseId, ext, originalFilename });
-      return { id, size, contentType: mime };
-    },
+    id: saved.result.id,
+    size: saved.result.size,
+    contentType: saved.result.contentType,
   });
 }
 
@@ -650,21 +985,24 @@ export async function saveMediaStream(
  * Prefer readMediaBuffer when the caller needs the bytes; this path-returning
  * helper is for channel surfaces that need a stable local attachment path.
  */
-export async function resolveMediaBufferPath(id: string, subdir = "inbound"): Promise<string> {
-  const relativePath = resolveMediaRelativePath(id, subdir, "resolveMediaBufferPath");
-  const opened = await openMediaStore()
-    .open(relativePath)
-    .catch(() => null);
-  if (!opened?.stat.isFile()) {
+export async function resolveMediaBufferPath(
+  id: string,
+  subdir = "inbound",
+  state?: OpenClawStateDatabaseOptions,
+): Promise<string> {
+  const safeSubdir = resolveMediaSubdir(subdir, "resolveMediaBufferPath");
+  resolveMediaRelativePath(id, subdir, "resolveMediaBufferPath");
+  const row = getMediaBlobRow({ subdir: safeSubdir, id, state });
+  if (!row) {
     throw new Error(
       `resolveMediaBufferPath: media ID does not resolve to a file: ${JSON.stringify(id)}`,
     );
   }
-  try {
-    return opened.realPath;
-  } finally {
-    await opened.handle.close().catch(() => undefined);
-  }
+  return await materializeMediaBufferPath({
+    subdir: safeSubdir,
+    id,
+    buffer: Buffer.from(row.blob),
+  });
 }
 
 export type ReadMediaBufferResult = {
@@ -676,32 +1014,29 @@ export type ReadMediaBufferResult = {
 
 export async function readMediaBuffer(
   id: string,
-  subdir = "inbound",
+  subdir: string = "inbound",
   maxBytes = MAX_BYTES,
+  state?: OpenClawStateDatabaseOptions,
 ): Promise<ReadMediaBufferResult> {
-  const relativePath = resolveMediaRelativePath(id, subdir, "readMediaBuffer");
-  const opened = await openMediaStore(maxBytes)
-    .open(relativePath)
-    .catch(() => null);
-  if (!opened?.stat.isFile()) {
+  const safeSubdir = resolveMediaSubdir(subdir, "readMediaBuffer");
+  resolveMediaRelativePath(id, subdir, "readMediaBuffer");
+  const row = getMediaBlobRow({ subdir: safeSubdir, id, state });
+  if (!row) {
     throw new Error(`readMediaBuffer: media ID does not resolve to a file: ${JSON.stringify(id)}`);
   }
-  try {
-    if (opened.stat.size > maxBytes) {
-      throw new Error(
-        `readMediaBuffer: media ID ${JSON.stringify(id)} is ${opened.stat.size} bytes; maximum is ${maxBytes} bytes`,
-      );
-    }
-    const buffer = await opened.handle.readFile();
-    if (buffer.byteLength > maxBytes) {
-      throw new Error(
-        `readMediaBuffer: media ID ${JSON.stringify(id)} read ${buffer.byteLength} bytes; maximum is ${maxBytes} bytes`,
-      );
-    }
-    return { id, path: opened.realPath, buffer, size: buffer.byteLength };
-  } finally {
-    await opened.handle.close().catch(() => undefined);
+  if (row.size_bytes > maxBytes) {
+    throw new Error(
+      `readMediaBuffer: media ID ${JSON.stringify(id)} is ${row.size_bytes} bytes; maximum is ${maxBytes} bytes`,
+    );
   }
+  const buffer = Buffer.from(row.blob);
+  if (buffer.byteLength > maxBytes) {
+    throw new Error(
+      `readMediaBuffer: media ID ${JSON.stringify(id)} read ${buffer.byteLength} bytes; maximum is ${maxBytes} bytes`,
+    );
+  }
+  const materializedPath = await materializeMediaBufferPath({ subdir: safeSubdir, id, buffer });
+  return { id, path: materializedPath, buffer, size: buffer.byteLength };
 }
 
 /**
@@ -722,7 +1057,23 @@ export async function readMediaBuffer(
  * @param id     The media ID as returned by SavedMedia.id.
  * @param subdir The subdirectory the file was saved into (default "inbound").
  */
-export async function deleteMediaBuffer(id: string, subdir = "inbound"): Promise<void> {
-  const relativePath = resolveMediaRelativePath(id, subdir, "deleteMediaBuffer");
-  await openMediaStore().remove(relativePath);
+export async function deleteMediaBuffer(
+  id: string,
+  subdir = "inbound",
+  state?: OpenClawStateDatabaseOptions,
+): Promise<void> {
+  const safeSubdir = resolveMediaSubdir(subdir, "deleteMediaBuffer");
+  resolveMediaRelativePath(id, subdir, "deleteMediaBuffer");
+  runOpenClawStateWriteTransaction((database) => {
+    executeSqliteQuerySync(
+      database.db,
+      getMediaKysely(database.db)
+        .deleteFrom("media_blobs")
+        .where("subdir", "=", safeSubdir)
+        .where("id", "=", id),
+    );
+  }, state);
+  await fs.rm(path.join(resolveMediaScopedDir(subdir, "deleteMediaBuffer"), id), {
+    force: true,
+  });
 }

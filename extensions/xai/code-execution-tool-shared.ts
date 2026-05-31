@@ -11,7 +11,7 @@ export function buildMissingCodeExecutionApiKeyPayload() {
 }
 
 export function createCodeExecutionToolDefinition(
-  execute: (toolCallId: string, args: Record<string, unknown>) => Promise<AgentToolResult<unknown>>,
+  execute: (toolCallId: string, args: Record<string, unknown>) => Promise<AgentToolResult>,
 ) {
   return {
     label: "Code Execution",

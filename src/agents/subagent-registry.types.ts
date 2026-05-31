@@ -28,7 +28,7 @@ export type SubagentExecutionState = {
   outcome?: SubagentRunOutcome;
   interruptedAt?: number;
   interruptionReason?: "gateway-restart" | "lost-execution-context";
-  transcriptFile?: string;
+  transcriptSessionId?: string;
 };
 
 export type SubagentCompletionState = {
@@ -98,9 +98,16 @@ export type SubagentRunRecord = {
   cleanupHandled?: boolean;
   suppressAnnounceReason?: "steer-restart" | "killed";
   expectsCompletionMessage?: boolean;
+  announceRetryCount?: number;
+  lastAnnounceRetryAt?: number;
+  lastAnnounceDeliveryError?: string;
   endedReason?: SubagentLifecycleEndedReason;
   pauseReason?: "sessions_yield";
   wakeOnDescendantSettle?: boolean;
+  frozenResultText?: string | null;
+  frozenResultCapturedAt?: number;
+  fallbackFrozenResultText?: string | null;
+  fallbackFrozenResultCapturedAt?: number;
   execution?: SubagentExecutionState;
   completion?: SubagentCompletionState;
   /** Set after the subagent_ended hook has been emitted successfully once. */
@@ -109,6 +116,13 @@ export type SubagentRunRecord = {
   browserCleanupDispatchedAt?: number;
   /** Durable outbox marker for parent/external completion delivery. */
   delivery?: SubagentCompletionDeliveryState;
+  pendingFinalDelivery?: boolean;
+  pendingFinalDeliveryCreatedAt?: number;
+  pendingFinalDeliveryLastAttemptAt?: number;
+  pendingFinalDeliveryAttemptCount?: number;
+  pendingFinalDeliveryLastError?: string | null;
+  pendingFinalDeliveryPayload?: PendingFinalDeliveryPayload;
+  completionAnnouncedAt?: number;
   attachmentsDir?: string;
   attachmentsRootDir?: string;
   retainAttachmentsOnKeep?: boolean;

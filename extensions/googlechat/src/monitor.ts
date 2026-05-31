@@ -255,7 +255,6 @@ async function processMessageWithPipeline(params: {
       id: spaceId,
     },
     runtime: core.channel,
-    sessionStore: config.session?.store,
   });
 
   let mediaPath: string | undefined;
@@ -273,7 +272,7 @@ async function processMessageWithPipeline(params: {
     ? space.displayName || `space:${spaceId}`
     : senderName || `user:${senderId}`;
   const timestampMs = resolveGoogleChatTimestampMs(event.eventTime);
-  const { storePath, body } = buildEnvelope({
+  const { body } = buildEnvelope({
     channel: "Google Chat",
     from: fromLabel,
     timestamp: timestampMs,
@@ -388,7 +387,6 @@ async function processMessageWithPipeline(params: {
         accountId: route.accountId,
         agentId: route.agentId,
         routeSessionKey: route.sessionKey,
-        storePath,
         ctxPayload,
         recordInboundSession: core.channel.session.recordInboundSession,
         dispatchReplyWithBufferedBlockDispatcher:

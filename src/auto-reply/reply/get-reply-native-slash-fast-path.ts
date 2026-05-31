@@ -112,16 +112,14 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
   if (command.commandBodyNormalized === "/status") {
     const targetSessionEntry =
       sessionState.sessionStore[sessionState.sessionKey] ?? sessionState.sessionEntry;
-    let resolvedDefaultThinkingLevel: ThinkLevel | undefined;
-    const resolveDefaultThinkingLevel = async () => {
-      resolvedDefaultThinkingLevel ??= await resolveNativeSlashDefaultThinkingLevel({
+    const resolvedStatusThinkingLevel =
+      normalizeThinkLevel(targetSessionEntry?.thinkingLevel) ??
+      normalizeThinkLevel(params.agentCfg?.thinkingDefault) ??
+      (await resolveNativeSlashDefaultThinkingLevel({
         cfg: params.cfg,
         provider: params.provider,
         model: params.model,
-      });
-      return resolvedDefaultThinkingLevel;
-    };
-    const resolvedThinkLevel = normalizeThinkLevel(targetSessionEntry?.thinkingLevel);
+      }));
     const { buildStatusReply } = await loadStatusCommandRuntime();
     return {
       handled: true,
@@ -132,15 +130,14 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
         sessionKey: sessionState.sessionKey,
         parentSessionKey: targetSessionEntry?.parentSessionKey ?? params.ctx.ParentSessionKey,
         sessionScope: sessionState.sessionScope,
-        storePath: sessionState.storePath,
         provider: params.provider,
         model: params.model,
         workspaceDir: params.workspaceDir,
-        resolvedThinkLevel,
+        resolvedThinkLevel: resolvedStatusThinkingLevel,
         resolvedVerboseLevel: "off",
         resolvedReasoningLevel: "off",
         resolvedElevatedLevel: "off",
-        resolveDefaultThinkingLevel,
+        resolveDefaultThinkingLevel: async () => resolvedStatusThinkingLevel,
         isGroup: sessionState.isGroup,
         defaultGroupActivation: () => "always",
         mediaDecisions: params.ctx.MediaUnderstandingDecisions,
@@ -178,7 +175,6 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     previousSessionEntry: sessionState.previousSessionEntry,
     sessionStore: sessionState.sessionStore,
     sessionKey: sessionState.sessionKey,
-    storePath: sessionState.storePath,
     sessionScope: sessionState.sessionScope,
     workspaceDir: params.workspaceDir,
     opts: params.opts,
@@ -213,7 +209,6 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     sessionEntry: sessionState.sessionEntry,
     sessionStore: sessionState.sessionStore,
     sessionKey: sessionState.sessionKey,
-    storePath: sessionState.storePath,
     sessionScope: sessionState.sessionScope,
     groupResolution: sessionState.groupResolution,
     isGroup: sessionState.isGroup,
@@ -244,7 +239,6 @@ export async function maybeResolveNativeSlashCommandFastReply(params: {
     previousSessionEntry: sessionState.previousSessionEntry,
     sessionStore: sessionState.sessionStore,
     sessionKey: sessionState.sessionKey,
-    storePath: sessionState.storePath,
     sessionScope: sessionState.sessionScope,
     workspaceDir: params.workspaceDir,
     isGroup: sessionState.isGroup,

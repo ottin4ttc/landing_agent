@@ -194,10 +194,18 @@ describe("irc inbound behavior", () => {
       sendReply: vi.fn(async () => {}),
     });
 
-    const assembledRequest = (
-      coreRuntime.channel.inbound.dispatchReply as unknown as { mock: { calls: unknown[][] } }
-    ).mock.calls[0]?.[0] as { replyPipeline?: unknown } | undefined;
-    expect(assembledRequest?.replyPipeline).toEqual({});
+    const dispatchCall = (
+      coreRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as unknown as {
+        mock: { calls: unknown[][] };
+      }
+    ).mock.calls[0]?.[0] as { dispatcherOptions?: Record<string, unknown> } | undefined;
+    expect(dispatchCall?.dispatcherOptions).toEqual(
+      expect.objectContaining({
+        deliver: expect.any(Function),
+        responsePrefixContextProvider: expect.any(Function),
+        transformReplyPayload: expect.any(Function),
+      }),
+    );
   });
 
   it("uses channel:# prefix for group channel From and OriginatingTo fields", async () => {
@@ -236,8 +244,11 @@ describe("irc inbound behavior", () => {
       }
     ).mock.calls[0]?.[0] as Record<string, unknown> | undefined;
     expect(
-      (coreRuntime.channel.inbound.dispatchReply as unknown as { mock: { calls: unknown[][] } })
-        .mock.calls.length,
+      (
+        coreRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher as unknown as {
+          mock: { calls: unknown[][] };
+        }
+      ).mock.calls.length,
     ).toBe(1);
     expect(runtime.log).not.toHaveBeenCalled();
     expect(ctx?.From).toBe("channel:#ops");

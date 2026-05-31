@@ -1,4 +1,5 @@
 export {
+  clearPluginStateStoreForTests,
   createPluginStateKeyedStore as createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStore as createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,

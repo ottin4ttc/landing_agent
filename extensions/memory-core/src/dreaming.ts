@@ -135,7 +135,6 @@ function formatRepairSummary(repair: {
   rewroteStore: boolean;
   removedInvalidEntries: number;
   removedOverflowEntries?: number;
-  removedStaleLock: boolean;
 }): string {
   const actions: string[] = [];
   if (repair.rewroteStore) {
@@ -146,10 +145,7 @@ function formatRepairSummary(repair: {
     ]
       .filter(Boolean)
       .join(", ");
-    actions.push(`rewrote recall store${details ? ` (${details})` : ""}`);
-  }
-  if (repair.removedStaleLock) {
-    actions.push("removed stale promotion lock");
+    actions.push(`rewrote recall database${details ? ` (${details})` : ""}`);
   }
   return actions.join(", ");
 }

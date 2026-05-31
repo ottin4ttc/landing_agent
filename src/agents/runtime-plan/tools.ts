@@ -2,11 +2,11 @@ import type { TSchema } from "typebox";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderRuntimePluginHandle } from "../../plugins/provider-hook-runtime.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
+import type { AgentTool } from "../agent-core-contract.js";
 import {
   logProviderToolSchemaDiagnostics,
   normalizeProviderToolSchemas,
 } from "../embedded-agent-runner/tool-schema-runtime.js";
-import type { AgentTool } from "../runtime/index.js";
 import type { AgentRuntimePlan } from "./types.js";
 
 type AgentRuntimeToolPolicyParams<TSchemaType extends TSchema = TSchema, TResult = unknown> = {

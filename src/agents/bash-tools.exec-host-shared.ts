@@ -16,6 +16,7 @@ import {
   type ExecSecurity,
 } from "../infra/exec-approvals.js";
 import { logWarn } from "../logger.js";
+import type { AgentToolResult } from "./agent-core-contract.js";
 import { registerExecApprovalFollowupRuntimeHandoff } from "./bash-tools.exec-approval-followup-state.js";
 import { sendExecApprovalFollowup } from "./bash-tools.exec-approval-followup.js";
 import {
@@ -26,7 +27,6 @@ import { buildApprovalPendingMessage } from "./bash-tools.exec-runtime.js";
 import { DEFAULT_APPROVAL_TIMEOUT_MS } from "./bash-tools.exec-runtime.js";
 import type { ExecElevatedDefaults, ExecToolDetails } from "./bash-tools.exec-types.js";
 import { isExecDeniedResultText } from "./exec-approval-result.js";
-import type { AgentToolResult } from "./runtime/index.js";
 
 type ResolvedExecApprovals = ReturnType<typeof resolveExecApprovals>;
 export const MAX_EXEC_APPROVAL_FOLLOWUP_FAILURE_LOG_KEYS = 256;
@@ -400,9 +400,9 @@ export function buildHeadlessExecApprovalDeniedMessage(params: {
   return [
     `exec denied: ${runLabel} cannot wait for interactive exec approval.`,
     `Effective host exec policy: security=${params.security} ask=${params.ask} askFallback=${params.askFallback}`,
-    "Stricter values from tools.exec and ~/.openclaw/exec-approvals.json both apply.",
+    "Stricter values from tools.exec and SQLite exec approvals state both apply.",
     "Fix one of these:",
-    '- align both files to security="full" and ask="off" for trusted local automation',
+    '- align config and approvals state to security="full" and ask="off" for trusted local automation',
     "- keep allowlist mode and add an explicit allowlist entry for this command",
     "- enable Web UI, terminal UI, or chat exec approvals and rerun interactively",
     'Tip: run "openclaw doctor" and "openclaw approvals get --gateway" to inspect the effective policy.',

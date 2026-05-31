@@ -1,5 +1,8 @@
-import fs from "node:fs/promises";
-import path from "node:path";
+import {
+  clearRuntimeAuthProfileStoreSnapshots,
+  loadAuthProfileStoreWithoutExternalProfiles,
+  saveAuthProfileStore,
+} from "openclaw/plugin-sdk/agent-runtime";
 
 export const QA_CODEX_OAUTH_PROFILE_ID = "openai:qa-oauth";
 export const QA_OPENAI_API_KEY_PROFILE_ID = "openai:media-api";
@@ -44,10 +47,6 @@ export type QaCodexAuthProfileSelection =
     };
 
 const QA_FIXED_OAUTH_EXPIRY_MS = Date.UTC(2036, 0, 1);
-
-function authProfilesPath(agentDir: string) {
-  return path.join(agentDir, "auth-profiles.json");
-}
 
 function buildCodexOAuthProfile(): QaOAuthAuthProfile {
   return {
@@ -132,22 +131,14 @@ export async function seedAuthProfiles(
     version: QA_AUTH_PROFILE_STORE_VERSION,
     profiles: buildProfileMap(shape),
   };
-  await fs.mkdir(agentDir, { recursive: true });
-  await fs.writeFile(authProfilesPath(agentDir), `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+  saveAuthProfileStore(snapshot, agentDir);
+  clearRuntimeAuthProfileStoreSnapshots();
   return snapshot;
 }
 
 export async function snapshotAuthProfiles(agentDir: string): Promise<QaAuthProfileSnapshot> {
-  const raw = await fs.readFile(authProfilesPath(agentDir), "utf8").catch((error: unknown) => {
-    if (error && typeof error === "object" && (error as { code?: unknown }).code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  });
-  if (!raw) {
-    return { version: QA_AUTH_PROFILE_STORE_VERSION, profiles: {} };
-  }
-  return normalizeAuthProfileSnapshot(JSON.parse(raw) as unknown);
+  clearRuntimeAuthProfileStoreSnapshots();
+  return normalizeAuthProfileSnapshot(loadAuthProfileStoreWithoutExternalProfiles(agentDir));
 }
 
 export function resolveCodexAuthProfile(

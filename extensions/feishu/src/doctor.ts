@@ -8,10 +8,11 @@ import type {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
-  loadSessionStore,
+  loadSessionStore as loadSdkSessionStore,
   resolveSessionFilePath,
   resolveStorePath,
-  updateSessionStore,
+  saveSessionStore as saveSdkSessionStore,
+  type SessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
 
@@ -62,6 +63,8 @@ type FeishuDoctorSessionEntry = {
   entry: FeishuSessionEntry;
 };
 
+type FeishuSessionStore = Record<string, SessionEntry>;
+
 export type FeishuDoctorInspection = {
   stateDir: string;
   feishuStateDir: string;
@@ -85,6 +88,60 @@ function timestampForPath(now = new Date()): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isCustomSessionStoreError(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message.includes("Custom sessions.json paths are not supported")
+  );
+}
+
+function readLegacySessionStore(storePath: string): FeishuSessionStore | null {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(storePath, "utf-8"));
+    return isRecord(parsed) ? (parsed as FeishuSessionStore) : {};
+  } catch {
+    return null;
+  }
+}
+
+function writeLegacySessionStore(storePath: string, store: FeishuSessionStore): void {
+  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  fs.writeFileSync(storePath, `${JSON.stringify(store, null, 2)}\n`);
+}
+
+function loadFeishuSessionStore(storePath: string): FeishuSessionStore {
+  try {
+    const store = loadSdkSessionStore(storePath, { skipCache: true });
+    return Object.keys(store).length > 0 ? store : (readLegacySessionStore(storePath) ?? store);
+  } catch (error) {
+    if (isCustomSessionStoreError(error)) {
+      return readLegacySessionStore(storePath) ?? {};
+    }
+    throw error;
+  }
+}
+
+async function saveFeishuSessionStore(storePath: string, store: FeishuSessionStore): Promise<void> {
+  try {
+    await saveSdkSessionStore(storePath, store, { skipMaintenance: true });
+  } catch (error) {
+    if (isCustomSessionStoreError(error)) {
+      writeLegacySessionStore(storePath, store);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function updateFeishuSessionStore<T>(
+  storePath: string,
+  mutator: (store: FeishuSessionStore) => Promise<T> | T,
+): Promise<T> {
+  const store = loadFeishuSessionStore(storePath);
+  const result = await mutator(store);
+  await saveFeishuSessionStore(storePath, store);
+  return result;
 }
 
 function toFeishuSessionEntry(value: unknown): FeishuSessionEntry {
@@ -557,7 +614,7 @@ export function inspectFeishuDoctorState(params: {
   const sessionEntries: FeishuDoctorInspection["sessionEntries"] = [];
 
   for (const target of collectFeishuSessionTargets({ cfg: params.cfg, env, stateDir })) {
-    const store = loadSessionStore(target.storePath, { skipCache: true });
+    const store = loadFeishuSessionStore(target.storePath);
     for (const [key, entry] of Object.entries(store).toSorted(([left], [right]) =>
       left.localeCompare(right),
     )) {
@@ -735,26 +792,19 @@ async function repairFeishuDoctorState(params: {
     try {
       copyStoreBackup({ storePath, backupDir, agentId: group.agentId });
       const keys = new Set(group.entries.map((entry) => entry.key));
-      const removedEntries = await updateSessionStore(
-        storePath,
-        (store) => {
-          const removed: typeof group.entries = [];
-          for (const key of keys) {
-            if (Object.hasOwn(store, key)) {
-              delete store[key];
-              const entry = group.entries.find((candidate) => candidate.key === key);
-              if (entry) {
-                removed.push(entry);
-              }
+      const removedEntries = await updateFeishuSessionStore(storePath, (store) => {
+        const removed: typeof group.entries = [];
+        for (const key of keys) {
+          if (Object.hasOwn(store, key)) {
+            delete store[key];
+            const entry = group.entries.find((candidate) => candidate.key === key);
+            if (entry) {
+              removed.push(entry);
             }
           }
-          return removed;
-        },
-        {
-          skipMaintenance: true,
-          allowDropAcpMetaSessionKeys: [...keys],
-        },
-      );
+        }
+        return removed;
+      });
       const removed = removedEntries.length;
       removedSessionEntries += removed;
       if (removed > 0) {

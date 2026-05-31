@@ -8,7 +8,6 @@ type MockImplementationTarget = {
   mockImplementation: (implementation: (opts: { method?: string }) => Promise<unknown>) => unknown;
 };
 type SessionStore = Record<string, Record<string, unknown>>;
-type SessionStoreMutator = (store: SessionStore) => unknown;
 type HookRunner = Pick<SubagentLifecycleHookRunner, "hasHooks"> &
   Partial<
     Pick<
@@ -75,10 +74,10 @@ function createDefaultSessionHelperMocks() {
   };
 }
 
-export function installSessionStoreCaptureMock(
-  updateSessionStoreMock: {
+export function installSessionEntryCaptureMock(
+  upsertSessionEntryMock: {
     mockImplementation: (
-      implementation: (storePath: string, mutator: SessionStoreMutator) => Promise<SessionStore>,
+      implementation: (options: { sessionKey: string; entry: Record<string, unknown> }) => unknown,
     ) => unknown;
   },
   params?: {
@@ -87,14 +86,11 @@ export function installSessionStoreCaptureMock(
   },
 ) {
   const store: SessionStore = {};
-  updateSessionStoreMock.mockImplementation(
-    async (_storePath: string, mutator: SessionStoreMutator) => {
-      params?.operations?.push("store:update");
-      await mutator(store);
-      params?.onStore?.(store);
-      return store;
-    },
-  );
+  upsertSessionEntryMock.mockImplementation((options) => {
+    params?.operations?.push("store:upsert");
+    store[options.sessionKey] = options.entry;
+    params?.onStore?.(store);
+  });
 }
 
 export function expectPersistedRuntimeModel(params: {
@@ -123,18 +119,18 @@ export async function loadSubagentSpawnModuleForTest(params: {
   callGatewayMock: MockFn;
   getRuntimeConfig?: () => Record<string, unknown>;
   ensureContextEnginesInitializedMock?: MockFn;
-  updateSessionStoreMock?: MockFn;
+  listSessionEntriesMock?: MockFn;
+  upsertSessionEntryMock?: MockFn;
   forkSessionFromParentMock?: MockFn;
   resolveContextEngineMock?: MockFn;
   resolveParentForkDecisionMock?: MockFn;
-  pruneLegacyStoreKeysMock?: MockFn;
   registerSubagentRunMock?: MockFn;
   emitSessionLifecycleEventMock?: MockFn;
   hookRunner?: HookRunner;
   resolveAgentConfig?: (cfg: Record<string, unknown>, agentId: string) => unknown;
   resolveAgentWorkspaceDir?: (cfg: Record<string, unknown>, agentId: string) => string;
   resolveSubagentSpawnModelSelection?: () => string | undefined;
-  getSubagentDepthFromSessionStore?: (sessionKey: string, opts?: unknown) => number;
+  getSubagentDepthFromSessionEntries?: (sessionKey: string, opts?: unknown) => number;
   countActiveRunsForSession?: (sessionKey: string) => number;
   resolveSandboxRuntimeStatus?: (params: {
     cfg?: Record<string, unknown>;
@@ -184,7 +180,8 @@ export async function loadSubagentSpawnModuleForTest(params: {
     parentConversationId?: string | number;
   }) => { to?: string; threadId?: string };
   workspaceDir?: string;
-  sessionStorePath?: string;
+  initialSessionStore?: SessionStore;
+  getSessionStore?: () => SessionStore;
   resetModules?: boolean;
 }): Promise<SubagentSpawnModuleForTest> {
   if (params.resetModules ?? true) {
@@ -192,13 +189,17 @@ export async function loadSubagentSpawnModuleForTest(params: {
   }
 
   const resetSubagentRegistryForTests = vi.fn();
+  const sessionStore: SessionStore = { ...params.initialSessionStore };
+  const currentSessionStore = () => params.getSessionStore?.() ?? sessionStore;
 
   vi.doMock("./subagent-spawn.runtime.js", () => ({
     callGateway: (opts: unknown) => params.callGatewayMock(opts),
     buildSubagentSystemPrompt: () => "system-prompt",
     forkSessionFromParent:
       params.forkSessionFromParentMock ??
-      (async () => ({ sessionId: "forked-session-id", sessionFile: "/tmp/forked-session.jsonl" })),
+      (async () => ({
+        sessionId: "forked-session-id",
+      })),
     getGlobalHookRunner: () => params.hookRunner ?? { hasHooks: () => false },
     emitSessionLifecycleEvent: (...args: unknown[]) =>
       params.emitSessionLifecycleEventMock?.(...args),
@@ -245,16 +246,24 @@ export async function loadSubagentSpawnModuleForTest(params: {
       ...current,
       ...next,
     }),
-    updateSessionStore:
-      params.updateSessionStoreMock ??
-      (async (_storePath: string, mutator: SessionStoreMutator) => {
-        const store: SessionStore = {};
-        await mutator(store);
-        return store;
-      }),
+    listSessionEntries: (opts: unknown) => {
+      params.listSessionEntriesMock?.(opts);
+      return Object.entries(currentSessionStore()).map(([sessionKey, entry]) => ({
+        sessionKey,
+        entry,
+      }));
+    },
+    upsertSessionEntry: (opts: {
+      agentId?: string;
+      path?: string;
+      sessionKey: string;
+      entry: Record<string, unknown>;
+    }) => {
+      currentSessionStore()[opts.sessionKey] = opts.entry;
+      return params.upsertSessionEntryMock?.(opts);
+    },
     isAdminOnlyMethod: (method: string) =>
       method === "sessions.patch" || method === "sessions.delete",
-    pruneLegacyStoreKeys: (...args: unknown[]) => params.pruneLegacyStoreKeysMock?.(...args),
     getSessionBindingService:
       params.getSessionBindingService ??
       (() => ({
@@ -282,11 +291,10 @@ export async function loadSubagentSpawnModuleForTest(params: {
       ...fallback,
       ...primary,
     }),
-    resolveGatewaySessionStoreTarget: (targetParams: { key: string }) => ({
+    resolveGatewaySessionDatabaseTarget: (targetParams: { key: string }) => ({
       agentId: "main",
-      storePath: params.sessionStorePath ?? "/tmp/subagent-spawn-model-session.json",
+      databasePath: "/tmp/subagent-spawn-model-session.sqlite",
       canonicalKey: targetParams.key,
-      storeKeys: [targetParams.key],
     }),
     normalizeDeliveryContext: identityDeliveryContext,
     resolveAgentConfig: params.resolveAgentConfig ?? (() => undefined),
@@ -304,7 +312,7 @@ export async function loadSubagentSpawnModuleForTest(params: {
   }));
 
   vi.doMock("./subagent-depth.js", () => ({
-    getSubagentDepthFromSessionStore: params.getSubagentDepthFromSessionStore ?? (() => 0),
+    getSubagentDepthFromSessionEntries: params.getSubagentDepthFromSessionEntries ?? (() => 0),
   }));
 
   vi.doMock("./subagent-registry.js", () => ({

@@ -1,6 +1,6 @@
-import { streamSimple } from "../../llm/stream.js";
 import { visitObjectContentBlocks } from "../../shared/message-content-blocks.js";
-import type { StreamFn } from "../runtime/index.js";
+import type { StreamFn } from "../agent-core-contract.js";
+import { streamSimple } from "../pi-ai-contract.js";
 import type { MutableAssistantMessageEventStream } from "../stream-compat.js";
 
 const HTML_ENTITY_RE = /&(?:amp|lt|gt|quot|apos|#39|#x[0-9a-f]+|#\d+);/i;

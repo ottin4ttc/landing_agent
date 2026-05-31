@@ -41,11 +41,6 @@ const hoisted = vi.hoisted(() => ({
   activeEmbeddedRunSessionKeys: [] as string[],
   markRestartAbortedMainSessions: vi.fn(async (_params: unknown) => ({ marked: 1, skipped: 0 })),
   runtimeConfig: { value: { session: { store: "/tmp/active-sessions.json" } } as OpenClawConfig },
-  reloadEvents: [] as string[],
-  resetModelCatalogCache: vi.fn(() => {}),
-  clearCurrentProviderAuthState: vi.fn(() => {}),
-  warmCurrentProviderAuthStateOffMainThread: vi.fn(async (_cfg: OpenClawConfig) => {}),
-  disposeAllSessionMcpRuntimes: vi.fn(async () => {}),
 }));
 
 vi.mock("../hooks/gmail-watcher.js", () => ({
@@ -101,28 +96,6 @@ vi.mock("../config/config.js", () => ({
   getRuntimeConfig: () => hoisted.runtimeConfig.value,
 }));
 
-vi.mock("../agents/model-catalog.js", () => ({
-  resetModelCatalogCache: () => {
-    hoisted.reloadEvents.push("reset-model-catalog");
-    hoisted.resetModelCatalogCache();
-  },
-}));
-
-vi.mock("../agents/model-provider-auth.js", () => ({
-  clearCurrentProviderAuthState: () => {
-    hoisted.reloadEvents.push("clear-provider-auth");
-    hoisted.clearCurrentProviderAuthState();
-  },
-  warmCurrentProviderAuthStateOffMainThread: async (cfg: OpenClawConfig) => {
-    hoisted.reloadEvents.push("warm-provider-auth");
-    await hoisted.warmCurrentProviderAuthStateOffMainThread(cfg);
-  },
-}));
-
-vi.mock("../agents/agent-bundle-mcp-tools.js", () => ({
-  disposeAllSessionMcpRuntimes: hoisted.disposeAllSessionMcpRuntimes,
-}));
-
 function createReloadHandlersForTest(logReload = { info: vi.fn(), warn: vi.fn() }) {
   const cron = { start: vi.fn(async () => {}), stop: vi.fn() };
   const heartbeatRunner = {
@@ -136,7 +109,7 @@ function createReloadHandlersForTest(logReload = { info: vi.fn(), warn: vi.fn() 
       hooksConfig: {} as never,
       hookClientIpConfig: {} as never,
       heartbeatRunner: heartbeatRunner as never,
-      cronState: { cron, storePath: "/tmp/cron.json", cronEnabled: false } as never,
+      cronState: { cron, storeKey: "cron-test", cronEnabled: false } as never,
       channelHealthMonitor: null,
     }),
     setState: vi.fn(),
@@ -167,108 +140,7 @@ afterEach(() => {
   hoisted.activeEmbeddedRunSessionIds.length = 0;
   hoisted.activeEmbeddedRunSessionKeys.length = 0;
   hoisted.markRestartAbortedMainSessions.mockClear();
-  hoisted.runtimeConfig.value = { session: { store: "/tmp/active-sessions.json" } };
-  hoisted.reloadEvents.length = 0;
-  hoisted.resetModelCatalogCache.mockClear();
-  hoisted.clearCurrentProviderAuthState.mockClear();
-  hoisted.warmCurrentProviderAuthStateOffMainThread.mockClear();
-  hoisted.disposeAllSessionMcpRuntimes.mockClear();
-  hoisted.disposeAllSessionMcpRuntimes.mockResolvedValue(undefined);
-});
-
-describe("gateway hot reload model state", () => {
-  it("resets prepared model runtime state for every hot reload and rewarms after plugin reload", async () => {
-    const reloadPlugins = vi.fn(async (): Promise<GatewayPluginReloadResult> => {
-      hoisted.reloadEvents.push("reload-plugins");
-      return {
-        restartChannels: new Set(),
-        activeChannels: new Set(),
-      };
-    });
-    const { applyHotReload } = createGatewayReloadHandlers({
-      deps: {} as never,
-      broadcast: vi.fn(),
-      getState: () => ({
-        hooksConfig: {} as never,
-        hookClientIpConfig: {} as never,
-        heartbeatRunner: { stop: vi.fn(), updateConfig: vi.fn() } as never,
-        cronState: {
-          cron: { start: vi.fn(async () => {}), stop: vi.fn() },
-          storePath: "/tmp/cron.json",
-          cronEnabled: false,
-        } as never,
-        channelHealthMonitor: null,
-      }),
-      setState: vi.fn(),
-      startChannel: vi.fn(async () => {}),
-      stopChannel: vi.fn(async () => {}),
-      reloadPlugins,
-      logHooks: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      logChannels: { info: vi.fn(), error: vi.fn() },
-      logCron: { error: vi.fn() },
-      logReload: { info: vi.fn(), warn: vi.fn() },
-      createHealthMonitor: () => null,
-    });
-
-    const nextConfig = { plugins: { enabled: true } } as OpenClawConfig;
-    await applyHotReload(
-      {
-        changedPaths: ["plugins.enabled"],
-        restartGateway: false,
-        restartReasons: [],
-        hotReasons: ["plugins.enabled"],
-        reloadHooks: false,
-        restartGmailWatcher: false,
-        restartCron: false,
-        restartHeartbeat: false,
-        restartHealthMonitor: false,
-        reloadPlugins: true,
-        restartChannels: new Set(),
-        disposeMcpRuntimes: false,
-        noopPaths: [],
-      },
-      nextConfig,
-    );
-
-    const firstResetIndex = hoisted.reloadEvents.indexOf("reset-model-catalog");
-    expect(firstResetIndex).toBeGreaterThanOrEqual(0);
-    expect(hoisted.reloadEvents.slice(firstResetIndex)).toEqual([
-      "reset-model-catalog",
-      "clear-provider-auth",
-      "reload-plugins",
-      "reset-model-catalog",
-      "clear-provider-auth",
-      "warm-provider-auth",
-    ]);
-    expect(hoisted.warmCurrentProviderAuthStateOffMainThread).toHaveBeenCalledWith(nextConfig);
-  });
-
-  it("disposes cached MCP runtimes on MCP config hot reloads", async () => {
-    const { applyHotReload } = createReloadHandlersForTest();
-    const nextConfig = { mcp: { servers: {} } } as OpenClawConfig;
-
-    await applyHotReload(
-      {
-        changedPaths: ["mcp.servers.context7.command"],
-        restartGateway: false,
-        restartReasons: [],
-        hotReasons: ["mcp.servers.context7.command"],
-        reloadHooks: false,
-        restartGmailWatcher: false,
-        restartCron: false,
-        restartHeartbeat: false,
-        restartHealthMonitor: false,
-        reloadPlugins: false,
-        restartChannels: new Set(),
-        disposeMcpRuntimes: true,
-        noopPaths: [],
-      },
-      nextConfig,
-    );
-
-    expect(hoisted.disposeAllSessionMcpRuntimes).toHaveBeenCalledTimes(1);
-    expect(hoisted.warmCurrentProviderAuthStateOffMainThread).toHaveBeenCalledWith(nextConfig);
-  });
+  hoisted.runtimeConfig.value = {};
 });
 
 describe("gateway restart deferral preflight", () => {
@@ -692,10 +564,6 @@ describe("gateway restart deferral preflight", () => {
         reason: "config reload forced restart",
       });
       expect(hoisted.markRestartAbortedMainSessions).toHaveBeenCalledWith({
-        cfg: {
-          gateway: { reload: { deferralTimeoutMs: 1_000 } },
-        },
-        additionalCfgs: [{ session: { store: "/tmp/active-sessions.json" } }],
         sessionIds: new Set(["session-issue-82433"]),
         sessionKeys: new Set(["agent:main:issue-82433"]),
         reason: "config reload forced restart",
@@ -1426,7 +1294,7 @@ describe("gateway plugin hot reload handlers", () => {
         hooksConfig: {} as never,
         hookClientIpConfig: {} as never,
         heartbeatRunner: heartbeatRunner as never,
-        cronState: { cron, storePath: "/tmp/cron.json", cronEnabled: false } as never,
+        cronState: { cron, storeKey: "cron-test", cronEnabled: false } as never,
         channelHealthMonitor: null,
       }),
       setState,

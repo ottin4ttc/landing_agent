@@ -1,5 +1,5 @@
 import type { AgentCompactionIdentifierPolicy } from "../../config/types.agent-defaults.js";
-import type { Model } from "../../llm/types.js";
+import type { Model } from "../pi-ai-contract.js";
 import { createSessionManagerRuntimeRegistry } from "./session-manager-runtime-registry.js";
 
 export type CompactionSafeguardRuntimeValue = {

@@ -77,7 +77,6 @@ function createAttemptParams(config?: OpenClawConfig): EmbeddedRunAttemptParams 
     prompt: "hello",
     sessionId: "session-1",
     runId: "run-1",
-    sessionFile: "/tmp/session.jsonl",
     workspaceDir: "/tmp/workspace",
     timeoutMs: 5_000,
     provider: "codex",
@@ -717,7 +716,7 @@ describe("selectAgentHarness", () => {
       maybeCompactAgentHarnessSession({
         sessionId: "session-1",
         sessionKey: "agent:main:main",
-        sessionFile: "/tmp/session.jsonl",
+        path: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
         provider: "anthropic",
         model: "claude-opus-4-7",
@@ -731,7 +730,7 @@ describe("selectAgentHarness", () => {
       maybeCompactAgentHarnessSession({
         sessionId: "session-1",
         sessionKey: "agent:main:main",
-        sessionFile: "/tmp/session.jsonl",
+        path: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
         provider: "claude-cli",
         model: "claude-opus-4-7",
@@ -747,7 +746,6 @@ describe("selectAgentHarness", () => {
       maybeCompactAgentHarnessSession({
         sessionId: "session-1",
         sessionKey: "agent:main:main",
-        sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
         provider: "ollama",
         model: "llama3.3",
@@ -774,7 +772,6 @@ describe("selectAgentHarness", () => {
       maybeCompactAgentHarnessSession({
         sessionId: "session-1",
         sessionKey: "agent:main:main",
-        sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
         provider: "openai",
         model: "gpt-5.5",
@@ -792,7 +789,7 @@ describe("selectAgentHarness", () => {
       maybeCompactAgentHarnessSession({
         sessionId: "session-1",
         sessionKey: "agent:main:main",
-        sessionFile: "/tmp/session.jsonl",
+        path: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
         provider: "codex",
         model: "gpt-5.5",
@@ -824,7 +821,6 @@ describe("selectAgentHarness", () => {
       maybeCompactAgentHarnessSession({
         sessionId: "session-1",
         sessionKey: "agent:strict:main",
-        sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
         provider: "openai",
         model: "gpt-5.5",
@@ -854,7 +850,6 @@ describe("selectAgentHarness", () => {
         sessionId: "session-1",
         sessionKey: "agent:main:main",
         sandboxSessionKey: "agent:strict:main",
-        sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
         provider: "openai",
         model: "gpt-5.5",
@@ -884,7 +879,6 @@ describe("selectAgentHarness", () => {
         sessionId: "session-1",
         sessionKey: "agent:main:main",
         sandboxSessionKey: "global",
-        sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp/workspace",
         provider: "openai",
         model: "gpt-5.5",

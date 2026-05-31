@@ -1,27 +1,17 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveStorePath } from "../../config/sessions/paths.js";
-import { loadSessionStore, upsertSessionEntry } from "../../config/sessions/store.js";
+import { getSessionEntry, upsertSessionEntry } from "../../config/sessions/store.js";
+import { useTempSessionsFixture } from "../../config/sessions/test-helpers.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createCreateGoalTool, createGetGoalTool } from "./goal-tools.js";
 
-async function createStoreConfig(): Promise<{ config: OpenClawConfig; template: string }> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-goal-tools-"));
-  const template = path.join(dir, "{agentId}", "sessions.json");
-  return {
-    config: { session: { store: template } } as OpenClawConfig,
-    template,
-  };
-}
+const config = {} as OpenClawConfig;
 
 describe("goal tools", () => {
+  useTempSessionsFixture("openclaw-goal-tools-");
+
   it("keeps get_goal read-only when accounting changes are projected", async () => {
-    const { config, template } = await createStoreConfig();
-    const storePath = resolveStorePath(template, { agentId: "research" });
     await upsertSessionEntry({
-      storePath,
+      agentId: "research",
       sessionKey: "global",
       entry: {
         sessionId: "sess-global",
@@ -53,11 +43,12 @@ describe("goal tools", () => {
     const result = await tool.execute("call-1", {});
 
     expect((result.details as { goal?: { status?: string } }).goal?.status).toBe("budget_limited");
-    expect(loadSessionStore(storePath, { skipCache: true }).global?.goal?.status).toBe("active");
+    expect(getSessionEntry({ agentId: "research", sessionKey: "global" })?.goal?.status).toBe(
+      "active",
+    );
   });
 
   it("uses the resolved session agent for global session stores", async () => {
-    const { config, template } = await createStoreConfig();
     const tool = createCreateGoalTool({
       agentSessionKey: "global",
       runSessionKey: "global",
@@ -65,23 +56,20 @@ describe("goal tools", () => {
       config,
     });
 
-    const researchStorePath = resolveStorePath(template, { agentId: "research" });
     await upsertSessionEntry({
-      storePath: researchStorePath,
+      agentId: "research",
       sessionKey: "global",
       entry: { sessionId: "sess-global", updatedAt: 1 },
     });
     await tool.execute("call-1", { objective: "ship global work" });
 
-    const mainStorePath = resolveStorePath(template, { agentId: "main" });
-    expect(loadSessionStore(researchStorePath, { skipCache: true }).global?.goal?.objective).toBe(
+    expect(getSessionEntry({ agentId: "research", sessionKey: "global" })?.goal?.objective).toBe(
       "ship global work",
     );
-    expect(loadSessionStore(mainStorePath, { skipCache: true }).global?.goal).toBeUndefined();
+    expect(getSessionEntry({ agentId: "main", sessionKey: "global" })?.goal).toBeUndefined();
   });
 
   it("prefers scoped run session keys over the fallback session agent", async () => {
-    const { config, template } = await createStoreConfig();
     const tool = createCreateGoalTool({
       agentSessionKey: "global",
       runSessionKey: "agent:ops:main",
@@ -89,20 +77,18 @@ describe("goal tools", () => {
       config,
     });
 
-    const opsStorePath = resolveStorePath(template, { agentId: "ops" });
     await upsertSessionEntry({
-      storePath: opsStorePath,
+      agentId: "ops",
       sessionKey: "agent:ops:main",
       entry: { sessionId: "sess-ops", updatedAt: 1 },
     });
     await tool.execute("call-1", { objective: "ship ops work" });
 
-    const researchStorePath = resolveStorePath(template, { agentId: "research" });
+    expect(getSessionEntry({ agentId: "ops", sessionKey: "agent:ops:main" })?.goal?.objective).toBe(
+      "ship ops work",
+    );
     expect(
-      loadSessionStore(opsStorePath, { skipCache: true })["agent:ops:main"]?.goal?.objective,
-    ).toBe("ship ops work");
-    expect(
-      loadSessionStore(researchStorePath, { skipCache: true })["agent:ops:main"]?.goal,
+      getSessionEntry({ agentId: "research", sessionKey: "agent:ops:main" })?.goal,
     ).toBeUndefined();
   });
 });

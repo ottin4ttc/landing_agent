@@ -9,7 +9,7 @@ import { collectProviderApiKeys } from "./live-auth-keys.js";
 import { isLiveTestEnabled } from "./live-test-helpers.js";
 import { getApiKeyForModel, requireApiKey } from "./model-auth.js";
 import { normalizeProviderId, parseModelRef } from "./model-selection.js";
-import { ensureOpenClawModelsJson } from "./models-config.js";
+import { ensureOpenClawModelCatalog } from "./models-config.js";
 import { buildAssistantMessageWithZeroUsage } from "./stream-message-shared.js";
 
 export const LIVE_CACHE_TEST_ENABLED =
@@ -167,54 +167,32 @@ export async function resolveLiveDirectModelPool(params: {
   envVar: string;
   preferredModelIds: readonly string[];
 }): Promise<LiveResolvedModelPool> {
+  const rawModel = process.env[params.envVar]?.trim();
+  const parsed = rawModel ? parseModelRef(rawModel, params.provider) : null;
+
+  logLiveCache(`resolving ${params.provider} model from configured auth storage`);
   const cfg = getRuntimeConfig();
-  await ensureOpenClawModelsJson(cfg);
+  await ensureOpenClawModelCatalog(cfg);
   const agentDir = resolveDefaultAgentDir(cfg);
   const authStorage = discoverAuthStorage(agentDir);
   const models = discoverModels(authStorage, agentDir).getAll();
+
   const candidates = models.filter(
     (model) => normalizeProviderId(model.provider) === params.provider && model.api === params.api,
   );
-  const rawModel = process.env[params.envVar]?.trim();
-  const parsed = rawModel ? parseModelRef(rawModel, params.provider) : null;
-  const requestedModelId =
-    parsed && normalizeProviderId(parsed.provider) === params.provider ? parsed.model : rawModel;
-  const selectModel = (): Model | undefined => {
-    if (parsed) {
-      return candidates.find(
-        (model) =>
-          normalizeProviderId(model.provider) === parsed.provider && model.id === parsed.model,
-      );
-    }
-    if (requestedModelId) {
-      return candidates.find((model) => model.id === requestedModelId);
-    }
-    return params.preferredModelIds
+
+  let resolvedModel: Model | undefined;
+  if (parsed) {
+    resolvedModel = candidates.find(
+      (model) =>
+        normalizeProviderId(model.provider) === parsed.provider && model.id === parsed.model,
+    );
+  }
+  if (!resolvedModel) {
+    resolvedModel = params.preferredModelIds
       .map((id) => candidates.find((model) => model.id === id))
       .find(Boolean);
-  };
-  const liveKeys = collectProviderApiKeys(params.provider);
-  if (liveKeys.length > 0) {
-    const selectedModel = selectModel();
-    if (!selectedModel || selectedModel.api !== params.api) {
-      throw new Error(
-        requestedModelId
-          ? `Model not found for ${params.provider}: ${requestedModelId}`
-          : `No built-in ${params.provider} ${params.api} model available.`,
-      );
-    }
-    logLiveCache(`resolved ${params.provider} model ${selectedModel.id} from live env key`);
-    return {
-      apiKeys: liveKeys,
-      fixture: {
-        model: selectedModel,
-        apiKey: liveKeys[0] ?? "",
-      },
-    };
   }
-
-  logLiveCache(`resolving ${params.provider} model from configured auth storage`);
-  const resolvedModel = selectModel();
   if (!resolvedModel) {
     throw new Error(
       rawModel
@@ -223,19 +201,19 @@ export async function resolveLiveDirectModelPool(params: {
     );
   }
 
-  const apiKey = requireApiKey(
-    await getApiKeyForModel({
-      model: resolvedModel,
-      cfg,
-      agentDir,
-    }),
-    resolvedModel.provider,
-  );
-  logLiveCache(
-    `resolved ${params.provider} model ${resolvedModel.id} from configured auth storage`,
-  );
+  const liveKeys = collectProviderApiKeys(params.provider);
+  const apiKey =
+    liveKeys[0] ??
+    requireApiKey(
+      await getApiKeyForModel({
+        model: resolvedModel,
+        cfg,
+        agentDir,
+      }),
+      resolvedModel.provider,
+    );
   return {
-    apiKeys: [apiKey],
+    apiKeys: liveKeys.length > 0 ? liveKeys : [apiKey],
     fixture: {
       model: resolvedModel,
       apiKey,

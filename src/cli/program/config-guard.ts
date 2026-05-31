@@ -6,7 +6,7 @@ import { readConfigFileSnapshot, setRuntimeConfigSnapshot } from "../../config/c
 import { resolveLegacyStateDirs, resolveOAuthDir, resolveStateDir } from "../../config/paths.js";
 import { resolveRequiredHomeDir } from "../../infra/home-dir.js";
 import type { RuntimeEnv } from "../../runtime.js";
-import { shouldMigrateStateFromPath } from "../argv.js";
+import { shouldRunConfigPreflightFromPath } from "../argv.js";
 
 const ALLOWED_INVALID_COMMANDS = new Set(["doctor", "logs", "health", "help", "status"]);
 const ALLOWED_INVALID_GATEWAY_SUBCOMMANDS = new Set([
@@ -148,7 +148,7 @@ export async function ensureConfigReady(params: {
 }): Promise<void> {
   const commandPath = params.commandPath ?? [];
   let preflightSnapshot: Awaited<ReturnType<typeof readConfigFileSnapshot>> | null = null;
-  const shouldConsiderStateMigration = shouldMigrateStateFromPath(commandPath);
+  const shouldConsiderStateMigration = shouldRunConfigPreflightFromPath(commandPath);
   const isReadOnlyMigrationCommand = isReadOnlyStateMigrationCommand(commandPath);
   const runStateMigrationPreflight = async () => {
     didRunDoctorConfigFlow = true;

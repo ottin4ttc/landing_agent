@@ -17,6 +17,7 @@ import {
   type MemoryEmbeddingProbeResult,
   type MemorySearchManager,
   type MemorySearchRuntimeDebug,
+  type MemorySessionTranscriptScope,
   type MemorySource,
   type MemorySyncProgressUpdate,
   type ResolvedQmdConfig,
@@ -363,7 +364,7 @@ class BorrowedMemoryManager implements MemorySearchManager {
   async sync(params?: {
     reason?: string;
     force?: boolean;
-    sessionFiles?: string[];
+    sessionTranscriptScopes?: MemorySessionTranscriptScope[];
     progress?: (update: MemorySyncProgressUpdate) => void;
   }) {
     await this.inner.sync?.(params);
@@ -522,7 +523,7 @@ class FallbackMemoryManager implements MemorySearchManager {
   async sync(params?: {
     reason?: string;
     force?: boolean;
-    sessionFiles?: string[];
+    sessionTranscriptScopes?: MemorySessionTranscriptScope[];
     progress?: (update: MemorySyncProgressUpdate) => void;
   }) {
     this.ensureOpen();

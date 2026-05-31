@@ -168,7 +168,6 @@ export function buildInboundReplyDispatchBase(params: {
     agentId: string;
     sessionKey: string;
   };
-  storePath: string;
   ctxPayload: FinalizedMsgContext;
   core: {
     channel: {
@@ -187,7 +186,6 @@ export function buildInboundReplyDispatchBase(params: {
     accountId: params.accountId,
     agentId: params.route.agentId,
     routeSessionKey: params.route.sessionKey,
-    storePath: params.storePath,
     ctxPayload: params.ctxPayload,
     recordInboundSession: params.core.channel.session.recordInboundSession,
     dispatchReplyWithBufferedBlockDispatcher:
@@ -202,7 +200,6 @@ type RecordChannelMessageReplyDispatchParams = {
   accountId?: string;
   agentId: string;
   routeSessionKey: string;
-  storePath: string;
   ctxPayload: FinalizedMsgContext;
   recordInboundSession: RecordInboundSessionFn;
   dispatchReplyWithBufferedBlockDispatcher: DispatchReplyWithBufferedBlockDispatcher;
@@ -270,15 +267,12 @@ export async function recordChannelMessageReplyDispatch(
     accountId: params.accountId,
     agentId: params.agentId,
     routeSessionKey: params.routeSessionKey,
-    storePath: params.storePath,
     ctxPayload: params.ctxPayload,
     recordInboundSession: params.recordInboundSession,
     dispatchReplyWithBufferedBlockDispatcher: params.dispatchReplyWithBufferedBlockDispatcher,
     delivery: {
       preparePayload: (payload) =>
-        payload && typeof payload === "object"
-          ? normalizeOutboundReplyPayload(payload)
-          : {},
+        payload && typeof payload === "object" ? normalizeOutboundReplyPayload(payload) : {},
       deliver: async (payload, info) => {
         if (params.durable) {
           const durable = await deliverInboundReplyWithMessageSendContext({

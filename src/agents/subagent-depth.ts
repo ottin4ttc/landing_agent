@@ -1,9 +1,7 @@
-import fs from "node:fs";
-import { resolveStorePath } from "../config/sessions/paths.js";
+import { listSessionEntries } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { parseStrictNonNegativeInteger } from "../infra/parse-finite-number.js";
 import { getSubagentDepth, parseAgentSessionKey } from "../sessions/session-key-utils.js";
-import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
 import { resolveDefaultAgentId } from "./agent-scope.js";
 import { normalizeSubagentSessionKey } from "./subagent-session-key.js";
 
@@ -23,13 +21,13 @@ function normalizeSpawnDepth(value: unknown): number | undefined {
   return undefined;
 }
 
-function readSessionStore(storePath: string): Record<string, SessionDepthEntry> {
+function readSessionEntriesByAgent(agentId: string): Record<string, SessionDepthEntry> {
   try {
-    const raw = fs.readFileSync(storePath, "utf-8");
-    const parsed = parseJsonWithJson5Fallback(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, SessionDepthEntry>;
+    const store: Record<string, SessionDepthEntry> = {};
+    for (const row of listSessionEntries({ agentId })) {
+      store[row.sessionKey] = row.entry;
     }
+    return store;
   } catch {
     // ignore missing/invalid stores
   }
@@ -86,20 +84,15 @@ function resolveEntryForSessionKey(params: {
     return findEntryBySessionId(params.store, params.sessionKey);
   }
 
-  if (!params.cfg) {
-    return undefined;
-  }
-
   for (const key of candidates) {
     const parsed = parseAgentSessionKey(key);
     if (!parsed?.agentId) {
       continue;
     }
-    const storePath = resolveStorePath(params.cfg.session?.store, { agentId: parsed.agentId });
-    let store = params.cache.get(storePath);
+    let store = params.cache.get(parsed.agentId);
     if (!store) {
-      store = readSessionStore(storePath);
-      params.cache.set(storePath, store);
+      store = readSessionEntriesByAgent(parsed.agentId);
+      params.cache.set(parsed.agentId, store);
     }
     const entry = store[key] ?? findEntryBySessionId(store, params.sessionKey);
     if (entry) {
@@ -110,7 +103,7 @@ function resolveEntryForSessionKey(params: {
   return undefined;
 }
 
-export function getSubagentDepthFromSessionStore(
+export function getSubagentDepthFromSessionEntries(
   sessionKey: string | undefined | null,
   opts?: {
     cfg?: OpenClawConfig;

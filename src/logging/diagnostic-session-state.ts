@@ -3,7 +3,6 @@ export type SessionStateValue = "idle" | "processing" | "waiting";
 export type SessionState = {
   sessionId?: string;
   sessionKey?: string;
-  sessionFile?: string;
   lastActivity: number;
   generation?: number;
   lastStuckWarnAgeMs?: number;
@@ -29,7 +28,6 @@ export type ToolCallRecord = {
 export type SessionRef = {
   sessionId?: string;
   sessionKey?: string;
-  sessionFile?: string;
 };
 
 export const diagnosticSessionStates = new Map<string, SessionState>();
@@ -101,9 +99,6 @@ function mergeSessionState(target: SessionState, source: SessionState): void {
     sessionStatePriority(source.state) > sessionStatePriority(target.state);
   target.sessionId ??= source.sessionId;
   target.sessionKey ??= source.sessionKey;
-  if (source.sessionFile && (sourceIsNewer || !target.sessionFile)) {
-    target.sessionFile = source.sessionFile;
-  }
   if (sourceIsNewer || sourceIsSameAgeAndMoreActive) {
     target.state = source.state;
   }
@@ -159,15 +154,11 @@ export function getDiagnosticSessionState(ref: SessionRef): SessionState {
     if (ref.sessionKey) {
       existing.sessionKey = ref.sessionKey;
     }
-    if (ref.sessionFile) {
-      existing.sessionFile = ref.sessionFile;
-    }
     return existing;
   }
   const created: SessionState = {
     sessionId: ref.sessionId,
     sessionKey: ref.sessionKey,
-    sessionFile: ref.sessionFile,
     lastActivity: Date.now(),
     generation: 0,
     state: "idle",

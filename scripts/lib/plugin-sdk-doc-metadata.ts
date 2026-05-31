@@ -101,6 +101,12 @@ export const pluginSdkDocMetadata = {
   "provider-selection-runtime": {
     category: "provider",
   },
+  "provider-ai": {
+    category: "provider",
+  },
+  "provider-ai-oauth": {
+    category: "provider",
+  },
   "runtime-store": {
     category: "runtime",
   },
@@ -127,6 +133,9 @@ export const pluginSdkDocMetadata = {
   },
   "reply-payload": {
     category: "utilities",
+  },
+  "agent-core": {
+    category: "runtime",
   },
 } as const satisfies Record<string, PluginSdkDocMetadata>;
 

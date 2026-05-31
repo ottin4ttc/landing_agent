@@ -1,6 +1,7 @@
 import type { AssistantMessageEvent } from "../llm/types.js";
 import type { PluginTextReplacement, PluginTextTransforms } from "../plugins/cli-backend.types.js";
-import type { StreamFn } from "./runtime/index.js";
+import { isRecord } from "../shared/record-coerce.js";
+import type { StreamFn } from "./agent-core-contract.js";
 import type { MutableAssistantMessageEventStream } from "./stream-compat.js";
 import { createStreamIteratorWrapper } from "./stream-iterator-wrapper.js";
 
@@ -30,10 +31,6 @@ export function applyPluginTextReplacements(
     next = next.replace(replacement.from, replacement.to);
   }
   return next;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function transformContentText(content: unknown, replacements?: PluginTextReplacement[]): unknown {

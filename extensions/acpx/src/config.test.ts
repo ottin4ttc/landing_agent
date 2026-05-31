@@ -16,7 +16,7 @@ function expectedMcpServerArgs(params: { sourceEntry: string; distEntry: string 
 }
 
 describe("embedded acpx plugin config", () => {
-  it("resolves workspace stateDir and cwd by default", () => {
+  it("resolves workspace cwd by default", () => {
     const workspaceDir = path.resolve("/tmp/openclaw-acpx");
     const resolved = resolveAcpxPluginConfig({
       rawConfig: undefined,
@@ -24,7 +24,6 @@ describe("embedded acpx plugin config", () => {
     });
 
     expect(resolved.cwd).toBe(workspaceDir);
-    expect(resolved.stateDir).toBe(path.join(workspaceDir, "state"));
     expect(resolved.permissionMode).toBe("approve-reads");
     expect(resolved.nonInteractivePermissions).toBe("fail");
     expect(resolved.timeoutSeconds).toBe(120);
@@ -40,6 +39,17 @@ describe("embedded acpx plugin config", () => {
     });
 
     expect(resolved.timeoutSeconds).toBe(300);
+  });
+
+  it("accepts legacy stateDir config without changing the resolved cwd", () => {
+    const resolved = resolveAcpxPluginConfig({
+      rawConfig: {
+        stateDir: "/tmp/legacy-acpx-state",
+      },
+      workspaceDir: "/tmp/openclaw-acpx",
+    });
+
+    expect(resolved.cwd).toBe("/tmp/openclaw-acpx");
   });
 
   it("keeps explicit probeAgent config", () => {
@@ -169,8 +179,8 @@ describe("embedded acpx plugin config", () => {
     expect(server).toEqual({
       command: process.execPath,
       args: expectedMcpServerArgs({
-        sourceEntry: "src/mcp/plugin-tools-serve.ts",
         distEntry: "dist/mcp/plugin-tools-serve.js",
+        sourceEntry: "src/mcp/plugin-tools-serve.ts",
       }),
     });
   });
@@ -187,8 +197,8 @@ describe("embedded acpx plugin config", () => {
     expect(server).toEqual({
       command: process.execPath,
       args: expectedMcpServerArgs({
-        sourceEntry: "src/mcp/openclaw-tools-serve.ts",
         distEntry: "dist/mcp/openclaw-tools-serve.js",
+        sourceEntry: "src/mcp/openclaw-tools-serve.ts",
       }),
     });
   });
@@ -216,7 +226,9 @@ describe("embedded acpx plugin config", () => {
         },
         stateDir: {
           type: "string",
-          minLength: 1,
+          deprecated: true,
+          description:
+            "Legacy option accepted for compatibility and ignored; ACPX state follows the OpenClaw state directory.",
         },
         permissionMode: {
           type: "string",

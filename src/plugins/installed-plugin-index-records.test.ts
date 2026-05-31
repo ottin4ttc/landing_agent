@@ -2,13 +2,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import type { PluginCandidate } from "./discovery.js";
 import {
   clearLoadInstalledPluginIndexInstallRecordsCache,
   loadInstalledPluginIndexInstallRecords,
   loadInstalledPluginIndexInstallRecordsSync,
+  hasPendingPluginInstallRecords,
   readPersistedInstalledPluginIndexInstallRecords,
+  readPendingPluginInstallRecords,
   recordPluginInstallInRecords,
   removePluginInstallRecordFromRecords,
   resolveInstalledPluginIndexRecordsStorePath,
@@ -16,6 +20,11 @@ import {
   writePersistedInstalledPluginIndexInstallRecords,
   writePersistedInstalledPluginIndexInstallRecordsSync,
 } from "./installed-plugin-index-records.js";
+import {
+  readPersistedInstalledPluginIndex,
+  writePersistedInstalledPluginIndexSync,
+} from "./installed-plugin-index-store.js";
+import type { InstalledPluginIndex } from "./installed-plugin-index.js";
 import { writeManagedNpmPlugin } from "./test-helpers/managed-npm-plugin.js";
 
 const tempDirs: string[] = [];
@@ -58,6 +67,14 @@ function expectRecordFields(record: unknown, expected: Record<string, unknown>) 
   return actual;
 }
 
+function requireInstalledPluginIndex(index: InstalledPluginIndex | null): InstalledPluginIndex {
+  expect(index).not.toBeNull();
+  if (!index) {
+    throw new Error("Expected installed plugin index");
+  }
+  return index;
+}
+
 function createDeferred<T>() {
   let resolve: (value: T) => void = () => {};
   const promise = new Promise<T>((done) => {
@@ -68,7 +85,8 @@ function createDeferred<T>() {
 
 afterEach(() => {
   vi.doUnmock("../infra/json-files.js");
-  clearLoadInstalledPluginIndexInstallRecordsCache();
+  vi.doUnmock("./installed-plugin-index-persisted-read.js");
+  closeOpenClawStateDatabaseForTest();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -94,14 +112,9 @@ describe("plugin index install records store", () => {
       },
     );
 
-    const indexPath = resolveInstalledPluginIndexRecordsStorePath({ stateDir });
-    expect(indexPath).toBe(path.join(stateDir, "plugins", "installs.json"));
-    const persisted = JSON.parse(fs.readFileSync(indexPath, "utf8")) as {
-      version?: number;
-      generatedAtMs?: number;
-      installRecords?: Record<string, unknown>;
-      plugins?: Array<{ pluginId?: string; installRecordHash?: string }>;
-    };
+    const persisted = requireInstalledPluginIndex(
+      await readPersistedInstalledPluginIndex({ stateDir }),
+    );
     expect(persisted.version).toBe(1);
     expect(persisted.generatedAtMs).toBe(1777118400000);
     expectRecordFields(persisted.installRecords?.twitch, {
@@ -139,9 +152,9 @@ describe("plugin index install records store", () => {
       },
     );
 
-    const persisted = JSON.parse(
-      fs.readFileSync(resolveInstalledPluginIndexRecordsStorePath({ stateDir }), "utf8"),
-    ) as { installRecords?: Record<string, unknown>; plugins?: unknown[] };
+    const persisted = requireInstalledPluginIndex(
+      await readPersistedInstalledPluginIndex({ stateDir }),
+    );
     expectRecordFields(persisted.installRecords?.missing, {
       source: "npm",
       spec: "missing-plugin@1.0.0",
@@ -182,147 +195,6 @@ describe("plugin index install records store", () => {
     });
   });
 
-  it("returns cloned cached records", async () => {
-    const stateDir = makeStateDir();
-    const candidate = createPluginCandidate(stateDir, "cached");
-    await writePersistedInstalledPluginIndexInstallRecords(
-      {
-        cached: {
-          source: "npm",
-          spec: "cached@1.0.0",
-        },
-      },
-      { stateDir, candidates: [candidate] },
-    );
-
-    const first = loadInstalledPluginIndexInstallRecordsSync({ stateDir });
-    first.cached.spec = "mutated@1.0.0";
-
-    expect(loadInstalledPluginIndexInstallRecordsSync({ stateDir })).toEqual({
-      cached: {
-        source: "npm",
-        spec: "cached@1.0.0",
-      },
-    });
-  });
-
-  it("invalidates cached records when the persisted index is rewritten", () => {
-    const stateDir = makeStateDir();
-    const first = createPluginCandidate(stateDir, "first");
-    writePersistedInstalledPluginIndexInstallRecordsSync(
-      {
-        first: {
-          source: "npm",
-          spec: "first@1.0.0",
-        },
-      },
-      { stateDir, candidates: [first] },
-    );
-    expect(loadInstalledPluginIndexInstallRecordsSync({ stateDir })).toEqual({
-      first: {
-        source: "npm",
-        spec: "first@1.0.0",
-      },
-    });
-
-    const second = createPluginCandidate(stateDir, "second");
-    writePersistedInstalledPluginIndexInstallRecordsSync(
-      {
-        second: {
-          source: "npm",
-          spec: "second@1.0.0",
-        },
-      },
-      { stateDir, candidates: [second] },
-    );
-
-    expect(loadInstalledPluginIndexInstallRecordsSync({ stateDir })).toEqual({
-      second: {
-        source: "npm",
-        spec: "second@1.0.0",
-      },
-    });
-  });
-
-  it("keeps cached records until cache clear after an external index write", () => {
-    const stateDir = makeStateDir();
-    const candidate = createPluginCandidate(stateDir, "external");
-    writePersistedInstalledPluginIndexInstallRecordsSync(
-      {
-        external: {
-          source: "npm",
-          spec: "external@1.0.0",
-        },
-      },
-      { stateDir, candidates: [candidate] },
-    );
-    expect(loadInstalledPluginIndexInstallRecordsSync({ stateDir })).toEqual({
-      external: {
-        source: "npm",
-        spec: "external@1.0.0",
-      },
-    });
-
-    const indexPath = resolveInstalledPluginIndexRecordsStorePath({ stateDir });
-    const persisted = JSON.parse(fs.readFileSync(indexPath, "utf8")) as Record<string, unknown>;
-    fs.writeFileSync(
-      indexPath,
-      JSON.stringify({
-        ...persisted,
-        installRecords: {
-          external: {
-            source: "npm",
-            spec: "external-plugin@2.0.0",
-          },
-        },
-      }),
-      "utf8",
-    );
-
-    expect(loadInstalledPluginIndexInstallRecordsSync({ stateDir })).toEqual({
-      external: {
-        source: "npm",
-        spec: "external@1.0.0",
-      },
-    });
-
-    clearLoadInstalledPluginIndexInstallRecordsCache();
-
-    expect(loadInstalledPluginIndexInstallRecordsSync({ stateDir })).toEqual({
-      external: {
-        source: "npm",
-        spec: "external-plugin@2.0.0",
-      },
-    });
-  });
-
-  it("reads legacy persisted records when the plugin index has no plugin list", async () => {
-    const stateDir = makeStateDir();
-    const indexPath = resolveInstalledPluginIndexRecordsStorePath({ stateDir });
-    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-    fs.writeFileSync(
-      indexPath,
-      JSON.stringify({
-        installRecords: {
-          legacy: {
-            source: "npm",
-            spec: "legacy@1.0.0",
-            installPath: path.join(stateDir, "plugins", "legacy"),
-          },
-        },
-      }),
-      "utf8",
-    );
-
-    await expect(loadInstalledPluginIndexInstallRecords({ stateDir })).resolves.toEqual({
-      legacy: {
-        source: "npm",
-        spec: "legacy@1.0.0",
-        installPath: path.join(stateDir, "plugins", "legacy"),
-      },
-    });
-  });
-
   it("recovers managed npm plugin records when the persisted ledger is empty", async () => {
     const stateDir = makeStateDir();
     const discordDir = writeManagedNpmPlugin({
@@ -337,10 +209,6 @@ describe("plugin index install records store", () => {
       pluginId: "codex",
       version: "2026.5.2",
     });
-    const indexPath = resolveInstalledPluginIndexRecordsStorePath({ stateDir });
-    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-    fs.writeFileSync(indexPath, JSON.stringify({ installRecords: {}, plugins: [] }), "utf8");
-
     const loaded = await loadInstalledPluginIndexInstallRecords({ stateDir });
     expectRecordFields(loaded.codex, {
       source: "npm",
@@ -558,11 +426,12 @@ describe("plugin index install records store", () => {
     const firstRead = createDeferred<unknown>();
     const firstReadStarted = createDeferred<void>();
     let reads = 0;
-    vi.doMock("../infra/json-files.js", async (importOriginal) => {
-      const actual = await importOriginal<typeof import("../infra/json-files.js")>();
+    vi.doMock("./installed-plugin-index-persisted-read.js", async (importOriginal) => {
+      const actual =
+        await importOriginal<typeof import("./installed-plugin-index-persisted-read.js")>();
       return {
         ...actual,
-        tryReadJson: vi.fn(async () => {
+        readPersistedInstalledPluginIndex: vi.fn(async () => {
           reads += 1;
           if (reads === 1) {
             firstReadStarted.resolve();
@@ -577,7 +446,7 @@ describe("plugin index install records store", () => {
             },
           };
         }),
-        tryReadJsonSync: vi.fn(() => null),
+        readPersistedInstalledPluginIndexSync: vi.fn(() => null),
       };
     });
     const reader = (await import(
@@ -715,32 +584,46 @@ describe("plugin index install records store", () => {
   });
 
   it("strips transient install records from config writes", () => {
-    expect(
-      withoutPluginInstallRecords({
-        plugins: {
-          entries: {
-            twitch: { enabled: true },
-          },
-          installs: {
-            twitch: { source: "npm", spec: "twitch@1.0.0" },
-          },
+    const config = {
+      plugins: {
+        entries: {
+          twitch: { enabled: true },
         },
-      }),
-    ).toEqual({
+        installs: {
+          twitch: { source: "npm", spec: "twitch@1.0.0" },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    expect(readPendingPluginInstallRecords(config)).toEqual({
+      twitch: { source: "npm", spec: "twitch@1.0.0" },
+    });
+    expect(hasPendingPluginInstallRecords(config)).toBe(true);
+    expect(withoutPluginInstallRecords(config)).toEqual({
       plugins: {
         entries: {
           twitch: { enabled: true },
         },
       },
     });
+    expect(hasPendingPluginInstallRecords({ plugins: { entries: {} } })).toBe(false);
   });
 
   it("ignores invalid persisted plugin index files", async () => {
     const stateDir = makeStateDir();
-    fs.mkdirSync(path.join(stateDir, "plugins"), { recursive: true });
-    fs.writeFileSync(
-      resolveInstalledPluginIndexRecordsStorePath({ stateDir }),
-      JSON.stringify({ version: 999, records: {} }),
+    writePersistedInstalledPluginIndexSync(
+      {
+        version: 999 as InstalledPluginIndex["version"],
+        hostContractVersion: "2026.4.25",
+        compatRegistryVersion: "compat-v1",
+        migrationVersion: 1,
+        policyHash: "policy-v1",
+        generatedAtMs: 1777118400000,
+        installRecords: {},
+        plugins: [],
+        diagnostics: [],
+      },
+      { stateDir },
     );
 
     await expect(readPersistedInstalledPluginIndexInstallRecords({ stateDir })).resolves.toBeNull();

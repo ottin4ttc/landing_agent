@@ -12,17 +12,16 @@ import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { CliBackendConfig } from "../../config/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { privateFileStore } from "../../infra/private-file-store.js";
 import { tempWorkspace } from "../../infra/private-temp-workspace.js";
 import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js";
 import type { ImageContent } from "../../llm/types.js";
 import { MAX_IMAGE_BYTES } from "../../media/constants.js";
 import { extensionForMime } from "../../media/mime.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../plugins/command-registry-state.js";
+import type { AgentTool } from "../agent-core-contract.js";
 import type { EmbeddedContextFile } from "../embedded-agent-helpers.js";
 import { detectImageReferences, loadImageFromRef } from "../embedded-agent-runner/run/images.js";
 import { resolveDefaultModelForAgent } from "../model-selection.js";
-import type { AgentTool } from "../runtime/index.js";
 import type { SandboxFsBridge } from "../sandbox/fs-bridge.js";
 import { detectRuntimeShell } from "../shell-utils.js";
 import { stripSystemPromptCacheBoundary } from "../system-prompt-cache-boundary.js";
@@ -210,7 +209,7 @@ export function resolvePromptInput(params: { backend: CliBackendConfig; prompt: 
   return { argsPrompt: params.prompt };
 }
 
-function resolveCliImagePath(image: ImageContent): string {
+function resolveCliImageFileName(image: ImageContent): string {
   const ext = extensionForMime(image.mimeType) ?? ".bin";
   const digest = crypto
     .createHash("sha256")
@@ -218,14 +217,19 @@ function resolveCliImagePath(image: ImageContent): string {
     .update("\0")
     .update(image.data)
     .digest("hex");
-  return path.join(resolvePreferredOpenClawTmpDir(), "openclaw-cli-images", `${digest}${ext}`);
+  return `${digest}${ext}`;
 }
 
-function resolveCliImageRoot(params: { backend: CliBackendConfig; workspaceDir: string }): string {
+async function createCliImageRoot(params: {
+  backend: CliBackendConfig;
+  workspaceDir: string;
+}): Promise<string> {
   if (params.backend.imagePathScope === "workspace") {
-    return path.join(params.workspaceDir, ".openclaw-cli-images");
+    const root = path.join(params.workspaceDir, ".openclaw-cli-images", crypto.randomUUID());
+    await fs.mkdir(root, { recursive: true, mode: 0o700 });
+    return root;
   }
-  return path.join(resolvePreferredOpenClawTmpDir(), "openclaw-cli-images");
+  return await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), "openclaw-cli-images-"));
 }
 
 function appendImagePathsToPrompt(prompt: string, paths: string[], prefix = ""): string {
@@ -279,22 +283,21 @@ export async function writeCliImages(params: {
   workspaceDir: string;
   images: ImageContent[];
 }): Promise<{ paths: string[]; cleanup: () => Promise<void> }> {
-  const imageRoot = resolveCliImageRoot({
+  const imageRoot = await createCliImageRoot({
     backend: params.backend,
     workspaceDir: params.workspaceDir,
   });
-  await fs.mkdir(imageRoot, { recursive: true, mode: 0o700 });
-  const store = privateFileStore(imageRoot);
   const paths: string[] = [];
   for (const image of params.images) {
-    const fileName = path.basename(resolveCliImagePath(image));
+    const fileName = resolveCliImageFileName(image);
+    const filePath = path.join(imageRoot, fileName);
     const buffer = Buffer.from(image.data, "base64");
-    await store.writeText(fileName, buffer);
-    paths.push(store.path(fileName));
+    await fs.writeFile(filePath, buffer, { mode: 0o600 });
+    paths.push(filePath);
   }
-  // Keep content-addressed image paths stable across Claude CLI runs so prompt
-  // text and argv don't churn on every turn with fresh temp-dir suffixes.
-  const cleanup = async () => {};
+  const cleanup = async () => {
+    await fs.rm(imageRoot, { recursive: true, force: true });
+  };
   return { paths, cleanup };
 }
 

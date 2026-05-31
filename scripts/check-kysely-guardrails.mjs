@@ -44,7 +44,6 @@ const rawSqliteAllowPathGroups = {
     "src/state/sqlite-schema-shape.test-support.ts",
   ],
   "backup snapshot maintenance": ["src/commands/backup-verify.ts", "src/infra/backup-create.ts"],
-  "doctor legacy state migration": ["src/infra/state-migrations.ts"],
   "Kysely-backed stores that own a DatabaseSync boundary": [
     "src/acp/event-ledger.ts",
     "src/agents/subagent-registry.store.ts",
@@ -53,6 +52,7 @@ const rawSqliteAllowPathGroups = {
     "src/infra/outbound/current-conversation-bindings.ts",
     "src/media/store.ts",
     "src/plugin-sdk/memory-core-host-engine-storage.ts",
+    "src/plugin-state/plugin-blob-store.ts",
     "src/plugin-state/plugin-state-store.sqlite.ts",
     "src/proxy-capture/store.sqlite.ts",
     "src/tasks/task-flow-registry.store.sqlite.ts",
@@ -127,7 +127,8 @@ function collectImports(sourceFile) {
           const importedName = element.propertyName?.text ?? element.name.text;
           if (
             importedName === "executeSqliteQuerySync" ||
-            importedName === "executeSqliteQueryTakeFirstSync"
+            importedName === "executeSqliteQueryTakeFirstSync" ||
+            importedName === "executeSqliteQueryTakeFirstOrThrowSync"
           ) {
             syncHelperNames.add(element.name.text);
           }
@@ -144,7 +145,8 @@ function collectImports(sourceFile) {
       source.endsWith("node-sqlite.js") ||
       source.endsWith("sqlite-transaction.js") ||
       source.endsWith("sqlite-wal.js") ||
-      source.endsWith("openclaw-state-db.js")
+      source.endsWith("openclaw-state-db.js") ||
+      source.endsWith("openclaw-agent-db.js")
     ) {
       hasSqliteContext = true;
     }
@@ -172,11 +174,7 @@ function isIdentifierNamed(node, names) {
 }
 
 function isTestPath(relativePath) {
-  return (
-    /\.(?:test|spec|e2e)\.ts$/u.test(relativePath) ||
-    relativePath.includes(".test-helpers.") ||
-    relativePath.includes(".test-support.")
-  );
+  return /\.(?:test|spec|e2e)\.ts$/u.test(relativePath) || relativePath.includes(".test-helpers.");
 }
 
 function isSqliteStorePath(relativePath) {

@@ -5,7 +5,6 @@ import {
   MODEL_UPDATABLE_SESSION_GOAL_STATUSES,
   updateSessionGoalStatus,
 } from "../../config/sessions/goals.js";
-import { resolveStorePath } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { stringEnum } from "../schema/typebox.js";
@@ -26,7 +25,7 @@ type GoalToolOptions = {
 
 type GoalSessionScope = {
   sessionKey: string;
-  storePath: string;
+  agentId: string;
 };
 
 const CreateGoalToolSchema = Type.Object({
@@ -59,9 +58,7 @@ function resolveGoalSessionScope(options: GoalToolOptions): GoalSessionScope {
   );
   return {
     sessionKey,
-    storePath: resolveStorePath(options.config?.session?.store, {
-      agentId,
-    }),
+    agentId,
   };
 }
 

@@ -1,6 +1,6 @@
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { getRuntimeConfig } from "../config/config.js";
-import { resolveAllAgentSessionStoreTargetsSync } from "../config/sessions/targets.js";
+import { resolveAllAgentSessionDatabaseTargetsSync } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   areDiagnosticsEnabledForProcess,
@@ -133,7 +133,9 @@ function resolveDiagnosticSessionStorePaths(config?: OpenClawConfig): string[] |
     return undefined;
   }
   try {
-    const paths = resolveAllAgentSessionStoreTargetsSync(config).map((target) => target.storePath);
+    const paths = resolveAllAgentSessionDatabaseTargetsSync(config).map(
+      (target) => target.databasePath,
+    );
     return paths.length > 0 ? paths : undefined;
   } catch {
     return undefined;
@@ -897,15 +899,6 @@ export function logSessionStateChange(
   markActivity();
 }
 
-export function updateDiagnosticSessionFile(params: SessionRef) {
-  if (!areDiagnosticsEnabledForProcess()) {
-    return;
-  }
-  const state = getDiagnosticSessionState(params);
-  state.sessionFile = params.sessionFile?.trim() || undefined;
-  markActivity();
-}
-
 export function markDiagnosticSessionProgress(params: SessionRef) {
   if (!areDiagnosticsEnabledForProcess()) {
     return;
@@ -1271,7 +1264,6 @@ export function startDiagnosticHeartbeat(
             request: {
               sessionId: state.sessionId,
               sessionKey: state.sessionKey,
-              sessionFile: state.sessionFile,
               ageMs: attentionAgeMs,
               queueDepth: state.queueDepth,
               expectedState: state.state,
@@ -1294,7 +1286,6 @@ export function startDiagnosticHeartbeat(
             request: {
               sessionId: state.sessionId,
               sessionKey: state.sessionKey,
-              sessionFile: state.sessionFile,
               ageMs: attentionAgeMs,
               queueDepth: state.queueDepth,
               allowActiveAbort: true,

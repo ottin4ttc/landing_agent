@@ -6,9 +6,8 @@ import {
 import { normalizeChatType } from "../../channels/chat-type.js";
 import { normalizeAnyChannelId } from "../../channels/registry.js";
 import { applyMergePatch } from "../../config/merge-patch.js";
-import { resolveSessionTranscriptPath, resolveStorePath } from "../../config/sessions/paths.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
-import { loadSessionStore } from "../../config/sessions/store.js";
+import { listSessionEntries } from "../../config/sessions/store.js";
 import type { SessionEntry, SessionScope } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
@@ -38,13 +37,14 @@ function resolveFastSessionKey(params: {
   ctx: MsgContext;
   sessionScope: SessionScope;
   mainKey?: string;
+  agentId: string;
 }): string {
   const { ctx } = params;
   const nativeCommandTarget = resolveCommandTurnTargetSessionKey(ctx) ?? "";
   if (nativeCommandTarget) {
     return nativeCommandTarget;
   }
-  return resolveSessionKey(params.sessionScope, ctx, params.mainKey);
+  return resolveSessionKey(params.sessionScope, ctx, params.mainKey, params.agentId);
 }
 
 function markReplyConfigRuntimeMode(
@@ -212,12 +212,11 @@ export function initFastReplySessionState(params: {
     ctx,
     sessionScope,
     mainKey: cfg.session?.mainKey,
+    agentId,
   });
-  const storePath = resolveStorePath(cfg.session?.store, { agentId });
-  const sessionStore: Record<string, SessionEntry> = loadSessionStore(storePath, {
-    skipCache: true,
-    clone: false,
-  });
+  const sessionStore: Record<string, SessionEntry> = Object.fromEntries(
+    listSessionEntries({ agentId }).map(({ sessionKey: key, entry }) => [key, entry]),
+  );
   const existingEntry = sessionStore[sessionKey];
   const commandSource = ctx.BodyForCommands ?? ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "";
   const triggerBodyNormalized = isFormattedGoalContinuationPrompt(commandSource)
@@ -241,14 +240,9 @@ export function initFastReplySessionState(params: {
     ? normalizedResetBody.slice(resetMatch?.[0].length ?? 0).trimStart()
     : (ctx.BodyForAgent ?? ctx.Body ?? "");
   const now = Date.now();
-  const sessionFile =
-    !resetTriggered && existingEntry?.sessionFile
-      ? existingEntry.sessionFile
-      : resolveSessionTranscriptPath(sessionId, agentId);
   const sessionEntry: SessionEntry = {
     ...(!resetTriggered ? existingEntry : undefined),
     sessionId,
-    sessionFile,
     updatedAt: now,
     sessionStartedAt: resetTriggered ? now : (existingEntry?.sessionStartedAt ?? now),
     lastInteractionAt: now,
@@ -299,7 +293,6 @@ export function initFastReplySessionState(params: {
     resetTriggered,
     systemSent: false,
     abortedLastRun: false,
-    storePath,
     sessionScope,
     groupResolution: undefined,
     isGroup,

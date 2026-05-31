@@ -9,6 +9,7 @@ import {
   stripLeadingSilentToken,
 } from "../../auto-reply/tokens.js";
 import { resolveToolUseId, type ToolContentBlock } from "../../chat/tool-content.js";
+import { loadSqliteSessionTranscriptEvents } from "../../config/sessions/transcript-store.sqlite.js";
 import {
   type ClaudeCliFallbackSeed,
   readClaudeCliFallbackSeed,
@@ -16,6 +17,7 @@ import {
 import { cliBackendLog } from "../cli-runner/log.js";
 import { resolveClaudeCliProjectDirForWorkspace } from "./claude-cli-project-dir.js";
 
+/** Maximum number of Claude CLI JSONL records to inspect before giving up. */
 const SESSION_FILE_MAX_RECORDS = 500;
 
 function normalizeClaudeCliSessionId(sessionId: string | undefined): string | undefined {
@@ -68,19 +70,6 @@ async function scanJsonlFile(filePath: string | undefined): Promise<JsonlFileSca
   } catch {
     return { fileExists: false, hasAssistant: false };
   }
-}
-
-async function jsonlFileHasAssistantMessage(filePath: string | undefined): Promise<boolean> {
-  return (await scanJsonlFile(filePath)).hasAssistant;
-}
-
-/**
- * Check whether a session transcript file exists and contains at least one
- * assistant message, indicating that the SessionManager has flushed the
- * initial user+assistant exchange to disk.
- */
-export async function sessionFileHasContent(sessionFile: string | undefined): Promise<boolean> {
-  return await jsonlFileHasAssistantMessage(sessionFile);
 }
 
 export function claudeCliSessionTranscriptPath(params: {
@@ -241,6 +230,27 @@ async function jsonlFileHasOrphanedTrailingToolUse(filePath: string): Promise<bo
   } catch {
     return false;
   }
+}
+
+function sqliteTranscriptHasAssistantMessage(
+  scope: { agentId?: string; sessionId?: string } | undefined,
+): boolean {
+  const agentId = scope?.agentId?.trim();
+  const sessionId = scope?.sessionId?.trim();
+  if (!agentId || !sessionId) {
+    return false;
+  }
+  return loadSqliteSessionTranscriptEvents({ agentId, sessionId }).some((entry) => {
+    const record = entry.event as Record<string, unknown> | null;
+    return (record?.message as Record<string, unknown> | undefined)?.role === "assistant";
+  });
+}
+
+/** Check whether the SQLite transcript contains at least one assistant message. */
+export async function sessionTranscriptHasContent(
+  scope: { agentId?: string; sessionId?: string } | undefined,
+): Promise<boolean> {
+  return sqliteTranscriptHasAssistantMessage(scope);
 }
 
 export async function claudeCliSessionTranscriptHasOrphanedToolUse(params: {
@@ -416,8 +426,8 @@ export function formatClaudeCliFallbackPrelude(
 
 /**
  * Read the Claude CLI session pointed to by `cliSessionId` and format a
- * fallback prelude. Returns `""` when no session file is found or when the
- * harvested seed has no usable content.
+ * fallback prelude. Returns `""` when no Claude CLI session JSONL is found or
+ * when the harvested seed has no usable content.
  */
 export function buildClaudeCliFallbackContextPrelude(params: {
   cliSessionId: string | undefined;

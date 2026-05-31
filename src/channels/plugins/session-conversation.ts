@@ -222,7 +222,8 @@ function resolveSessionConversationResolution(params: {
     parentConversationCandidates.at(-1) ?? resolved.baseConversationId ?? resolved.id;
 
   return {
-    ...resolved,
+    id: resolved.id,
+    threadId: resolved.threadId,
     baseConversationId,
     parentConversationCandidates,
   };

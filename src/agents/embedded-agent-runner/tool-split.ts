@@ -1,6 +1,6 @@
+import type { AgentTool } from "../agent-core-contract.js";
 import { toToolDefinitions } from "../agent-tool-definition-adapter.js";
 import type { HookContext } from "../agent-tools.before-tool-call.js";
-import type { AgentTool } from "../runtime/index.js";
 
 // We always pass tools via `customTools` so our policy filtering, sandbox integration,
 // and extended toolset remain consistent across providers.

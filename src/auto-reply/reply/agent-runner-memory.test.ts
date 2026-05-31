@@ -1,21 +1,27 @@
-import fsCore from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
+import { appendSqliteSessionTranscriptEvent } from "../../config/sessions/transcript-store.sqlite.js";
 import {
   clearMemoryPluginState,
   registerMemoryCapability,
   type MemoryFlushPlanResolver,
 } from "../../plugins/memory-state.js";
+import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import type { TemplateContext } from "../templating.js";
 import {
   runMemoryFlushIfNeeded,
   runPreflightCompactionIfNeeded,
   setAgentRunnerMemoryTestDeps,
 } from "./agent-runner-memory.js";
-import { createTestFollowupRun, writeTestSessionStore } from "./agent-runner.test-fixtures.js";
+import {
+  createTestFollowupRun,
+  readTestSessionRow,
+  writeTestSessionRow,
+} from "./agent-runner.test-fixtures.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 
 const compactEmbeddedAgentSessionMock = vi.fn();
@@ -61,7 +67,6 @@ type RefreshQueuedFollowupSessionParams = {
   key?: string;
   previousSessionId?: string;
   nextSessionId?: string;
-  nextSessionFile?: string;
 };
 
 type ModelFallbackParams = {
@@ -98,11 +103,10 @@ type CompactEmbeddedAgentSessionParams = {
   agentId?: string;
   authProfileId?: string;
   contextTokenBudget?: number;
+  deferOwningContextEngineCompaction?: boolean;
   sessionKey?: string;
   sandboxSessionKey?: string;
   currentTokenCount?: number;
-  cwd?: string;
-  sessionFile?: string;
   sessionId?: string;
   trigger?: string;
 };
@@ -145,9 +149,12 @@ function requireCompactEmbeddedAgentSessionCall(index = 0) {
 
 describe("runMemoryFlushIfNeeded", () => {
   let rootDir = "";
+  let previousStateDir: string | undefined;
 
   beforeEach(async () => {
     rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-unit-"));
+    previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = rootDir;
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -183,20 +190,9 @@ describe("runMemoryFlushIfNeeded", () => {
       };
       if (typeof params.newSessionId === "string" && params.newSessionId) {
         nextEntry.sessionId = params.newSessionId;
-        if (typeof params.newSessionFile === "string" && params.newSessionFile) {
-          nextEntry.sessionFile = params.newSessionFile;
-        } else {
-          const storePath = typeof params.storePath === "string" ? params.storePath : rootDir;
-          nextEntry.sessionFile = path.join(
-            path.dirname(storePath),
-            `${params.newSessionId}.jsonl`,
-          );
-        }
       }
       params.sessionStore[sessionKey] = nextEntry;
-      if (typeof params.storePath === "string") {
-        await writeTestSessionStore(params.storePath, sessionKey, nextEntry);
-      }
+      await writeTestSessionRow(sessionKey, nextEntry);
       return nextEntry.compactionCount;
     });
     setAgentRunnerMemoryTestDeps({
@@ -216,11 +212,17 @@ describe("runMemoryFlushIfNeeded", () => {
   afterEach(async () => {
     setAgentRunnerMemoryTestDeps();
     clearMemoryPluginState();
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
     await fs.rm(rootDir, { recursive: true, force: true });
   });
 
   it("runs a memory flush turn, rotates after compaction, and persists metadata", async () => {
-    const storePath = path.join(rootDir, "sessions.json");
     const sessionKey = "main";
     const sessionEntry: SessionEntry = {
       sessionId: "session",
@@ -229,7 +231,7 @@ describe("runMemoryFlushIfNeeded", () => {
       compactionCount: 1,
     };
     const sessionStore = { [sessionKey]: sessionEntry };
-    await writeTestSessionStore(storePath, sessionKey, sessionEntry);
+    await writeTestSessionRow(sessionKey, sessionEntry);
 
     runEmbeddedAgentMock.mockImplementationOnce(
       async (params: {
@@ -262,7 +264,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore,
       sessionKey,
-      storePath,
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
@@ -288,15 +289,12 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(refreshCall.key).toBe(sessionKey);
     expect(refreshCall.previousSessionId).toBe("session");
     expect(refreshCall.nextSessionId).toBe("session-rotated");
-    expect(refreshCall.nextSessionFile).toContain("session-rotated.jsonl");
 
-    const persisted = JSON.parse(await fs.readFile(storePath, "utf8")) as {
-      main: SessionEntry;
-    };
-    expect(persisted.main.sessionId).toBe("session-rotated");
-    expect(persisted.main.compactionCount).toBe(2);
-    expect(persisted.main.memoryFlushCompactionCount).toBe(1);
-    expect(persisted.main.memoryFlushAt).toBe(1_700_000_000_000);
+    const persisted = readTestSessionRow(sessionKey);
+    expect(persisted?.sessionId).toBe("session-rotated");
+    expect(persisted?.compactionCount).toBe(2);
+    expect(persisted?.memoryFlushCompactionCount).toBe(1);
+    expect(persisted?.memoryFlushAt).toBe(1_700_000_000_000);
   });
 
   it("reports memory-flush error payloads for visible delivery", async () => {
@@ -716,7 +714,6 @@ describe("runMemoryFlushIfNeeded", () => {
   it("continues when preflight compaction reports the session is already under target", async () => {
     const sessionFile = path.join(rootDir, "session.jsonl");
     await fs.writeFile(
-      sessionFile,
       `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
       "utf8",
     );
@@ -735,7 +732,7 @@ describe("runMemoryFlushIfNeeded", () => {
     });
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
+
       updatedAt: Date.now(),
       totalTokens: 120,
       totalTokensFresh: true,
@@ -745,7 +742,6 @@ describe("runMemoryFlushIfNeeded", () => {
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "agent:main:main",
       }),
       defaultModel: "anthropic/claude-opus-4-6",
@@ -771,7 +767,6 @@ describe("runMemoryFlushIfNeeded", () => {
   it("fails when required preflight context-engine compaction is deferred to background maintenance", async () => {
     const sessionFile = path.join(rootDir, "session.jsonl");
     await fs.writeFile(
-      sessionFile,
       `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
       "utf8",
     );
@@ -790,7 +785,7 @@ describe("runMemoryFlushIfNeeded", () => {
     });
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
+
       updatedAt: Date.now(),
       totalTokens: 120,
       totalTokensFresh: true,
@@ -801,7 +796,6 @@ describe("runMemoryFlushIfNeeded", () => {
         cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
         followupRun: createTestFollowupRun({
           sessionId: "session",
-          sessionFile,
           sessionKey: "agent:main:main",
         }),
         defaultModel: "anthropic/claude-opus-4-6",
@@ -822,12 +816,15 @@ describe("runMemoryFlushIfNeeded", () => {
   });
 
   it("passes runtime policy session key to preflight compaction sandbox resolution", async () => {
-    const sessionFile = path.join(rootDir, "session.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
-      "utf8",
-    );
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: { role: "user", content: "x".repeat(5_000) },
+      },
+    });
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 1,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -838,7 +835,6 @@ describe("runMemoryFlushIfNeeded", () => {
     }));
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
       updatedAt: Date.now(),
       totalTokens: 120,
       totalTokensFresh: true,
@@ -848,9 +844,7 @@ describe("runMemoryFlushIfNeeded", () => {
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "agent:main:main",
-        cwd: "/tmp/task-repo",
         runtimePolicySessionKey: "agent:main:telegram:default:direct:12345",
       }),
       defaultModel: "anthropic/claude-opus-4-6",
@@ -859,7 +853,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionStore: { "agent:main:main": sessionEntry },
       sessionKey: "agent:main:main",
       runtimePolicySessionKey: "agent:main:telegram:default:direct:12345",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
@@ -867,7 +860,6 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
     const compactCall = requireCompactEmbeddedAgentSessionCall();
     expect(compactCall.sessionKey).toBe("agent:main:main");
-    expect(compactCall.cwd).toBe("/tmp/task-repo");
     expect(compactCall.sandboxSessionKey).toBe("agent:main:telegram:default:direct:12345");
   });
 
@@ -879,7 +871,6 @@ describe("runMemoryFlushIfNeeded", () => {
     async (failureReason, reason) => {
       const sessionFile = path.join(rootDir, "session.jsonl");
       await fs.writeFile(
-        sessionFile,
         `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
         "utf8",
       );
@@ -899,7 +890,7 @@ describe("runMemoryFlushIfNeeded", () => {
       });
       const sessionEntry: SessionEntry = {
         sessionId: "session",
-        sessionFile,
+
         updatedAt: Date.now(),
         totalTokens: 120,
         totalTokensFresh: true,
@@ -910,7 +901,6 @@ describe("runMemoryFlushIfNeeded", () => {
         cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
         followupRun: createTestFollowupRun({
           sessionId: "session",
-          sessionFile,
           sessionKey: "agent:main:telegram:group:redacted",
         }),
         defaultModel: "anthropic/claude-opus-4-6",
@@ -932,7 +922,6 @@ describe("runMemoryFlushIfNeeded", () => {
   it("continues after an unstructured thread-not-found preflight compaction failure", async () => {
     const sessionFile = path.join(rootDir, "session.jsonl");
     await fs.writeFile(
-      sessionFile,
       `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
       "utf8",
     );
@@ -951,7 +940,7 @@ describe("runMemoryFlushIfNeeded", () => {
     });
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
+
       updatedAt: Date.now(),
       totalTokens: 120,
       totalTokensFresh: true,
@@ -962,7 +951,6 @@ describe("runMemoryFlushIfNeeded", () => {
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "agent:main:telegram:group:redacted",
       }),
       defaultModel: "anthropic/claude-opus-4-6",
@@ -983,7 +971,6 @@ describe("runMemoryFlushIfNeeded", () => {
   it("still fails preflight compaction for non-binding native harness failures", async () => {
     const sessionFile = path.join(rootDir, "session.jsonl");
     await fs.writeFile(
-      sessionFile,
       `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
       "utf8",
     );
@@ -1003,7 +990,7 @@ describe("runMemoryFlushIfNeeded", () => {
     });
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
+
       updatedAt: Date.now(),
       totalTokens: 120,
       totalTokensFresh: true,
@@ -1015,7 +1002,6 @@ describe("runMemoryFlushIfNeeded", () => {
         cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
         followupRun: createTestFollowupRun({
           sessionId: "session",
-          sessionFile,
           sessionKey: "agent:main:telegram:group:redacted",
         }),
         defaultModel: "anthropic/claude-opus-4-6",
@@ -1064,13 +1050,15 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactCall.contextTokenBudget).toBe(258_000);
   });
   it("updates the active preflight run after transcript rotation", async () => {
-    const sessionFile = path.join(rootDir, "session.jsonl");
-    const successorFile = path.join(rootDir, "session-rotated.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      `${JSON.stringify({ message: { role: "user", content: "x".repeat(5_000) } })}\n`,
-      "utf8",
-    );
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: { role: "user", content: "x".repeat(5_000) },
+      },
+    });
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 1,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -1085,19 +1073,16 @@ describe("runMemoryFlushIfNeeded", () => {
       result: {
         tokensAfter: 42,
         sessionId: "session-rotated",
-        sessionFile: successorFile,
       },
     });
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
       updatedAt: Date.now(),
       totalTokensFresh: false,
     };
     const sessionStore = { "agent:main:main": sessionEntry };
     const followupRun = createTestFollowupRun({
       sessionId: "session",
-      sessionFile,
       sessionKey: "agent:main:main",
     });
     const replyOperation = createReplyOperation();
@@ -1110,37 +1095,34 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "agent:main:main",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation,
     });
 
     expect(entry?.sessionId).toBe("session-rotated");
-    expect(entry?.sessionFile).toBe(successorFile);
     expect(followupRun.run.sessionId).toBe("session-rotated");
-    expect(followupRun.run.sessionFile).toBe(successorFile);
     expect(replyOperation.updateSessionId).toHaveBeenCalledWith("session-rotated");
     expect(refreshQueuedFollowupSessionMock).toHaveBeenCalledWith({
       key: "agent:main:main",
       previousSessionId: "session",
       nextSessionId: "session-rotated",
-      nextSessionFile: successorFile,
     });
   });
 
   it("includes recent output tokens when deciding preflight compaction", async () => {
-    const sessionFile = path.join(rootDir, "session-usage.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      `${JSON.stringify({
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
         message: {
           role: "assistant",
           content: "large answer",
           usage: { input: 90_000, output: 10_000 },
         },
-      })}\n`,
-      "utf8",
-    );
+      },
+    });
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -1151,7 +1133,6 @@ describe("runMemoryFlushIfNeeded", () => {
     }));
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
       updatedAt: Date.now(),
       totalTokensFresh: false,
     };
@@ -1160,7 +1141,6 @@ describe("runMemoryFlushIfNeeded", () => {
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "main",
       }),
       defaultModel: "anthropic/claude-opus-4-6",
@@ -1168,68 +1148,12 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
 
     const compactCall = requireCompactEmbeddedAgentSessionCall();
     expect(compactCall.currentTokenCount).toBeGreaterThanOrEqual(100_000);
-  });
-
-  it("reuses the transcript tail scan stat when memory flush needs usage and byte size", async () => {
-    const sessionFile = path.join(rootDir, "memory-flush-usage-and-size.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      `${JSON.stringify({
-        message: {
-          role: "assistant",
-          content: "large answer",
-          usage: { input: 80_000, output: 4_000 },
-        },
-      })}\n`,
-      "utf8",
-    );
-    const originalStat = fsCore.promises.stat.bind(fsCore.promises);
-    const statSpy = vi
-      .spyOn(fsCore.promises, "stat")
-      .mockImplementation(async (target, options) => originalStat(target, options));
-    const sessionEntry: SessionEntry = {
-      sessionId: "session",
-      sessionFile,
-      updatedAt: Date.now(),
-      totalTokensFresh: false,
-    };
-
-    let directTranscriptStats: unknown[] = [];
-    try {
-      await runMemoryFlushIfNeeded({
-        cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
-        followupRun: createTestFollowupRun({
-          sessionId: "session",
-          sessionFile,
-          sessionKey: "main",
-        }),
-        sessionCtx: { Provider: "whatsapp" } as unknown as TemplateContext,
-        defaultModel: "anthropic/claude-opus-4-6",
-        agentCfgContextTokens: 100_000,
-        resolvedVerboseLevel: "off",
-        sessionEntry,
-        sessionStore: { main: sessionEntry },
-        sessionKey: "main",
-        storePath: path.join(rootDir, "sessions.json"),
-        isHeartbeat: false,
-        replyOperation: createReplyOperation(),
-      });
-      directTranscriptStats = statSpy.mock.calls.filter(
-        ([target]) => String(target) === sessionFile,
-      );
-    } finally {
-      statSpy.mockRestore();
-    }
-
-    expect(directTranscriptStats).toEqual([]);
-    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
   });
 
   it("continues when preflight compaction returns a successful no-op", async () => {
@@ -1310,7 +1234,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
@@ -1400,7 +1323,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
@@ -1409,19 +1331,20 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
   });
 
-  it("uses the active run sessionFile when the session entry has no transcript path", async () => {
-    const sessionFile = path.join(rootDir, "active-run-session.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      `${JSON.stringify({
+  it("uses the active run session id when the session entry only has canonical state", async () => {
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
         message: {
           role: "assistant",
           content: "large answer",
           usage: { input: 90_000, output: 8_000 },
         },
-      })}\n`,
-      "utf8",
-    );
+      },
+    });
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -1440,7 +1363,6 @@ describe("runMemoryFlushIfNeeded", () => {
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "main",
       }),
       defaultModel: "anthropic/claude-opus-4-6",
@@ -1448,7 +1370,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
@@ -1456,30 +1377,34 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledTimes(1);
     const compactCall = requireCompactEmbeddedAgentSessionCall();
     expect(compactCall.sessionId).toBe("session");
-    expect(compactCall.sessionFile).toContain("active-run-session.jsonl");
   });
 
   it("keeps preflight compaction conservative for content appended after latest usage", async () => {
-    const sessionFile = path.join(rootDir, "post-usage-tail-session.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      [
-        JSON.stringify({
-          message: {
-            role: "assistant",
-            content: "small answer",
-            usage: { input: 40_000, output: 2_000 },
-          },
-        }),
-        JSON.stringify({
-          message: {
-            role: "tool",
-            content: `large interrupted tool output ${"x".repeat(450_000)}`,
-          },
-        }),
-      ].join("\n"),
-      "utf8",
-    );
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: {
+          role: "assistant",
+          content: "small answer",
+          usage: { input: 40_000, output: 2_000 },
+        },
+      },
+    });
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m2",
+        message: {
+          role: "tool",
+          content: `large interrupted tool output ${"x".repeat(450_000)}`,
+        },
+      },
+    });
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -1490,7 +1415,6 @@ describe("runMemoryFlushIfNeeded", () => {
     }));
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
       updatedAt: Date.now(),
       totalTokensFresh: false,
     };
@@ -1499,7 +1423,6 @@ describe("runMemoryFlushIfNeeded", () => {
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "main",
       }),
       defaultModel: "anthropic/claude-opus-4-6",
@@ -1507,7 +1430,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
@@ -1517,26 +1439,31 @@ describe("runMemoryFlushIfNeeded", () => {
   });
 
   it("combines latest usage with post-usage tail pressure for preflight compaction", async () => {
-    const sessionFile = path.join(rootDir, "combined-tail-pressure-session.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      [
-        JSON.stringify({
-          message: {
-            role: "assistant",
-            content: "small answer",
-            usage: { input: 86_000, output: 2_000 },
-          },
-        }),
-        JSON.stringify({
-          message: {
-            role: "tool",
-            content: `moderate interrupted tool output ${"x".repeat(36_000)}`,
-          },
-        }),
-      ].join("\n"),
-      "utf8",
-    );
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: {
+          role: "assistant",
+          content: "small answer",
+          usage: { input: 86_000, output: 2_000 },
+        },
+      },
+    });
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m2",
+        message: {
+          role: "tool",
+          content: `moderate interrupted tool output ${"x".repeat(36_000)}`,
+        },
+      },
+    });
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -1547,7 +1474,6 @@ describe("runMemoryFlushIfNeeded", () => {
     }));
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
       updatedAt: Date.now(),
       totalTokensFresh: false,
     };
@@ -1556,7 +1482,6 @@ describe("runMemoryFlushIfNeeded", () => {
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "main",
       }),
       defaultModel: "anthropic/claude-opus-4-6",
@@ -1564,7 +1489,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
@@ -1574,24 +1498,27 @@ describe("runMemoryFlushIfNeeded", () => {
   });
 
   it("does not count bytes from a large latest usage record as post-usage tail pressure", async () => {
-    const sessionFile = path.join(rootDir, "large-usage-record-session.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      [
-        JSON.stringify({
-          type: "session",
-          id: "session",
-        }),
-        JSON.stringify({
-          message: {
-            role: "assistant",
-            content: `large answer ${"x".repeat(300_000)}`,
-            usage: { input: 40_000, output: 2_000 },
-          },
-        }),
-      ].join("\n") + "\n",
-      "utf8",
-    );
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "session",
+        id: "session",
+      },
+    });
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: {
+          role: "assistant",
+          content: `large answer ${"x".repeat(300_000)}`,
+          usage: { input: 40_000, output: 2_000 },
+        },
+      },
+    });
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -1602,15 +1529,14 @@ describe("runMemoryFlushIfNeeded", () => {
     }));
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
       updatedAt: Date.now(),
       totalTokensFresh: false,
     };
+
     const entry = await runPreflightCompactionIfNeeded({
       cfg: { agents: { defaults: { compaction: { memoryFlush: {} } } } },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "main",
       }),
       defaultModel: "anthropic/claude-opus-4-6",
@@ -1618,7 +1544,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore: { main: sessionEntry },
       sessionKey: "main",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation: createReplyOperation(),
     });
@@ -1627,29 +1552,36 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
   });
 
-  it("does not treat raw transcript metadata bytes as token pressure", async () => {
-    const sessionFile = path.join(rootDir, "metadata-heavy-session.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      [
-        JSON.stringify({
-          type: "session",
-          id: "session",
-        }),
-        JSON.stringify({
-          type: "custom",
-          payload: "x".repeat(450_000),
-        }),
-        JSON.stringify({
-          message: {
-            role: "assistant",
-            content: "small answer",
-            usage: { input: 40_000, output: 2_000 },
-          },
-        }),
-      ].join("\n") + "\n",
-      "utf8",
-    );
+  it("does not treat non-message transcript payload bytes as token pressure", async () => {
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "session",
+        id: "session",
+      },
+    });
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "custom",
+        payload: "x".repeat(450_000),
+      },
+    });
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: {
+          role: "assistant",
+          content: "small answer",
+          usage: { input: 40_000, output: 2_000 },
+        },
+      },
+    });
     registerMemoryFlushPlanResolverForTest(() => ({
       softThresholdTokens: 4_000,
       forceFlushTranscriptBytes: 1_000_000_000,
@@ -1660,66 +1592,51 @@ describe("runMemoryFlushIfNeeded", () => {
     }));
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
       updatedAt: Date.now(),
       totalTokensFresh: false,
     };
-    const originalStat = fsCore.promises.stat.bind(fsCore.promises);
-    const statSpy = vi
-      .spyOn(fsCore.promises, "stat")
-      .mockImplementation(async (target, options) => originalStat(target, options));
 
-    let entry: SessionEntry | undefined;
-    let directTranscriptStats: unknown[] = [];
-    try {
-      entry = await runPreflightCompactionIfNeeded({
-        cfg: {
-          agents: {
-            defaults: {
-              compaction: {
-                memoryFlush: {},
-                truncateAfterCompaction: true,
-                maxActiveTranscriptBytes: "10mb",
-              },
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            compaction: {
+              memoryFlush: {},
+              rotateAfterCompaction: true,
+              maxActiveTranscriptBytes: "10mb",
             },
           },
         },
-        followupRun: createTestFollowupRun({
-          sessionId: "session",
-          sessionFile,
-          sessionKey: "main",
-        }),
-        defaultModel: "anthropic/claude-opus-4-6",
-        agentCfgContextTokens: 100_000,
-        sessionEntry,
-        sessionStore: { main: sessionEntry },
+      },
+      followupRun: createTestFollowupRun({
+        sessionId: "session",
         sessionKey: "main",
-        storePath: path.join(rootDir, "sessions.json"),
-        isHeartbeat: false,
-        replyOperation: createReplyOperation(),
-      });
-      directTranscriptStats = statSpy.mock.calls.filter(
-        ([target]) => String(target) === sessionFile,
-      );
-    } finally {
-      statSpy.mockRestore();
-    }
+      }),
+      defaultModel: "anthropic/claude-opus-4-6",
+      agentCfgContextTokens: 100_000,
+      sessionEntry,
+      sessionStore: { main: sessionEntry },
+      sessionKey: "main",
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
 
     expect(entry).toBe(sessionEntry);
     expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
-    expect(directTranscriptStats).toEqual([]);
   });
 
   it("triggers preflight compaction when the active transcript exceeds the configured byte threshold", async () => {
-    const sessionFile = path.join(rootDir, "large-session.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      `${JSON.stringify({ message: { role: "user", content: "x".repeat(256) } })}\n`,
-      "utf8",
-    );
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: { role: "user", content: "x".repeat(256) },
+      },
+    });
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
       updatedAt: Date.now(),
       totalTokens: 10,
       totalTokensFresh: true,
@@ -1733,7 +1650,7 @@ describe("runMemoryFlushIfNeeded", () => {
         agents: {
           defaults: {
             compaction: {
-              truncateAfterCompaction: true,
+              rotateAfterCompaction: true,
               maxActiveTranscriptBytes: "10b",
             },
           },
@@ -1741,7 +1658,6 @@ describe("runMemoryFlushIfNeeded", () => {
       },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "main",
       }),
       defaultModel: "anthropic/claude-opus-4-6",
@@ -1749,7 +1665,6 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "main",
-      storePath: path.join(rootDir, "sessions.json"),
       isHeartbeat: false,
       replyOperation,
     });
@@ -1760,19 +1675,69 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactCall.sessionId).toBe("session");
     expect(compactCall.trigger).toBe("budget");
     expect(compactCall.currentTokenCount).toBe(10);
-    expect(compactCall.sessionFile).toContain("large-session.jsonl");
+  });
+
+  it("uses the prepared run agent when measuring active transcript bytes", async () => {
+    appendSqliteSessionTranscriptEvent({
+      agentId: "worker",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: { role: "user", content: "x".repeat(256) },
+      },
+    });
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 10,
+      totalTokensFresh: true,
+      compactionCount: 0,
+    };
+    const sessionKey = "agent:main:main";
+
+    await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            compaction: {
+              rotateAfterCompaction: true,
+              maxActiveTranscriptBytes: "10b",
+            },
+          },
+        },
+      },
+      followupRun: createTestFollowupRun({
+        agentId: "worker",
+        sessionId: "session",
+        sessionKey,
+      }),
+      defaultModel: "anthropic/claude-opus-4-6",
+      agentCfgContextTokens: 100_000,
+      sessionEntry,
+      sessionStore: { [sessionKey]: sessionEntry },
+      sessionKey,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    const workerCompactCall = requireCompactEmbeddedAgentSessionCall();
+    expect(workerCompactCall.agentId).toBe("worker");
+    expect(workerCompactCall.sessionId).toBe("session");
   });
 
   it("keeps the active transcript byte threshold inactive unless transcript rotation is enabled", async () => {
-    const sessionFile = path.join(rootDir, "large-session-no-rotation.jsonl");
-    await fs.writeFile(
-      sessionFile,
-      `${JSON.stringify({ message: { role: "user", content: "x".repeat(256) } })}\n`,
-      "utf8",
-    );
+    appendSqliteSessionTranscriptEvent({
+      agentId: "main",
+      sessionId: "session",
+      event: {
+        type: "message",
+        id: "m1",
+        message: { role: "user", content: "x".repeat(256) },
+      },
+    });
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile,
       updatedAt: Date.now(),
       totalTokens: 10,
       totalTokensFresh: true,
@@ -1791,7 +1756,6 @@ describe("runMemoryFlushIfNeeded", () => {
       },
       followupRun: createTestFollowupRun({
         sessionId: "session",
-        sessionFile,
         sessionKey: "main",
       }),
       defaultModel: "anthropic/claude-opus-4-6",

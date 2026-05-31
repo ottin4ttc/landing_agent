@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
@@ -32,8 +31,6 @@ import type {
 import { resolveChannelModelOverride } from "../channels/model-overrides.js";
 import {
   resolveMainSessionKey,
-  resolveSessionFilePath,
-  resolveSessionFilePathOptions,
   resolveSessionPluginStatusLines,
   resolveSessionPluginTraceLines,
   resolveFreshSessionTotalTokens,
@@ -42,7 +39,7 @@ import {
 } from "../config/sessions.js";
 import { hasSessionAutoModelFallbackProvenance } from "../config/sessions/model-override-provenance.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { readRecentSessionUsageFromTranscript } from "../gateway/session-utils.fs.js";
+import { readRecentSessionUsageFromTranscript } from "../gateway/session-transcript-readers.js";
 import { formatTimeAgo } from "../infra/format-time/format-relative.ts";
 import { resolveCommitHash } from "../infra/git-commit.js";
 import {
@@ -90,7 +87,6 @@ export type StatusArgs = {
   sessionKey?: string;
   parentSessionKey?: string;
   sessionScope?: SessionScope;
-  sessionStorePath?: string;
   groupActivation?: "mention" | "always";
   resolvedThink?: ThinkLevel;
   resolvedFast?: boolean;
@@ -278,12 +274,10 @@ const formatQueueDetails = (queue?: QueueStatus) => {
   return detailParts.length ? ` (${detailParts.join(" · ")})` : "";
 };
 
-const readUsageFromSessionLog = (
+const readUsageFromSessionTranscript = (
   sessionId?: string,
-  sessionEntry?: SessionEntry,
   agentId?: string,
   sessionKey?: string,
-  storePath?: string,
 ):
   | {
       input: number;
@@ -295,32 +289,15 @@ const readUsageFromSessionLog = (
       model?: string;
     }
   | undefined => {
-  // Transcripts are stored at the session file path (fallback: ~/.openclaw/sessions/<SessionId>.jsonl)
   if (!sessionId) {
-    return undefined;
-  }
-  let logPath: string;
-  try {
-    const resolvedAgentId =
-      agentId ?? (sessionKey ? resolveAgentIdFromSessionKey(sessionKey) : undefined);
-    logPath = resolveSessionFilePath(
-      sessionId,
-      sessionEntry,
-      resolveSessionFilePathOptions({ agentId: resolvedAgentId, storePath }),
-    );
-  } catch {
-    return undefined;
-  }
-  if (!fs.existsSync(logPath)) {
     return undefined;
   }
 
   try {
+    const resolvedAgentId =
+      agentId ?? (sessionKey ? resolveAgentIdFromSessionKey(sessionKey) : undefined);
     const snapshot = readRecentSessionUsageFromTranscript(
-      sessionId,
-      storePath,
-      sessionEntry?.sessionFile,
-      agentId ?? (sessionKey ? resolveAgentIdFromSessionKey(sessionKey) : undefined),
+      { agentId: resolvedAgentId, sessionId },
       256 * 1024,
     );
     if (!snapshot) {
@@ -499,9 +476,9 @@ function resolveChannelModelNote(params: {
   }
   const channelOverride = resolveChannelModelOverride({
     cfg: params.config,
-    channel: params.entry.channel ?? params.entry.origin?.provider,
+    channel: params.entry.channel ?? params.entry.deliveryContext?.channel,
     groupId: params.entry.groupId,
-    groupChatType: params.entry.chatType ?? params.entry.origin?.chatType,
+    groupChatType: params.entry.chatType,
     groupChannel: params.entry.groupChannel,
     groupSubject: params.entry.subject,
     parentSessionKey: params.parentSessionKey,
@@ -640,12 +617,10 @@ export function buildStatusMessage(args: StatusArgs): string {
   // Prefer prompt-size tokens from the session transcript when it looks larger
   // (cached prompt tokens are often missing from agent meta/store).
   if (args.includeTranscriptUsage) {
-    const logUsage = readUsageFromSessionLog(
+    const logUsage = readUsageFromSessionTranscript(
       entry?.sessionId,
-      entry,
       args.agentId,
       args.sessionKey,
-      args.sessionStorePath,
     );
     if (logUsage) {
       const candidate = logUsage.promptTokens || logUsage.total;

@@ -211,7 +211,7 @@ vi.mock("./runtime.js", () => ({
 }));
 
 vi.mock("./sso-token-store.js", () => ({
-  createMSTeamsSsoTokenStoreFs: () => ssoTokenStore,
+  createMSTeamsSsoTokenStore: () => ssoTokenStore,
 }));
 
 import { monitorMSTeamsProvider } from "./monitor.js";

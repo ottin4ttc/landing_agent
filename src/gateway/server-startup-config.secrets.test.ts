@@ -1,11 +1,16 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.js";
-import { measureDiagnosticsTimelineSpan } from "../infra/diagnostics-timeline.js";
+import { listDiagnosticEvents } from "../infra/diagnostic-events-store.js";
+import {
+  flushDiagnosticsTimelineForTest,
+  measureDiagnosticsTimelineSpan,
+} from "../infra/diagnostics-timeline.js";
 import type { PreparedSecretsRuntimeSnapshot, SecretResolverWarning } from "../secrets/runtime.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { KNOWN_WEAK_GATEWAY_TOKEN_PLACEHOLDERS } from "./known-weak-gateway-secrets.js";
 import {
   createRuntimeSecretsActivator,
@@ -116,12 +121,11 @@ function runtimeSecretsActivatorForTest(params: {
   });
 }
 
-function readTimelineEvents(filePath: string): Array<Record<string, unknown>> {
-  return readFileSync(filePath, "utf8")
-    .trim()
-    .split(/\r?\n/u)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+async function readTimelineEvents(env: NodeJS.ProcessEnv): Promise<Array<Record<string, unknown>>> {
+  await flushDiagnosticsTimelineForTest();
+  return listDiagnosticEvents<Record<string, unknown>>("diagnostics.timeline", { env }).map(
+    (entry) => entry.value,
+  );
 }
 
 function installGatewayStartupSecretsRuntimeMock(state: GatewayStartupSecretsRuntimeMock) {
@@ -217,11 +221,11 @@ describe("gateway startup config secret preflight", () => {
 
   it("emits sanitized diagnostics timeline spans for secrets preparation", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "openclaw-startup-secrets-timeline-"));
-    const timelinePath = path.join(root, "timeline.jsonl");
+    const stateDir = path.join(root, "state");
     const previousDiagnostics = process.env.OPENCLAW_DIAGNOSTICS;
-    const previousTimelinePath = process.env.OPENCLAW_DIAGNOSTICS_TIMELINE_PATH;
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
     process.env.OPENCLAW_DIAGNOSTICS = "timeline";
-    process.env.OPENCLAW_DIAGNOSTICS_TIMELINE_PATH = timelinePath;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
     try {
       const config = gatewaySecretRefSnapshot().config;
       const prepareRuntimeSecretsSnapshot = vi.fn(async ({ config }) => preparedSnapshot(config));
@@ -239,7 +243,7 @@ describe("gateway startup config secret preflight", () => {
 
       await activateRuntimeSecrets(config, { reason: "startup", activate: false });
 
-      const events = readTimelineEvents(timelinePath);
+      const events = await readTimelineEvents(process.env);
       expect(events).toHaveLength(2);
       expect(events.map((event) => event.type)).toEqual(["span.start", "span.end"]);
       for (const event of events) {
@@ -258,22 +262,23 @@ describe("gateway startup config secret preflight", () => {
       } else {
         process.env.OPENCLAW_DIAGNOSTICS = previousDiagnostics;
       }
-      if (previousTimelinePath === undefined) {
-        delete process.env.OPENCLAW_DIAGNOSTICS_TIMELINE_PATH;
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
       } else {
-        process.env.OPENCLAW_DIAGNOSTICS_TIMELINE_PATH = previousTimelinePath;
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
       }
+      closeOpenClawStateDatabaseForTest();
       rmSync(root, { force: true, recursive: true });
     }
   });
 
   it("omits secret preparation error messages from diagnostics timeline spans", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "openclaw-startup-secrets-timeline-"));
-    const timelinePath = path.join(root, "timeline.jsonl");
+    const stateDir = path.join(root, "state");
     const previousDiagnostics = process.env.OPENCLAW_DIAGNOSTICS;
-    const previousTimelinePath = process.env.OPENCLAW_DIAGNOSTICS_TIMELINE_PATH;
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
     process.env.OPENCLAW_DIAGNOSTICS = "timeline";
-    process.env.OPENCLAW_DIAGNOSTICS_TIMELINE_PATH = timelinePath;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
     try {
       const prepareRuntimeSecretsSnapshot = vi.fn(async () => {
         throw new Error('Secret provider "default" is not configured for GATEWAY_TOKEN_REF.');
@@ -303,7 +308,7 @@ describe("gateway startup config secret preflight", () => {
         }),
       ).rejects.toThrow("Startup failed: required secrets are unavailable.");
 
-      const events = readTimelineEvents(timelinePath);
+      const events = await readTimelineEvents(process.env);
       const errorEvents = events.filter((event) => event.type === "span.error");
       expect(errorEvents.map((event) => event.name)).toEqual([
         "secrets.prepare",
@@ -322,11 +327,12 @@ describe("gateway startup config secret preflight", () => {
       } else {
         process.env.OPENCLAW_DIAGNOSTICS = previousDiagnostics;
       }
-      if (previousTimelinePath === undefined) {
-        delete process.env.OPENCLAW_DIAGNOSTICS_TIMELINE_PATH;
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
       } else {
-        process.env.OPENCLAW_DIAGNOSTICS_TIMELINE_PATH = previousTimelinePath;
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
       }
+      closeOpenClawStateDatabaseForTest();
       rmSync(root, { force: true, recursive: true });
     }
   });

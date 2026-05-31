@@ -40,9 +40,10 @@ Cron is the Gateway's built-in scheduler. It persists jobs, wakes the agent at t
 ## How cron works
 
 - Cron runs **inside the Gateway** process (not inside the model).
-- Job definitions, runtime state, and run history persist in OpenClaw's shared SQLite state database so restarts do not lose schedules.
-- On upgrade, legacy `~/.openclaw/cron/jobs.json`, `jobs-state.json`, and `runs/*.jsonl` files are imported once and renamed with a `.migrated` suffix. Malformed job rows are skipped from runtime and copied to `jobs-quarantine.json` for later repair or review.
-- `cron.store` still names the logical cron store key and legacy import path. After import, editing that JSON file no longer changes active cron jobs; use `openclaw cron add|edit|remove` or the Gateway cron RPC methods instead.
+- Job definitions, runtime execution state, and run history persist in the shared SQLite state database at `~/.openclaw/state/openclaw.sqlite`, so restarts do not lose schedules.
+- Legacy `~/.openclaw/cron/jobs.json`, `jobs-state.json`, and `runs/*.jsonl` files are imported once by `openclaw doctor --fix` and renamed with a `.migrated` suffix.
+- The optional `cron.store` path is now a legacy import namespace and display hint, not a runtime JSON writer. After import, editing that JSON file no longer changes active cron jobs; use `openclaw cron add|edit|remove` or the Gateway cron RPC methods instead.
+- If legacy import finds malformed `jobs.json` rows, valid jobs continue importing and the malformed raw rows are preserved in SQLite quarantine state for later repair or review.
 - All cron executions create [background task](/automation/tasks) records.
 - On Gateway startup, overdue isolated agent-turn jobs are rescheduled out of the channel-connect window instead of replaying immediately, so Discord/Telegram startup and native-command setup stay responsive after restarts.
 - One-shot jobs (`--at`) auto-delete after success by default.
@@ -58,7 +59,7 @@ Cron is the Gateway's built-in scheduler. It persists jobs, wakes the agent at t
 <a id="maintenance"></a>
 
 <Note>
-Task reconciliation for cron is runtime-owned first, durable-history-backed second: an active cron task stays live while the cron runtime still tracks that job as running, even if an old child session row still exists. Once the runtime stops owning the job and the 5-minute grace window expires, maintenance checks persisted run logs and job state for the matching `cron:<jobId>:<startedAt>` run. If that durable history shows a terminal result, the task ledger is finalized from it; otherwise Gateway-owned maintenance can mark the task `lost`. Offline CLI audit can recover from durable history, but it does not treat its own empty in-process active-job set as proof that a Gateway-owned cron run is gone.
+Task reconciliation for cron is runtime-owned first, durable-history-backed second: an active cron task stays live while the cron runtime still tracks that job as running, even if an old child session row still exists. Once the runtime stops owning the job and the 5-minute grace window expires, maintenance checks persisted SQLite run logs and job state for the matching `cron:<jobId>:<startedAt>` run. If that durable history shows a terminal result, the task ledger is finalized from it; otherwise Gateway-owned maintenance can mark the task `lost`. Offline CLI audit can recover from durable history, but it does not treat its own empty in-process active-job set as proof that a Gateway-owned cron run is gone.
 </Note>
 
 ## Schedule types
@@ -444,15 +445,14 @@ Model override note:
 {
   cron: {
     enabled: true,
-    store: "~/.openclaw/cron/jobs.json",
-    maxConcurrentRuns: 8,
+    store: "~/.openclaw/cron/jobs.json", // optional legacy import key
+    maxConcurrentRuns: 1,
     retry: {
       maxAttempts: 3,
       backoffMs: [60000, 120000, 300000],
       retryOn: ["rate_limit", "overloaded", "network", "server_error"],
     },
     webhookToken: "replace-with-dedicated-webhook-token",
-    sessionRetention: "24h",
     runLog: { maxBytes: "2mb", keepLines: 2000 },
   },
 }
@@ -460,7 +460,9 @@ Model override note:
 
 `maxConcurrentRuns` limits both scheduled cron dispatch and isolated agent-turn execution, and defaults to 8. Isolated cron agent turns use the queue's dedicated `cron-nested` execution lane internally, so raising this value lets independent cron LLM runs progress in parallel instead of only starting their outer cron wrappers. The shared non-cron `nested` lane is not widened by this setting.
 
-`cron.store` is a logical store key and legacy import path. Existing stores are imported into SQLite on first load and archived; future cron changes should go through the CLI or Gateway API.
+Cron data is keyed by the resolved `cron.store` value inside the shared SQLite state database. That value is a logical store key and legacy import path, not a runtime JSON write path. SQLite stores job definitions, pending slots, active markers, last-run metadata, run history, and the schedule identity used to invalidate stale pending slots after a job update.
+
+Run `openclaw doctor --fix` once after upgrading from an older version so doctor can import and archive legacy `jobs.json`, `jobs-state.json`, and `runs/*.jsonl` files. After import, existing stores no longer drive active cron jobs; future cron changes should go through the CLI or Gateway API.
 
 Disable cron: `cron.enabled: false` or `OPENCLAW_SKIP_CRON=1`.
 
@@ -472,7 +474,7 @@ Disable cron: `cron.enabled: false` or `OPENCLAW_SKIP_CRON=1`.
 
   </Accordion>
   <Accordion title="Maintenance">
-    `cron.sessionRetention` (default `24h`) prunes isolated run-session entries. `cron.runLog.keepLines` limits retained SQLite run-history rows per job; `maxBytes` is retained for config compatibility with older file-backed run logs.
+    `cron.runLog.keepLines` limits retained SQLite run-history rows per job; `maxBytes` is retained for config compatibility with older file-backed run logs. Session rows are SQLite-backed and are not age/count-pruned.
   </Accordion>
 </AccordionGroup>
 
@@ -511,7 +513,7 @@ openclaw doctor
   <Accordion title="Cron or heartbeat appears to prevent /new-style rollover">
     - Daily and idle reset freshness is not based on `updatedAt`; see [Session management](/concepts/session#session-lifecycle).
     - Cron wakeups, heartbeat runs, exec notifications, and gateway bookkeeping may update the session row for routing/status, but they do not extend `sessionStartedAt` or `lastInteractionAt`.
-    - For legacy rows created before those fields existed, OpenClaw can recover `sessionStartedAt` from the transcript JSONL session header when the file is still available. Legacy idle rows without `lastInteractionAt` use that recovered start time as their idle baseline.
+    - For legacy rows created before those fields existed, OpenClaw can recover `sessionStartedAt` from the SQLite transcript session header after doctor migration. Legacy idle rows without `lastInteractionAt` use that recovered start time as their idle baseline.
 
   </Accordion>
   <Accordion title="Timezone gotchas">

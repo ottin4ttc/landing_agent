@@ -22,11 +22,6 @@ vi.mock("../../agents/provider-model-normalization.runtime.js", () => ({
   normalizeProviderModelIdWithRuntime: () => undefined,
 }));
 
-vi.mock("../../channels/plugins/session-conversation.js", () => ({
-  resolveSessionParentSessionKey: (sessionKey?: string) =>
-    sessionKey?.replace(/:thread:[^:]+$/, "").replace(/:topic:[^:]+$/, "") ?? null,
-}));
-
 const authProfileStoreMock = vi.hoisted(() => {
   let store = { version: 1, profiles: {} } as {
     version: 1;
@@ -672,7 +667,7 @@ describe("createModelSelectionState parent inheritance", () => {
     expect(state.model).toBe("gpt-4o");
   });
 
-  it("derives parent key from topic session suffix", async () => {
+  it("does not infer parent override from thread-shaped sessionKey", async () => {
     const cfg = {} as OpenClawConfig;
     const parentKey = "agent:main:telegram:group:123";
     const sessionKey = "agent:main:telegram:group:123:topic:99";
@@ -687,8 +682,8 @@ describe("createModelSelectionState parent inheritance", () => {
       parentEntry,
     });
 
-    expect(state.provider).toBe("openai");
-    expect(state.model).toBe("gpt-4o");
+    expect(state.provider).toBe(defaultProvider);
+    expect(state.model).toBe(defaultModel);
   });
 
   it("prefers child override over parent", async () => {
@@ -709,6 +704,7 @@ describe("createModelSelectionState parent inheritance", () => {
       parentEntry,
       sessionEntry,
       sessionKey,
+      parentSessionKey: parentKey,
     });
 
     expect(state.provider).toBe("anthropic");
@@ -736,6 +732,7 @@ describe("createModelSelectionState parent inheritance", () => {
       parentKey,
       sessionKey,
       parentEntry,
+      parentSessionKey: parentKey,
     });
 
     expect(state.provider).toBe(defaultProvider);

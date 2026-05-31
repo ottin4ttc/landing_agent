@@ -21,8 +21,10 @@ import type {
   ToolProgressDetailMode,
   ToolResultFormat,
 } from "../../embedded-agent-subscribe.shared-types.js";
+import type { AgentFilesystem } from "../../filesystem/agent-filesystem.js";
 import type { AgentInternalEvent } from "../../internal-events.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import type { PreparedAgentRunInitialVfsEntry } from "../../runtime-backend.js";
 import type { SilentReplyPromptMode } from "../../system-prompt.types.js";
 import type { PromptMode } from "../../system-prompt.types.js";
 import type { EmbeddedAgentExecutionPhase } from "../execution-phase.js";
@@ -39,6 +41,8 @@ export type CurrentInboundPromptContext = {
 
 export type RunEmbeddedAgentParams = {
   sessionId: string;
+  path?: string;
+  storePath?: string;
   sessionKey?: string;
   /** Provider prompt-cache affinity key; distinct from transcript/session identity. */
   promptCacheKey?: string;
@@ -76,6 +80,7 @@ export type RunEmbeddedAgentParams = {
   senderE164?: string | null;
   /** Trusted sender identity bit for command/channel-action auth. */
   senderIsOwner?: boolean;
+  ownerOnlyToolAllowlist?: string[];
   /** Current channel ID for auto-threading (Slack). */
   currentChannelId?: string;
   /** Current thread timestamp for auto-threading (Slack). */
@@ -102,7 +107,6 @@ export type RunEmbeddedAgentParams = {
   forceHeartbeatTool?: boolean;
   /** Allow runtime plugins for this run to late-bind the gateway subagent. */
   allowGatewaySubagentBinding?: boolean;
-  sessionFile: string;
   workspaceDir: string;
   /** Task working directory for tool/runtime execution. Defaults to workspaceDir. */
   cwd?: string;
@@ -120,6 +124,14 @@ export type RunEmbeddedAgentParams = {
   clientTools?: ClientToolDefinition[];
   /** Disable built-in tools for this run (LLM-only mode). */
   disableTools?: boolean;
+  /**
+   * OpenClaw-owned filesystem capabilities for this run. Worker-backed runs
+   * inject this from the runtime context; inline runs can omit it and use the
+   * legacy disk-backed compatibility paths.
+   */
+  agentFilesystem?: AgentFilesystem;
+  /** Files to seed into the worker SQLite VFS before tools start. */
+  initialVfsEntries?: PreparedAgentRunInitialVfsEntry[];
   provider?: string;
   model?: string;
   /** Effective model fallback chain for this session attempt. Undefined uses config defaults. */
@@ -251,3 +263,5 @@ export type RunEmbeddedAgentParams = {
    */
   cleanupBundleMcpOnRunEnd?: boolean;
 };
+
+export type RunEmbeddedPiAgentParams = RunEmbeddedAgentParams;

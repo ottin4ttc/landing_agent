@@ -42,7 +42,7 @@ import {
   resolveCompactionTimeoutMs,
 } from "./compaction-safety-timeout.js";
 import {
-  rotateTranscriptFileAfterCompaction,
+  rotateSqliteTranscriptAfterCompaction,
   shouldRotateCompactionTranscript,
 } from "./compaction-successor-transcript.js";
 import { resolveContextEngineCapabilities } from "./context-engine-capabilities.js";
@@ -102,7 +102,6 @@ async function deferOwningContextEngineBudgetCompaction(params: {
       contextEngine: params.contextEngine,
       sessionId: params.compactParams.sessionId,
       sessionKey: params.compactParams.sessionKey,
-      sessionFile: params.compactParams.sessionFile,
       reason: "turn",
       runtimeContext: params.contextEngineRuntimeContext,
       config: params.compactParams.config,
@@ -163,9 +162,14 @@ export async function compactEmbeddedAgentSession(
   ensureContextEnginesInitialized();
   const agentIds = resolveSessionAgentIds({
     sessionKey: params.sessionKey,
-    config: params.config,
     agentId: params.agentId,
+    config: params.config,
   });
+  const transcriptScope = {
+    agentId: agentIds.sessionAgentId,
+    path: params.path,
+    sessionId: params.sessionId,
+  };
   const agentDir = params.agentDir ?? resolveAgentDir(params.config ?? {}, agentIds.sessionAgentId);
   const resolvedWorkspaceDir = resolveUserPath(params.workspaceDir);
   const contextEngine = await resolveContextEngine(params.config, {
@@ -303,20 +307,22 @@ export async function compactEmbeddedAgentSession(
         // Fire before_compaction / after_compaction hooks here so plugin subscribers
         // are notified regardless of which engine is active.
         const engineOwnsCompaction = contextEngine.info.ownsCompaction === true;
+        const { sessionAgentId } = resolveSessionAgentIds({
+          sessionKey: params.sessionKey,
+          agentId: params.agentId,
+          config: params.config,
+        });
         checkpointSnapshot = engineOwnsCompaction
           ? await captureCompactionCheckpointSnapshotAsync({
-              sessionFile: params.sessionFile,
+              agentId: sessionAgentId,
+              path: params.path,
+              sessionId: params.sessionId,
             })
           : null;
         const hookRunner = engineOwnsCompaction
           ? asCompactionHookRunner(getGlobalHookRunner())
           : null;
         const hookSessionKey = params.sessionKey?.trim() || params.sessionId;
-        const { sessionAgentId } = resolveSessionAgentIds({
-          sessionKey: params.sessionKey,
-          config: params.config,
-          agentId: params.agentId,
-        });
         const resolvedMessageProvider = params.messageChannel ?? params.messageProvider;
         const hookCtx = {
           sessionId: params.sessionId,
@@ -327,14 +333,12 @@ export async function compactEmbeddedAgentSession(
         };
         const runtimeContext = contextEngineRuntimeContext;
         // Engine-owned compaction doesn't load the transcript at this level, so
-        // message counts are unavailable. We pass sessionFile so hook subscribers
-        // can read the transcript themselves if they need exact counts.
+        // message counts are unavailable.
         if (hookRunner?.hasHooks?.("before_compaction") && hookRunner.runBeforeCompaction) {
           try {
             await hookRunner.runBeforeCompaction(
               {
                 messageCount: -1,
-                sessionFile: params.sessionFile,
               },
               hookCtx,
             );
@@ -344,21 +348,14 @@ export async function compactEmbeddedAgentSession(
             });
           }
         }
-        // Bound the plugin-owned compaction with the same finite safety
-        // timeout that protects native runtime compaction, and thread the
-        // caller's abort signal through, so a slow/hung plugin compact()
-        // cannot hang the queued /compact lane indefinitely. A timeout/abort
-        // (or any thrown error) is surfaced as a clean { ok: false } result —
-        // matching how the run-loop overflow/timeout lanes handle it — instead
-        // of throwing a raw rejection at callers that only inspect result.ok.
-        let result: Awaited<ReturnType<typeof contextEngine.compact>>;
+        let result: Awaited<ReturnType<ContextEngine["compact"]>>;
         try {
           result = await compactContextEngineWithSafetyTimeout(
             contextEngine,
             {
               sessionId: params.sessionId,
               sessionKey: params.sessionKey,
-              sessionFile: params.sessionFile,
+              transcriptScope,
               tokenBudget: contextTokenBudget,
               currentTokenCount: params.currentTokenCount,
               compactionTarget: params.trigger === "manual" ? "threshold" : "budget",
@@ -369,33 +366,43 @@ export async function compactEmbeddedAgentSession(
             resolveCompactionTimeoutMs(params.config),
             params.abortSignal,
           );
-        } catch (compactErr) {
+        } catch (err) {
+          const reason = formatErrorMessage(err);
           log.warn("context-engine compaction failed", {
-            errorMessage: formatErrorMessage(compactErr),
+            errorMessage: reason,
           });
-          result = {
+          return {
             ok: false,
             compacted: false,
-            reason: formatErrorMessage(compactErr),
+            reason,
+            failure: { reason: "context_engine_compaction_failed" },
           };
         }
         const delegatedSessionId = result.result?.sessionId;
-        const delegatedSessionFile = result.result?.sessionFile;
         const delegatedRotatedTranscript =
-          (typeof delegatedSessionId === "string" && delegatedSessionId !== params.sessionId) ||
-          (typeof delegatedSessionFile === "string" && delegatedSessionFile !== params.sessionFile);
+          typeof delegatedSessionId === "string" && delegatedSessionId !== params.sessionId;
         let postCompactionSessionId = delegatedSessionId ?? params.sessionId;
-        let postCompactionSessionFile = delegatedSessionFile ?? params.sessionFile;
+        let postCompactionTranscriptScope = {
+          agentId: agentIds.sessionAgentId,
+          path: params.path,
+          sessionId: postCompactionSessionId,
+        };
         let postCompactionLeafId: string | undefined;
         if (result.ok && result.compacted) {
           if (shouldRotateCompactionTranscript(params.config) && !delegatedRotatedTranscript) {
             try {
-              const rotation = await rotateTranscriptFileAfterCompaction({
-                sessionFile: params.sessionFile,
+              const rotation = await rotateSqliteTranscriptAfterCompaction({
+                agentId: agentIds.sessionAgentId,
+                path: params.path,
+                sessionId: params.sessionId,
               });
               if (rotation.rotated) {
                 postCompactionSessionId = rotation.sessionId ?? postCompactionSessionId;
-                postCompactionSessionFile = rotation.sessionFile ?? postCompactionSessionFile;
+                postCompactionTranscriptScope = {
+                  agentId: agentIds.sessionAgentId,
+                  path: params.path,
+                  sessionId: postCompactionSessionId,
+                };
                 postCompactionLeafId = rotation.leafId;
                 log.info(
                   `[compaction] rotated active transcript after context-engine compaction ` +
@@ -412,7 +419,10 @@ export async function compactEmbeddedAgentSession(
             try {
               const postLeafId =
                 postCompactionLeafId ??
-                (await readSessionLeafIdFromTranscriptAsync(postCompactionSessionFile)) ??
+                (await readSessionLeafIdFromTranscriptAsync({
+                  agentId: agentIds.sessionAgentId,
+                  sessionId: postCompactionSessionId,
+                })) ??
                 undefined;
               const storedCheckpoint = await persistSessionCompactionCheckpoint({
                 cfg: params.config,
@@ -426,7 +436,6 @@ export async function compactEmbeddedAgentSession(
                 firstKeptEntryId: result.result?.firstKeptEntryId,
                 tokensBefore: result.result?.tokensBefore,
                 tokensAfter: result.result?.tokensAfter,
-                postSessionFile: postCompactionSessionFile,
                 postLeafId,
                 postEntryId: postLeafId,
               });
@@ -439,9 +448,10 @@ export async function compactEmbeddedAgentSession(
           }
           await runContextEngineMaintenance({
             contextEngine,
+            sessionAgentId: agentIds.sessionAgentId,
             sessionId: postCompactionSessionId,
             sessionKey: params.sessionKey,
-            sessionFile: postCompactionSessionFile,
+            transcriptScope: postCompactionTranscriptScope,
             reason: "compaction",
             runtimeContext,
             config: params.config,
@@ -450,9 +460,9 @@ export async function compactEmbeddedAgentSession(
         if (engineOwnsCompaction && result.ok && result.compacted) {
           await runPostCompactionSideEffects({
             config: params.config,
+            agentId: agentIds.sessionAgentId,
+            sessionId: postCompactionSessionId,
             sessionKey: params.sessionKey,
-            agentId: sessionAgentId,
-            sessionFile: postCompactionSessionFile,
           });
         }
         if (
@@ -471,7 +481,6 @@ export async function compactEmbeddedAgentSession(
                 messageCount: -1,
                 compactedCount: -1,
                 tokenCount: result.result?.tokensAfter,
-                sessionFile: postCompactionSessionFile,
               },
               afterHookCtx,
             );
@@ -494,9 +503,6 @@ export async function compactEmbeddedAgentSession(
                 details: result.result.details,
                 ...(postCompactionSessionId !== params.sessionId
                   ? { sessionId: postCompactionSessionId }
-                  : {}),
-                ...(postCompactionSessionFile !== params.sessionFile
-                  ? { sessionFile: postCompactionSessionFile }
                   : {}),
               }
             : undefined,
@@ -572,6 +578,7 @@ function buildCompactionContextEngineRuntimeContext(params: {
       contextEnginePluginId: params.contextEnginePluginId,
       purpose: "context-engine.compaction",
     }),
+    agentId: sessionAgentId,
     tokenBudget: params.contextTokenBudget,
     currentTokenCount: params.params.currentTokenCount,
   };

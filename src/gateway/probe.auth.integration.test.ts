@@ -34,19 +34,19 @@ function requireGatewayToken(): string {
   return token;
 }
 
+function expectRecord(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null) {
+    throw new Error(`expected ${label}`);
+  }
+  return value as Record<string, unknown>;
+}
+
 function statePath(...parts: string[]): string {
   const stateDir = process.env.OPENCLAW_STATE_DIR;
   if (!stateDir) {
     throw new Error("expected OPENCLAW_STATE_DIR");
   }
   return path.join(stateDir, ...parts);
-}
-
-function expectRecord(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null) {
-    throw new Error(`expected ${label}`);
-  }
-  return value as Record<string, unknown>;
 }
 
 async function seedCachedOperatorToken(scopes: string[]): Promise<void> {

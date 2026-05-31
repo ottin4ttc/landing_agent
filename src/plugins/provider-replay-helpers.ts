@@ -1,5 +1,5 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import type { AgentMessage } from "../agents/runtime/index.js";
+import type { AgentMessage } from "../agents/agent-core-contract.js";
 import { isGemma4ModelId } from "../shared/google-models.js";
 import { sanitizeGoogleAssistantFirstOrdering } from "../shared/google-turn-ordering.js";
 import type {

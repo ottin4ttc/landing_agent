@@ -4,7 +4,6 @@ export {
   isEmbeddedAgentRunActive,
   isEmbeddedAgentRunStreaming,
   resolveActiveEmbeddedRunSessionId,
-  resolveActiveEmbeddedRunSessionIdBySessionFile,
   runEmbeddedAgent,
   resolveEmbeddedSessionLane,
   waitForEmbeddedAgentRunEnd,

@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { resolveDefaultAgentDir } from "./agent-scope.js";
+import { listStoredPluginModelCatalogs, readStoredModelsConfigRaw } from "./models-config-store.js";
 import {
   CUSTOM_PROXY_MODELS_CONFIG,
   installModelsConfigTestHooks,
@@ -11,6 +12,7 @@ import {
   withTempEnv,
   withModelsTempHome as withTempHome,
 } from "./models-config.e2e-harness.js";
+import { ensureOpenClawModelsJson } from "./models-config.js";
 import type { ProviderConfig as ModelsProviderConfig } from "./models-config.providers.secrets.js";
 import {
   PLUGIN_MODEL_CATALOG_FILE,
@@ -48,9 +50,9 @@ vi.mock("./models-config.providers.js", async () => {
     }: {
       providers: Record<string, ModelsProviderConfig>;
     }) => providers,
-    normalizeProviders: ({ providers }: { providers: Record<string, ModelsProviderConfig> }) =>
-      providers,
     normalizeProviderCatalogModelsForConfig: (providers: Record<string, ModelsProviderConfig>) =>
+      providers,
+    normalizeProviders: ({ providers }: { providers: Record<string, ModelsProviderConfig> }) =>
       providers,
     resolveImplicitProviders: async ({ env }: { env?: NodeJS.ProcessEnv }) => {
       const providers: Record<string, ModelsProviderConfig> = {
@@ -94,8 +96,8 @@ installModelsConfigTestHooks();
 let clearConfigCache: typeof import("../config/config.js").clearConfigCache;
 let clearRuntimeConfigSnapshot: typeof import("../config/config.js").clearRuntimeConfigSnapshot;
 let clearRuntimeAuthProfileStoreSnapshots: typeof import("./auth-profiles/store.js").clearRuntimeAuthProfileStoreSnapshots;
-let ensureOpenClawModelsJson: typeof import("./models-config.js").ensureOpenClawModelsJson;
-let resetModelsJsonReadyCacheForTest: typeof import("./models-config.js").resetModelsJsonReadyCacheForTest;
+let ensureOpenClawModelCatalog: typeof import("./models-config.js").ensureOpenClawModelCatalog;
+let resetModelCatalogReadyCacheForTest: typeof import("./models-config.js").resetModelCatalogReadyCacheForTest;
 
 type ParsedProviderConfig = {
   baseUrl?: string;
@@ -103,29 +105,27 @@ type ParsedProviderConfig = {
   models?: Array<{ id: string }>;
 };
 
+function readStoredProviderConfig(agentDir = resolveDefaultAgentDir({})): {
+  providers: Record<string, ParsedProviderConfig>;
+} {
+  const stored = readStoredModelsConfigRaw(agentDir);
+  if (!stored) {
+    throw new Error(`expected stored model catalog for ${agentDir}`);
+  }
+  return JSON.parse(stored.raw) as { providers: Record<string, ParsedProviderConfig> };
+}
+
 async function readGeneratedProviders(
   agentDir: string,
 ): Promise<Record<string, ParsedProviderConfig>> {
-  const raw = await fs.readFile(path.join(agentDir, "models.json"), "utf8");
-  const parsed = JSON.parse(raw) as { providers?: Record<string, ParsedProviderConfig> };
-  const providers = { ...parsed.providers };
-  const pluginsDir = path.join(agentDir, "plugins");
-  let pluginDirs: Array<import("node:fs").Dirent>;
-  try {
-    pluginDirs = await fs.readdir(pluginsDir, { withFileTypes: true });
-  } catch {
-    return providers;
+  const stored = readStoredModelsConfigRaw(agentDir);
+  if (!stored) {
+    throw new Error(`expected stored model catalog for ${agentDir}`);
   }
-  for (const entry of pluginDirs) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-    const catalogPath = path.join(pluginsDir, entry.name, PLUGIN_MODEL_CATALOG_FILE);
-    const catalogRaw = await fs.readFile(catalogPath, "utf8").catch(() => undefined);
-    if (!catalogRaw) {
-      continue;
-    }
-    const catalog = JSON.parse(catalogRaw) as {
+  const parsed = JSON.parse(stored.raw) as { providers?: Record<string, ParsedProviderConfig> };
+  const providers = { ...parsed.providers };
+  for (const entry of listStoredPluginModelCatalogs(agentDir)) {
+    const catalog = JSON.parse(entry.raw) as {
       generatedBy?: string;
       providers?: Record<string, ParsedProviderConfig>;
     };
@@ -145,7 +145,7 @@ async function runEnvProviderCase(params: {
   const previousValue = process.env[params.envVar];
   process.env[params.envVar] = params.envValue;
   try {
-    await ensureOpenClawModelsJson({});
+    await ensureOpenClawModelCatalog({});
 
     const provider = (await readGeneratedProviders(resolveDefaultAgentDir({})))[params.providerKey];
     expect(provider?.apiKey).toBe(params.expectedApiKeyRef);
@@ -163,7 +163,7 @@ describe("models-config", () => {
     vi.resetModules();
     ({ clearConfigCache, clearRuntimeConfigSnapshot } = await import("../config/config.js"));
     ({ clearRuntimeAuthProfileStoreSnapshots } = await import("./auth-profiles/store.js"));
-    ({ ensureOpenClawModelsJson, resetModelsJsonReadyCacheForTest } =
+    ({ ensureOpenClawModelCatalog, resetModelCatalogReadyCacheForTest } =
       await import("./models-config.js"));
   });
 
@@ -171,14 +171,14 @@ describe("models-config", () => {
     clearRuntimeAuthProfileStoreSnapshots();
     clearRuntimeConfigSnapshot();
     clearConfigCache();
-    resetModelsJsonReadyCacheForTest();
+    resetModelCatalogReadyCacheForTest();
   });
 
   afterEach(() => {
     clearRuntimeAuthProfileStoreSnapshots();
     clearRuntimeConfigSnapshot();
     clearConfigCache();
-    resetModelsJsonReadyCacheForTest();
+    resetModelCatalogReadyCacheForTest();
   });
 
   it("writes marker-backed defaults but skips env-gated providers when no env token or profile exists", async () => {
@@ -190,7 +190,7 @@ describe("models-config", () => {
         // ensureAuthProfileStore merges the main auth store into non-main dirs; point main at our temp dir.
         process.env.OPENCLAW_AGENT_DIR = agentDir;
 
-        const result = await ensureOpenClawModelsJson(
+        const result = await ensureOpenClawModelCatalog(
           {
             models: { providers: {} },
           },
@@ -213,13 +213,11 @@ describe("models-config", () => {
     });
   });
 
-  it("writes models.json for configured providers", async () => {
+  it("writes stored model catalog for configured providers", async () => {
     await withTempHome(async () => {
-      await ensureOpenClawModelsJson(CUSTOM_PROXY_MODELS_CONFIG);
+      await ensureOpenClawModelCatalog(CUSTOM_PROXY_MODELS_CONFIG);
 
-      const modelPath = path.join(resolveDefaultAgentDir({}), "models.json");
-      const raw = await fs.readFile(modelPath, "utf8");
-      const parsed = JSON.parse(raw) as {
+      const parsed = readStoredProviderConfig() as {
         providers: Record<
           string,
           {

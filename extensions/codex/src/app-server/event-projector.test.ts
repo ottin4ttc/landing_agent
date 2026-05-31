@@ -4,9 +4,9 @@ import path from "node:path";
 import type { EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness";
 import {
   embeddedAgentLog,
+  replaceSqliteSessionTranscriptEvents,
   resetAgentEventsForTest,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import {
   onInternalDiagnosticEvent,
   resetDiagnosticEventsForTest,
@@ -61,12 +61,23 @@ function assistantMessage(text: string, timestamp: number) {
 async function createParams(): Promise<EmbeddedRunAttemptParams> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-projector-"));
   tempDirs.add(tempDir);
-  const sessionFile = path.join(tempDir, "session.jsonl");
-  SessionManager.open(sessionFile).appendMessage(assistantMessage("history", Date.now()));
+  const sessionId = "session-1";
+  replaceSqliteSessionTranscriptEvents({
+    agentId: "main",
+    sessionId,
+    events: [
+      { type: "session", version: 1, id: sessionId },
+      {
+        type: "message",
+        id: "history",
+        parentId: null,
+        message: assistantMessage("history", Date.now()),
+      },
+    ],
+  });
   return {
     prompt: "hello",
-    sessionId: "session-1",
-    sessionFile,
+    sessionId,
     workspaceDir: tempDir,
     runId: "run-1",
     provider: "openai",
@@ -143,6 +154,19 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function mockCallArg(
+  mock: { mock: { calls: unknown[][] } },
+  callIndex: number,
+  argIndex: number,
+  label: string,
+) {
+  const call = mock.mock.calls.at(callIndex);
+  if (!call) {
+    throw new Error(`Expected ${label} call`);
+  }
+  return call[argIndex];
+}
+
 function requireArray(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) {
     throw new Error(`Expected ${label}`);
@@ -159,18 +183,6 @@ function expectUsageFields(
   expect(record.output).toBe(expected.output);
   expect(record.cacheRead).toBe(expected.cacheRead);
   expect(record.total ?? record.totalTokens).toBe(expected.total);
-}
-
-function mockCallArg(mock: unknown, callIndex: number, argIndex: number, label: string) {
-  const calls = (mock as { mock?: { calls?: unknown[][] } }).mock?.calls;
-  if (!Array.isArray(calls)) {
-    throw new Error(`Expected ${label} mock calls`);
-  }
-  const call = calls[callIndex];
-  if (!call) {
-    throw new Error(`Expected ${label} call ${callIndex + 1}`);
-  }
-  return call[argIndex];
 }
 
 function findAgentEvent(
@@ -705,8 +717,7 @@ describe("CodexAppServerEventProjector", () => {
         },
       }),
     );
-    const toolProgressText = (mockCallArg(onToolResult, 0, 0, "onToolResult") as { text?: string })
-      .text;
+    const toolProgressText = onToolResult.mock.calls[0]?.[0]?.text;
     expect(toolProgressText).toBe("🛠️ `run tests (workspace)`");
 
     await projector.handleNotification(
@@ -1155,7 +1166,6 @@ describe("CodexAppServerEventProjector", () => {
       {
         prompt: "hello",
         sessionId: "session-1",
-        sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp",
         runId: "run-1",
         provider: "openai",
@@ -1546,7 +1556,9 @@ describe("CodexAppServerEventProjector", () => {
     const onAgentEvent = vi.fn();
     const onToolResult = vi.fn();
     const trajectoryRecorder = {
+      enabled: true as const,
       filePath: "trajectory.jsonl",
+      runtimeScope: "sqlite:test:trajectory:session-1",
       recordEvent: vi.fn(),
       flush: vi.fn(async () => undefined),
     };
@@ -1630,7 +1642,9 @@ describe("CodexAppServerEventProjector", () => {
   it("uses streamed command output when final command snapshots omit aggregated output", async () => {
     const onAgentEvent = vi.fn();
     const trajectoryRecorder = {
+      enabled: true as const,
       filePath: "trajectory.jsonl",
+      runtimeScope: "sqlite:test:trajectory:session-1",
       recordEvent: vi.fn(),
       flush: vi.fn(async () => undefined),
     };
@@ -1738,7 +1752,9 @@ describe("CodexAppServerEventProjector", () => {
   it("does not duplicate native tool starts when the snapshot completes a started item", async () => {
     const onAgentEvent = vi.fn();
     const trajectoryRecorder = {
+      enabled: true as const,
       filePath: "trajectory.jsonl",
+      runtimeScope: "sqlite:test:trajectory:session-1",
       recordEvent: vi.fn(),
       flush: vi.fn(async () => undefined),
     };
@@ -3138,7 +3154,6 @@ describe("CodexAppServerEventProjector", () => {
 
   it("fires before_compaction and after_compaction hooks for codex compaction items", async () => {
     const { projector, beforeCompaction, afterCompaction } = await createProjectorWithHooks();
-    const openSpy = vi.spyOn(SessionManager, "open");
 
     await projector.handleNotification(
       forCurrentTurn("item/started", {
@@ -3150,35 +3165,26 @@ describe("CodexAppServerEventProjector", () => {
         item: { type: "contextCompaction", id: "compact-1" },
       }),
     );
-    expect(openSpy).not.toHaveBeenCalled();
-
-    const beforePayload = requireRecord(
-      mockCallArg(beforeCompaction, 0, 0, "beforeCompaction"),
-      "before payload",
+    expect(beforeCompaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageCount: 1,
+        messages: [expect.objectContaining({ role: "assistant" })],
+      }),
+      expect.objectContaining({
+        runId: "run-1",
+        sessionId: "session-1",
+      }),
     );
-    expect(beforePayload.messageCount).toBe(1);
-    expect(String(beforePayload.sessionFile)).toContain("session.jsonl");
-    const beforeMessages = requireArray(beforePayload.messages, "before messages");
-    expect(requireRecord(beforeMessages[0], "before message").role).toBe("assistant");
-    const beforeContext = requireRecord(
-      mockCallArg(beforeCompaction, 0, 1, "beforeCompaction"),
-      "before context",
+    expect(afterCompaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageCount: 1,
+        compactedCount: -1,
+      }),
+      expect.objectContaining({
+        runId: "run-1",
+        sessionId: "session-1",
+      }),
     );
-    expect(beforeContext.runId).toBe("run-1");
-    expect(beforeContext.sessionId).toBe("session-1");
-    const afterPayload = requireRecord(
-      mockCallArg(afterCompaction, 0, 0, "afterCompaction"),
-      "after payload",
-    );
-    expect(afterPayload.messageCount).toBe(1);
-    expect(afterPayload.compactedCount).toBe(-1);
-    expect(String(afterPayload.sessionFile)).toContain("session.jsonl");
-    const afterContext = requireRecord(
-      mockCallArg(afterCompaction, 0, 1, "afterCompaction"),
-      "after context",
-    );
-    expect(afterContext.runId).toBe("run-1");
-    expect(afterContext.sessionId).toBe("session-1");
   });
 
   it("projects codex hook started and completed notifications into agent events", async () => {

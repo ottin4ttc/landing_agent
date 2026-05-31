@@ -103,6 +103,13 @@ export function collectVoiceCallLegacyConfigIssues(value: unknown): VoiceCallLeg
         "Remove realtime.agentContext.includeSystemPrompt; realtime context now uses the generated agent prompt.",
     });
   }
+  if (typeof raw.store === "string") {
+    issues.push({
+      path: "store",
+      replacement: "SQLite plugin state",
+      message: "Remove store; call records are stored in SQLite plugin state.",
+    });
+  }
 
   return issues;
 }
@@ -202,7 +209,7 @@ export function migrateVoiceCallLegacyConfigInput(params: {
       }
     : undefined;
 
-  const config = {
+  const config: Record<string, unknown> = {
     ...raw,
     provider: raw.provider === "log" ? "mock" : raw.provider,
     fromNumber: raw.fromNumber ?? (typeof twilio?.from === "string" ? twilio.from : undefined),
@@ -210,6 +217,7 @@ export function migrateVoiceCallLegacyConfigInput(params: {
     streaming: normalizedStreaming,
     realtime: normalizedRealtime,
   };
+  delete config.store;
 
   const changes: string[] = [];
   if (raw.provider === "log") {
@@ -249,6 +257,9 @@ export function migrateVoiceCallLegacyConfigInput(params: {
   }
   if (realtimeAgentContext && Object.hasOwn(realtimeAgentContext, "includeSystemPrompt")) {
     changes.push(`Removed ${configPathPrefix}.realtime.agentContext.includeSystemPrompt.`);
+  }
+  if (typeof raw.store === "string") {
+    changes.push(`Removed ${configPathPrefix}.store; call records use SQLite plugin state.`);
   }
 
   return { config, changes, issues };

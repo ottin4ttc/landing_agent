@@ -79,6 +79,19 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
   });
 
   it("passes threadId through to gateway send for Telegram forum topics", async () => {
+    sessionListRows = [
+      {
+        key: "agent:main:telegram:group:-100123:topic:554",
+        kind: "group",
+        channel: "telegram",
+        deliveryContext: {
+          channel: "telegram",
+          to: "-100123",
+          threadId: "554",
+        },
+      },
+    ];
+
     await runSessionsSendA2AFlow({
       targetSessionKey: "agent:main:telegram:group:-100123:topic:554",
       displayKey: "agent:main:telegram:group:-100123:topic:554",
@@ -96,6 +109,18 @@ describe("runSessionsSendA2AFlow announce delivery", () => {
   });
 
   it("omits threadId for non-topic sessions", async () => {
+    sessionListRows = [
+      {
+        key: "agent:main:discord:group:dev",
+        kind: "group",
+        channel: "discord",
+        deliveryContext: {
+          channel: "discord",
+          to: "group:dev",
+        },
+      },
+    ];
+
     await runSessionsSendA2AFlow({
       targetSessionKey: "agent:main:discord:group:dev",
       displayKey: "agent:main:discord:group:dev",

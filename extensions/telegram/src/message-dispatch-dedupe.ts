@@ -230,10 +230,10 @@ export function buildTelegramMessageDispatchReplayKey(msg: Message): string | nu
 }
 
 export function createTelegramMessageDispatchReplayGuard(params: {
-  storePath: string;
+  scopeKey: string;
   onDiskError?: (error: unknown) => void;
 }): TelegramMessageDispatchReplayGuard {
-  const scopeKey = resolveDispatchScopeKey(params.storePath);
+  const scopeKey = resolveDispatchScopeKey(params.scopeKey);
   const onStateError = params.onDiskError;
   let store: TelegramMessageDispatchDedupeStore | undefined;
   const inflight = new Map<string, PendingClaim>();

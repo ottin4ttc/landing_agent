@@ -51,16 +51,12 @@ async function readBundleProbeText(mcpConfigPath) {
     throw new Error("missing bundleProbe MCP server");
   }
   const transport = new StdioClientTransport({
-    command: server.command,
-    args: Array.isArray(server.args) ? server.args : [],
-    env: server.env && typeof server.env === "object" ? server.env : undefined,
-    cwd:
+    command: server.command, args: Array.isArray(server.args) ? server.args : [], env: server.env && typeof server.env === "object" ? server.env : undefined, cwd:
       typeof server.cwd === "string"
         ? server.cwd
         : typeof server.workingDirectory === "string"
           ? server.workingDirectory
-          : undefined,
-  });
+          : undefined, });
   const client = new Client({ name: "fake-live-claude", version: "1.0.0" });
   await client.connect(transport);
   try {
@@ -91,18 +87,10 @@ try {
     const text = await readBundleProbeText(mcpConfigPath);
     process.stdout.write(
       JSON.stringify({
-        type: "system",
-        subtype: "init",
-        session_id: readArg("--session-id") ?? randomUUID(),
-      }) + "\\n",
-    );
+        type: "system", subtype: "init", session_id: readArg("--session-id") ?? randomUUID(), }) + "\\n", );
     process.stdout.write(
       JSON.stringify({
-        type: "result",
-        session_id: readArg("--session-id") ?? randomUUID(),
-        result: "LIVE BUNDLE MCP OK " + text,
-      }) + "\\n",
-    );
+        type: "result", result: "LIVE BUNDLE MCP OK " + text, );
   }
 } finally {
   input.close();

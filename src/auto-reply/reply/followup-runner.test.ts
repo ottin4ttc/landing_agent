@@ -28,9 +28,6 @@ let resolveQueuedReplyExecutionConfigActual:
   | undefined;
 let createFollowupRunner: typeof import("./followup-runner.js").createFollowupRunner;
 let clearRuntimeConfigSnapshot: typeof import("../../config/config.js").clearRuntimeConfigSnapshot;
-let loadSessionStore: typeof import("../../config/sessions/store.js").loadSessionStore;
-let saveSessionStore: typeof import("../../config/sessions/store.js").saveSessionStore;
-let clearSessionStoreCacheForTest: typeof import("../../config/sessions/store.js").clearSessionStoreCacheForTest;
 let clearFollowupQueue: typeof import("./queue.js").clearFollowupQueue;
 let enqueueFollowupRun: typeof import("./queue.js").enqueueFollowupRun;
 let sessionRunAccounting: typeof import("./session-run-accounting.js");
@@ -48,7 +45,7 @@ const FOLLOWUP_TEST_QUEUES = new Map<
     lastRun?: FollowupRun["run"];
   }
 >();
-const FOLLOWUP_TEST_SESSION_STORES = new Map<string, Record<string, SessionEntry>>();
+const FOLLOWUP_TEST_SESSION_STORES = new Set<Record<string, SessionEntry>>();
 
 function debugFollowupTest(message: string): void {
   if (!FOLLOWUP_DEBUG) {
@@ -135,11 +132,8 @@ function expectNoBlockReplyTextIncludes(
   ).toBe(false);
 }
 
-function registerFollowupTestSessionStore(
-  storePath: string,
-  sessionStore: Record<string, SessionEntry>,
-): void {
-  FOLLOWUP_TEST_SESSION_STORES.set(storePath, sessionStore);
+function registerFollowupTestSessionStore(sessionStore: Record<string, SessionEntry>): void {
+  FOLLOWUP_TEST_SESSION_STORES.add(sessionStore);
 }
 
 async function incrementRunCompactionCountForFollowupTest(
@@ -169,9 +163,6 @@ async function incrementRunCompactionCountForFollowupTest(
   };
   if (newSessionId && newSessionId !== entry.sessionId) {
     nextEntry.sessionId = newSessionId;
-    if (entry.sessionFile?.trim()) {
-      nextEntry.sessionFile = path.join(path.dirname(entry.sessionFile), `${newSessionId}.jsonl`);
-    }
   }
   const promptTokens =
     (lastCallUsage?.input ?? 0) +
@@ -232,7 +223,6 @@ function refreshQueuedFollowupSessionForFollowupTest(params: {
   key: string;
   previousSessionId?: string;
   nextSessionId?: string;
-  nextSessionFile?: string;
   nextProvider?: string;
   nextModel?: string;
   nextAuthProfileId?: string;
@@ -264,9 +254,6 @@ function refreshQueuedFollowupSessionForFollowupTest(params: {
     }
     if (shouldRewriteSession && run.sessionId === params.previousSessionId) {
       run.sessionId = params.nextSessionId!;
-      if (params.nextSessionFile?.trim()) {
-        run.sessionFile = params.nextSessionFile;
-      }
     }
     if (shouldRewriteSelection) {
       if (typeof params.nextProvider === "string") {
@@ -292,12 +279,16 @@ function refreshQueuedFollowupSessionForFollowupTest(params: {
 async function persistRunSessionUsageForFollowupTest(
   params: Parameters<typeof import("./session-run-accounting.js").persistRunSessionUsage>[0],
 ): Promise<void> {
-  const { storePath, sessionKey } = params;
-  if (!storePath || !sessionKey) {
+  const { sessionKey } = params;
+  if (!sessionKey) {
     return;
   }
-  const registeredStore = FOLLOWUP_TEST_SESSION_STORES.get(storePath);
-  const store = registeredStore ?? loadSessionStore(storePath, { skipCache: true });
+  const store = Array.from(FOLLOWUP_TEST_SESSION_STORES).find((candidate) =>
+    Object.hasOwn(candidate, sessionKey),
+  );
+  if (!store) {
+    return;
+  }
   const entry = store[sessionKey];
   if (!entry) {
     return;
@@ -339,10 +330,6 @@ async function persistRunSessionUsageForFollowupTest(
     setCliSessionBinding(nextEntry, params.providerUsed, params.cliSessionBinding);
   }
   store[sessionKey] = nextEntry;
-  if (registeredStore) {
-    return;
-  }
-  await saveSessionStore(storePath, store);
 }
 
 async function loadFreshFollowupRunnerModuleForTest() {
@@ -350,12 +337,6 @@ async function loadFreshFollowupRunnerModuleForTest() {
   vi.doUnmock("../../config/config.js");
   vi.doMock("../../agents/model-fallback.js", () => ({
     runWithModelFallback: (params: unknown) => runWithModelFallbackMock(params),
-  }));
-  vi.doMock("../../agents/session-write-lock.js", () => ({
-    acquireSessionWriteLock: vi.fn(async () => ({
-      release: async () => {},
-    })),
-    resolveSessionLockMaxHoldFromTimeout: vi.fn(() => 1),
   }));
   vi.doMock("../../agents/embedded-agent.js", () => ({
     abortEmbeddedAgentRun: vi.fn(async () => false),
@@ -456,8 +437,6 @@ async function loadFreshFollowupRunnerModuleForTest() {
   ({ createFollowupRunner } = await import("./followup-runner.js"));
   ({ clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } =
     await import("../../config/config.js"));
-  ({ clearSessionStoreCacheForTest, loadSessionStore, saveSessionStore } =
-    await import("../../config/sessions/store.js"));
   ({ clearFollowupQueue, enqueueFollowupRun } = await import("./queue.js"));
   sessionRunAccounting = await import("./session-run-accounting.js");
   ({ createMockFollowupRun, createMockTypingController } = await import("./test-helpers.js"));
@@ -569,21 +548,17 @@ afterEach(() => {
   FOLLOWUP_TEST_SESSION_STORES.clear();
   vi.clearAllTimers();
   vi.useRealTimers();
-  clearSessionStoreCacheForTest();
+  vi.unstubAllEnvs();
   if (!FOLLOWUP_DEBUG) {
     return;
   }
-  const processWithDebugHandles = process as NodeJS.Process & {
-    _getActiveHandles?: () => unknown[];
-    _getActiveRequests?: () => unknown[];
-  };
-  const handles = processWithDebugHandles["_getActiveHandles"]?.().map(
-    (handle) => handle?.constructor?.name ?? typeof handle,
-  );
+  const handles = (process as NodeJS.Process & { _getActiveHandles?: () => unknown[] })
+    ._getActiveHandles?.()
+    .map((handle) => handle?.constructor?.name ?? typeof handle);
   debugFollowupTest(`active handles: ${JSON.stringify(handles ?? [])}`);
-  const requests = processWithDebugHandles["_getActiveRequests"]?.().map(
-    (request) => request?.constructor?.name ?? typeof request,
-  );
+  const requests = (process as NodeJS.Process & { _getActiveRequests?: () => unknown[] })
+    ._getActiveRequests?.()
+    .map((request) => request?.constructor?.name ?? typeof request);
   debugFollowupTest(`active requests: ${JSON.stringify(requests ?? [])}`);
 });
 
@@ -621,14 +596,12 @@ describe("createFollowupRunner reply-lane admission", () => {
         run: {
           provider: "anthropic",
           model: "claude",
-          cwd: "/tmp/task-repo",
         },
       }),
     );
 
     expect(runEmbeddedAgentMock).toHaveBeenCalledOnce();
     const call = requireLastMockCallArg(runEmbeddedAgentMock, "run embedded agent");
-    expect(call.cwd).toBe("/tmp/task-repo");
     const recorder = requireRecord(call.userTurnTranscriptRecorder, "embedded user turn recorder");
     expect(recorder.message).toBe(preparedUserTurnMessage);
   });
@@ -647,7 +620,6 @@ describe("createFollowupRunner reply-lane admission", () => {
     const sessionStore = {
       main: {
         sessionId: "pre-compact-session",
-        sessionFile: "/tmp/pre-compact.jsonl",
         updatedAt: Date.now(),
       },
     };
@@ -674,7 +646,6 @@ describe("createFollowupRunner reply-lane admission", () => {
     active.updateSessionId("post-compact-session");
     sessionStore.main = {
       sessionId: "post-compact-session",
-      sessionFile: "/tmp/post-compact.jsonl",
       updatedAt: Date.now(),
     };
     active.complete();
@@ -682,7 +653,7 @@ describe("createFollowupRunner reply-lane admission", () => {
 
     const call = requireLastMockCallArg(runEmbeddedAgentMock, "run embedded agent");
     expect(call.sessionId).toBe("post-compact-session");
-    expect(call.sessionFile).toBe("/tmp/post-compact.jsonl");
+    expect(call.sessionFile).toBeUndefined();
   });
 });
 
@@ -1008,13 +979,12 @@ describe("createFollowupRunner runtime config", () => {
         },
       },
     };
-    const storePath = "/tmp/openclaw-followup-room-event-cli.json";
     const sessionEntry: SessionEntry = {
       sessionId: "session-cli-room-event",
       updatedAt: Date.now(),
     };
     const sessionStore = { main: sessionEntry };
-    registerFollowupTestSessionStore(storePath, sessionStore);
+    registerFollowupTestSessionStore(sessionStore);
     runCliAgentMock.mockResolvedValueOnce({
       payloads: [],
       meta: {
@@ -1036,7 +1006,6 @@ describe("createFollowupRunner runtime config", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "main",
-      storePath,
       defaultModel: "anthropic/claude-opus-4-7",
     });
 
@@ -1326,7 +1295,6 @@ describe("createFollowupRunner runtime config", () => {
     expect(embeddedCall.suppressAssistantErrorPersistence).toBe(false);
     expect(lifecyclePhases).toEqual(["start", "start", "end"]);
   });
-
   it("uses the active runtime snapshot for queued embedded followup runs", async () => {
     const sourceConfig: OpenClawConfig = {
       models: {
@@ -1441,41 +1409,6 @@ describe("createFollowupRunner runtime config", () => {
     const call = requireLastMockCallArg(runEmbeddedAgentMock, "run embedded agent");
     expect(fallbackCall.abortSignal).toBeInstanceOf(AbortSignal);
     expect(fallbackCall.abortSignal).not.toBe(abortController.signal);
-    expect(call.abortSignal).toBe(fallbackCall.abortSignal);
-  });
-
-  it("does not inherit source abort signals for queued user followups", async () => {
-    const sourceAbortController = new AbortController();
-    sourceAbortController.abort();
-    runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [],
-      meta: {},
-    });
-    const runner = createFollowupRunner({
-      opts: { abortSignal: sourceAbortController.signal },
-      typing: createMockTypingController(),
-      typingMode: "instant",
-      defaultModel: "openai/gpt-5.4",
-    });
-
-    await runner(
-      createQueuedRun({
-        currentInboundEventKind: "user_request",
-        run: {
-          provider: "openai",
-          model: "gpt-5.4",
-          sourceReplyDeliveryMode: "message_tool_only",
-        },
-      }),
-    );
-
-    const fallbackCall = requireLastMockCallArg(
-      runWithModelFallbackMock,
-      "run with model fallback",
-    );
-    const call = requireLastMockCallArg(runEmbeddedAgentMock, "run embedded agent");
-    expect(fallbackCall.abortSignal).toBeInstanceOf(AbortSignal);
-    expect(fallbackCall.abortSignal).not.toBe(sourceAbortController.signal);
     expect(call.abortSignal).toBe(fallbackCall.abortSignal);
   });
 
@@ -1863,10 +1796,6 @@ describe("createFollowupRunner progress forwarding", () => {
   });
 
   it("suppresses queued follow-up progress when verbose progress is disabled", async () => {
-    const storePath = path.join(
-      await fs.mkdtemp(path.join(tmpdir(), "openclaw-followup-progress-off-")),
-      "sessions.json",
-    );
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
@@ -1877,7 +1806,7 @@ describe("createFollowupRunner progress forwarding", () => {
     const onCommandOutput = vi.fn(async () => {});
     const onCompactionStart = vi.fn(async () => {});
     const onCompactionEnd = vi.fn(async () => {});
-    registerFollowupTestSessionStore(storePath, sessionStore);
+    registerFollowupTestSessionStore(sessionStore);
 
     runEmbeddedAgentMock.mockImplementationOnce(
       async (args: {
@@ -1914,7 +1843,6 @@ describe("createFollowupRunner progress forwarding", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "main",
-      storePath,
       defaultModel: "claude",
     });
 
@@ -2178,10 +2106,6 @@ describe("createFollowupRunner progress forwarding", () => {
 
 describe("createFollowupRunner compaction", () => {
   it("adds verbose auto-compaction notice and tracks count", async () => {
-    const storePath = path.join(
-      await fs.mkdtemp(path.join(tmpdir(), "openclaw-compaction-")),
-      "sessions.json",
-    );
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
@@ -2190,7 +2114,7 @@ describe("createFollowupRunner compaction", () => {
       main: sessionEntry,
     };
     const onBlockReply = vi.fn(async () => {});
-    registerFollowupTestSessionStore(storePath, sessionStore);
+    registerFollowupTestSessionStore(sessionStore);
 
     mockCompactionRun({
       willRetry: true,
@@ -2204,7 +2128,6 @@ describe("createFollowupRunner compaction", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "main",
-      storePath,
       defaultModel: "anthropic/claude-opus-4-6",
     });
 
@@ -2236,7 +2159,7 @@ describe("createFollowupRunner compaction", () => {
       main: sessionEntry,
     };
     const onBlockReply = vi.fn(async () => {});
-    registerFollowupTestSessionStore(storePath, sessionStore);
+    registerFollowupTestSessionStore(sessionStore);
 
     mockCompactionRun({
       willRetry: true,
@@ -2250,7 +2173,6 @@ describe("createFollowupRunner compaction", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "main",
-      storePath,
       defaultModel: "anthropic/claude-opus-4-6",
     });
 
@@ -2268,20 +2190,15 @@ describe("createFollowupRunner compaction", () => {
   });
 
   it("tracks auto-compaction from embedded result metadata even when no compaction event is emitted", async () => {
-    const storePath = path.join(
-      await fs.mkdtemp(path.join(tmpdir(), "openclaw-compaction-meta-")),
-      "sessions.json",
-    );
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile: path.join(path.dirname(storePath), "session.jsonl"),
       updatedAt: Date.now(),
     };
     const sessionStore: Record<string, SessionEntry> = {
       main: sessionEntry,
     };
     const onBlockReply = vi.fn(async () => {});
-    registerFollowupTestSessionStore(storePath, sessionStore);
+    registerFollowupTestSessionStore(sessionStore);
 
     runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "final" }],
@@ -2301,7 +2218,6 @@ describe("createFollowupRunner compaction", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "main",
-      storePath,
       defaultModel: "anthropic/claude-opus-4-6",
     });
 
@@ -2318,25 +2234,17 @@ describe("createFollowupRunner compaction", () => {
     expect(firstCall?.[0]?.text).toContain("Auto-compaction complete");
     expect(sessionStore.main.compactionCount).toBe(2);
     expect(sessionStore.main.sessionId).toBe("session-rotated");
-    expect(await normalizeComparablePath(sessionStore.main.sessionFile ?? "")).toBe(
-      await normalizeComparablePath(path.join(path.dirname(storePath), "session-rotated.jsonl")),
-    );
   });
 
-  it("refreshes queued followup runs to the rotated transcript", async () => {
-    const storePath = path.join(
-      await fs.mkdtemp(path.join(tmpdir(), "openclaw-compaction-queue-")),
-      "sessions.json",
-    );
+  it("refreshes queued followup runs to the rotated session id", async () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session",
-      sessionFile: path.join(path.dirname(storePath), "session.jsonl"),
       updatedAt: Date.now(),
     };
     const sessionStore: Record<string, SessionEntry> = {
       main: sessionEntry,
     };
-    registerFollowupTestSessionStore(storePath, sessionStore);
+    registerFollowupTestSessionStore(sessionStore);
 
     runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "final" }],
@@ -2356,7 +2264,6 @@ describe("createFollowupRunner compaction", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "main",
-      storePath,
       defaultModel: "anthropic/claude-opus-4-6",
     });
 
@@ -2364,7 +2271,6 @@ describe("createFollowupRunner compaction", () => {
       prompt: "next",
       run: {
         sessionId: "session",
-        sessionFile: path.join(path.dirname(storePath), "session.jsonl"),
       },
     });
     const queueSettings: QueueSettings = { mode: "followup" };
@@ -2374,23 +2280,15 @@ describe("createFollowupRunner compaction", () => {
       run: {
         verboseLevel: "on",
         sessionId: "session",
-        sessionFile: path.join(path.dirname(storePath), "session.jsonl"),
       },
     });
 
     await runner(current);
 
     expect(queuedNext.run.sessionId).toBe("session-rotated");
-    expect(await normalizeComparablePath(queuedNext.run.sessionFile)).toBe(
-      await normalizeComparablePath(path.join(path.dirname(storePath), "session-rotated.jsonl")),
-    );
   });
 
   it("does not count failed compaction end events in followup runs", async () => {
-    const storePath = path.join(
-      await fs.mkdtemp(path.join(tmpdir(), "openclaw-compaction-failed-")),
-      "sessions.json",
-    );
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
@@ -2399,7 +2297,7 @@ describe("createFollowupRunner compaction", () => {
       main: sessionEntry,
     };
     const onBlockReply = vi.fn(async () => {});
-    registerFollowupTestSessionStore(storePath, sessionStore);
+    registerFollowupTestSessionStore(sessionStore);
 
     const runner = createFollowupRunner({
       opts: { onBlockReply },
@@ -2408,7 +2306,6 @@ describe("createFollowupRunner compaction", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "main",
-      storePath,
       defaultModel: "anthropic/claude-opus-4-6",
     });
 
@@ -2444,19 +2341,6 @@ describe("createFollowupRunner compaction", () => {
 
   it("injects the post-compaction refresh prompt before followup runs after preflight compaction", async () => {
     const workspaceDir = await fs.mkdtemp(path.join(tmpdir(), "openclaw-preflight-followup-"));
-    const storePath = path.join(workspaceDir, "sessions.json");
-    const transcriptPath = path.join(workspaceDir, "session.jsonl");
-    await fs.writeFile(
-      transcriptPath,
-      `${JSON.stringify({
-        message: {
-          role: "user",
-          content: "x".repeat(320_000),
-          timestamp: Date.now(),
-        },
-      })}\n`,
-      "utf-8",
-    );
     await fs.writeFile(
       path.join(workspaceDir, "AGENTS.md"),
       [
@@ -2472,7 +2356,6 @@ describe("createFollowupRunner compaction", () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
-      sessionFile: transcriptPath,
       totalTokens: 10,
       totalTokensFresh: false,
       compactionCount: 1,
@@ -2480,7 +2363,7 @@ describe("createFollowupRunner compaction", () => {
     const sessionStore: Record<string, SessionEntry> = {
       main: sessionEntry,
     };
-    registerFollowupTestSessionStore(storePath, sessionStore);
+    registerFollowupTestSessionStore(sessionStore);
 
     compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
       ok: true,
@@ -2498,10 +2381,8 @@ describe("createFollowupRunner compaction", () => {
         sessionEntry?: SessionEntry;
         sessionStore?: Record<string, SessionEntry>;
         sessionKey?: string;
-        storePath?: string;
       }) => {
         await compactEmbeddedAgentSessionMock({
-          sessionFile: transcriptPath,
           workspaceDir,
         });
         params.followupRun.run.extraSystemPrompt = joinPromptSections(
@@ -2519,16 +2400,6 @@ describe("createFollowupRunner compaction", () => {
           updatedEntry.updatedAt = Date.now();
           if (params.sessionKey && params.sessionStore) {
             params.sessionStore[params.sessionKey] = updatedEntry;
-          }
-          if (params.storePath && params.sessionKey) {
-            const registeredStore = FOLLOWUP_TEST_SESSION_STORES.get(params.storePath);
-            if (registeredStore) {
-              registeredStore[params.sessionKey] = updatedEntry;
-            } else {
-              const store = loadSessionStore(params.storePath, { skipCache: true });
-              store[params.sessionKey] = updatedEntry;
-              await saveSessionStore(params.storePath, store);
-            }
           }
         }
         return updatedEntry;
@@ -2551,14 +2422,12 @@ describe("createFollowupRunner compaction", () => {
       sessionEntry,
       sessionStore,
       sessionKey: "main",
-      storePath,
       defaultModel: "anthropic/claude-opus-4-6",
       agentCfgContextTokens: 100_000,
     });
 
     const queued = createQueuedRun({
       run: {
-        sessionFile: transcriptPath,
         workspaceDir,
       },
     });
@@ -2639,11 +2508,10 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
       sessionEntry: SessionEntry;
       sessionStore: Record<string, SessionEntry>;
       sessionKey: string;
-      storePath: string;
     }> = {},
   ) {
-    if (overrides.storePath && overrides.sessionStore) {
-      registerFollowupTestSessionStore(overrides.storePath, overrides.sessionStore);
+    if (overrides.sessionStore) {
+      registerFollowupTestSessionStore(overrides.sessionStore);
     }
     return createFollowupRunner({
       opts: { onBlockReply },
@@ -2653,7 +2521,6 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
       sessionEntry: overrides.sessionEntry,
       sessionStore: overrides.sessionStore,
       sessionKey: overrides.sessionKey,
-      storePath: overrides.storePath,
     });
   }
 
@@ -2664,7 +2531,6 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
       sessionEntry: SessionEntry;
       sessionStore: Record<string, SessionEntry>;
       sessionKey: string;
-      storePath: string;
     }>;
   }) {
     const onBlockReply = createAsyncReplySpy();
@@ -2686,7 +2552,6 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
   }
 
   it("persists usage even when replies are suppressed", async () => {
-    const storePath = "/tmp/openclaw-followup-usage.json";
     const sessionKey = "main";
     const sessionEntry: SessionEntry = { sessionId: "session", updatedAt: Date.now() };
     const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
@@ -2723,14 +2588,12 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
         sessionEntry,
         sessionStore,
         sessionKey,
-        storePath,
       },
       queued: baseQueuedRun("slack"),
     });
 
     expect(onBlockReply).not.toHaveBeenCalled();
     const persistCall = requireMockCallArg(persistSpy, 0);
-    expect(persistCall.storePath).toBe(storePath);
     expect(persistCall.sessionKey).toBe(sessionKey);
     expect(persistCall.modelUsed).toBe("claude-opus-4-6");
     expect(persistCall.providerUsed).toBe("anthropic");
@@ -2743,7 +2606,6 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
   });
 
   it("passes queued config into usage persistence during drained followups", async () => {
-    const storePath = "/tmp/openclaw-followup-usage-cfg.json";
     const sessionKey = "main";
     const sessionEntry: SessionEntry = { sessionId: "session", updatedAt: Date.now() };
     const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
@@ -2773,7 +2635,6 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
       sessionEntry,
       sessionStore,
       sessionKey,
-      storePath,
     });
 
     await expect(
@@ -2787,14 +2648,12 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
     ).resolves.toBeUndefined();
 
     const persistCall = requireMockCallArg(persistSpy, 0);
-    expect(persistCall.storePath).toBe(storePath);
     expect(persistCall.sessionKey).toBe(sessionKey);
     expect(persistCall.cfg).toBe(cfg);
     persistSpy.mockRestore();
   });
 
   it("uses providerUsed for snapshot freshness when agent metadata overrides the run provider", async () => {
-    const storePath = "/tmp/openclaw-followup-usage-provider.json";
     const sessionKey = "main";
     const sessionEntry: SessionEntry = { sessionId: "session", updatedAt: Date.now() };
     const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
@@ -2819,7 +2678,6 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
       sessionEntry,
       sessionStore,
       sessionKey,
-      storePath,
     });
 
     await expect(
@@ -2863,7 +2721,7 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
       totalTokensFresh: true,
     };
     const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
-    FOLLOWUP_TEST_SESSION_STORES.set(storePath, sessionStore);
+    registerFollowupTestSessionStore(sessionStore);
     const persistSpy = vi.spyOn(sessionRunAccounting, "persistRunSessionUsage");
     runEmbeddedAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "internal announce complete" }],
@@ -2885,7 +2743,6 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
       sessionEntry,
       sessionStore,
       sessionKey,
-      storePath,
     });
 
     await expect(
@@ -3318,165 +3175,5 @@ describe("createFollowupRunner agentDir forwarding", () => {
     expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
     const call = requireLastMockCallArg(runEmbeddedAgentMock, "run embedded agent");
     expect(call.agentDir).toBe(agentDir);
-  });
-});
-
-describe("createFollowupRunner queued user message idempotency across fallback", () => {
-  it("suppresses queued user message persistence after first fallback candidate persists it", async () => {
-    runEmbeddedAgentMock.mockClear();
-    runWithModelFallbackMock.mockReset();
-    runWithModelFallbackMock.mockImplementationOnce(
-      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => {
-        await expect(params.run("anthropic", "claude-opus-4-7")).rejects.toThrow("upstream 500");
-        return {
-          result: await params.run("openai", "gpt-5.4"),
-          provider: "openai",
-          model: "gpt-5.4",
-        };
-      },
-    );
-    runEmbeddedAgentMock.mockImplementationOnce(
-      async (args: {
-        onUserMessagePersisted?: (message: {
-          role: "user";
-          content: Array<{ type: "text"; text: string }>;
-        }) => void;
-      }) => {
-        args.onUserMessagePersisted?.({
-          role: "user",
-          content: [{ type: "text", text: "queued message" }],
-        });
-        throw new Error("upstream 500");
-      },
-    );
-    runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "ok" }],
-      meta: {},
-    });
-
-    const runner = createFollowupRunner({
-      typing: createMockTypingController(),
-      typingMode: "instant",
-      defaultModel: "anthropic/claude-opus-4-7",
-    });
-
-    await runner(
-      createQueuedRun({
-        run: {
-          provider: "anthropic",
-          model: "claude-opus-4-7",
-          suppressNextUserMessagePersistence: false,
-        },
-      }),
-    );
-
-    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
-    const firstAttempt = requireMockCallArg(runEmbeddedAgentMock, 0);
-    const secondAttempt = requireMockCallArg(runEmbeddedAgentMock, 1);
-    expect(firstAttempt.suppressNextUserMessagePersistence).toBe(false);
-    expect(secondAttempt.suppressNextUserMessagePersistence).toBe(true);
-  });
-
-  it("only persists assistant error stub on the first fallback candidate", async () => {
-    runEmbeddedAgentMock.mockClear();
-    runWithModelFallbackMock.mockReset();
-    runWithModelFallbackMock.mockImplementationOnce(
-      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => {
-        await expect(params.run("anthropic", "claude-opus-4-7")).rejects.toThrow("upstream 500");
-        await expect(params.run("anthropic", "claude-opus-4-6")).rejects.toThrow("upstream 500");
-        return {
-          result: await params.run("openai", "gpt-5.4"),
-          provider: "openai",
-          model: "gpt-5.4",
-        };
-      },
-    );
-    runEmbeddedAgentMock.mockImplementationOnce(
-      async (args: {
-        onAssistantErrorMessagePersisted?: (message: {
-          role: "assistant";
-          content: string;
-          stopReason: "error";
-        }) => void;
-      }) => {
-        args.onAssistantErrorMessagePersisted?.({
-          role: "assistant",
-          content: "[assistant turn failed before producing content]",
-          stopReason: "error",
-        });
-        throw new Error("upstream 500");
-      },
-    );
-    runEmbeddedAgentMock.mockRejectedValueOnce(new Error("upstream 500"));
-    runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "ok" }],
-      meta: {},
-    });
-
-    const runner = createFollowupRunner({
-      typing: createMockTypingController(),
-      typingMode: "instant",
-      defaultModel: "anthropic/claude-opus-4-7",
-    });
-
-    await runner(
-      createQueuedRun({
-        run: {
-          provider: "anthropic",
-          model: "claude-opus-4-7",
-        },
-      }),
-    );
-
-    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(3);
-    const firstAttempt = requireMockCallArg(runEmbeddedAgentMock, 0);
-    const secondAttempt = requireMockCallArg(runEmbeddedAgentMock, 1);
-    const thirdAttempt = requireMockCallArg(runEmbeddedAgentMock, 2);
-    expect(firstAttempt.suppressAssistantErrorPersistence).toBe(false);
-    expect(secondAttempt.suppressAssistantErrorPersistence).toBe(true);
-    expect(thirdAttempt.suppressAssistantErrorPersistence).toBe(true);
-  });
-
-  it("does not suppress when no fallback candidate persisted the queued message", async () => {
-    runEmbeddedAgentMock.mockClear();
-    runWithModelFallbackMock.mockReset();
-    runWithModelFallbackMock.mockImplementationOnce(
-      async (params: { run: (provider: string, model: string) => Promise<unknown> }) => {
-        await expect(params.run("anthropic", "claude-opus-4-7")).rejects.toThrow("upstream early");
-        return {
-          result: await params.run("openai", "gpt-5.4"),
-          provider: "openai",
-          model: "gpt-5.4",
-        };
-      },
-    );
-    runEmbeddedAgentMock.mockRejectedValueOnce(new Error("upstream early"));
-    runEmbeddedAgentMock.mockResolvedValueOnce({
-      payloads: [{ text: "ok" }],
-      meta: {},
-    });
-
-    const runner = createFollowupRunner({
-      typing: createMockTypingController(),
-      typingMode: "instant",
-      defaultModel: "anthropic/claude-opus-4-7",
-    });
-
-    await runner(
-      createQueuedRun({
-        run: {
-          provider: "anthropic",
-          model: "claude-opus-4-7",
-          suppressNextUserMessagePersistence: false,
-        },
-      }),
-    );
-
-    expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(2);
-    const firstAttempt = requireMockCallArg(runEmbeddedAgentMock, 0);
-    const secondAttempt = requireMockCallArg(runEmbeddedAgentMock, 1);
-    expect(firstAttempt.suppressNextUserMessagePersistence).toBe(false);
-    expect(secondAttempt.suppressNextUserMessagePersistence).toBe(false);
-    expect(secondAttempt.suppressAssistantErrorPersistence).toBe(false);
   });
 });

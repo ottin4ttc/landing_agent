@@ -1,6 +1,3 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { SkillCommandSpec } from "../../skills/types.js";
@@ -29,6 +26,7 @@ const {
 type HandleInlineActionsInput = Parameters<
   typeof import("./get-reply-inline-actions.js").handleInlineActions
 >[0];
+const legacyStorePathProperty = ["store", "Path"].join("");
 
 vi.mock("./commands.runtime.js", () => ({
   handleCommands: (...args: unknown[]) => handleCommandsMock(...args),
@@ -60,16 +58,6 @@ const createTypingController = (): TypingController => ({
   markDispatchIdle: () => {},
   cleanup: vi.fn(),
 });
-
-async function writeSessionStore(
-  storeTemplate: string,
-  agentId: string,
-  entries: Record<string, unknown>,
-) {
-  const storePath = storeTemplate.replaceAll("{agentId}", agentId);
-  await fs.mkdir(path.dirname(storePath), { recursive: true });
-  await fs.writeFile(storePath, JSON.stringify(entries, null, 2), "utf-8");
-}
 
 const createHandleInlineActionsInput = (params: {
   ctx: ReturnType<typeof buildTestCtx>;
@@ -140,7 +128,7 @@ async function expectInlineActionSkipped(params: {
   expect(handleCommandsMock).not.toHaveBeenCalled();
 }
 
-async function runInlineStatusAction(storePath?: string) {
+async function runInlineStatusAction(legacyStore?: string) {
   const typing = createTypingController();
   const ctx = buildTestCtx({
     Body: "/status",
@@ -159,7 +147,7 @@ async function runInlineStatusAction(storePath?: string) {
       overrides: {
         allowTextCommands: true,
         inlineStatusRequested: true,
-        ...(storePath ? { storePath } : {}),
+        ...(legacyStore ? { [legacyStorePathProperty]: legacyStore } : {}),
       },
     }),
   );
@@ -343,18 +331,20 @@ describe("handleInlineActions", () => {
 
     expect(result).toEqual({ kind: "reply", reply: undefined });
     expect(buildStatusReplyMock).toHaveBeenCalledTimes(1);
-    expect(mockObjectArg(buildStatusReplyMock, "buildStatusReply").storePath).toBeUndefined();
+    expect(buildStatusReplyMock.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        sessionKey: "s:main",
+      }),
+    );
     expect(handleCommandsMock).not.toHaveBeenCalled();
     expect(typing.cleanup).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves storePath when routing inline status through the shared status builder", async () => {
+  it("does not route the legacy store path through the shared status builder", async () => {
     const { result } = await runInlineStatusAction("/tmp/inline-status-store.json");
 
     expect(result).toEqual({ kind: "reply", reply: undefined });
-    expect(mockObjectArg(buildStatusReplyMock, "buildStatusReply").storePath).toBe(
-      "/tmp/inline-status-store.json",
-    );
+    expect(buildStatusReplyMock.mock.calls[0]?.[0]).not.toHaveProperty(legacyStorePathProperty);
     expect(handleCommandsMock).not.toHaveBeenCalled();
   });
 
@@ -965,12 +955,7 @@ describe("handleInlineActions", () => {
   it("does not execute inline tool dispatch targets denied by tool policy", async () => {
     const typing = createTypingController();
     const toolExecute = vi.fn(async () => ({ content: "sent" }));
-    createOpenClawToolsMock.mockReturnValue([
-      {
-        name: "message",
-        execute: toolExecute,
-      },
-    ]);
+    createOpenClawToolsMock.mockReturnValue([{ name: "message", execute: toolExecute }]);
 
     const ctx = buildTestCtx({
       Body: "/send_status hello",
@@ -981,11 +966,7 @@ describe("handleInlineActions", () => {
         name: "send_status",
         skillName: "send-status",
         description: "Send a status update",
-        dispatch: {
-          kind: "tool",
-          toolName: "message",
-          argMode: "raw",
-        },
+        dispatch: { kind: "tool", toolName: "message", argMode: "raw" },
         sourceFilePath: "/tmp/plugin/commands/send-status.md",
       },
     ];
@@ -1023,14 +1004,8 @@ describe("handleInlineActions", () => {
     const messageExecute = vi.fn(async () => ({ content: "sent" }));
     const sessionsExecute = vi.fn(async () => ({ content: "listed" }));
     createOpenClawToolsMock.mockReturnValue([
-      {
-        name: "message",
-        execute: messageExecute,
-      },
-      {
-        name: "sessions_list",
-        execute: sessionsExecute,
-      },
+      { name: "message", execute: messageExecute },
+      { name: "sessions_list", execute: sessionsExecute },
     ]);
 
     const ctx = buildTestCtx({
@@ -1042,11 +1017,7 @@ describe("handleInlineActions", () => {
         name: "send_status",
         skillName: "send-status",
         description: "Send a status update",
-        dispatch: {
-          kind: "tool",
-          toolName: "message",
-          argMode: "raw",
-        },
+        dispatch: { kind: "tool", toolName: "message", argMode: "raw" },
         sourceFilePath: "/tmp/plugin/commands/send-status.md",
       },
     ];
@@ -1083,12 +1054,7 @@ describe("handleInlineActions", () => {
   it("applies sender-specific tool policy to inline tool dispatch", async () => {
     const typing = createTypingController();
     const toolExecute = vi.fn(async () => ({ content: "sent" }));
-    createOpenClawToolsMock.mockReturnValue([
-      {
-        name: "message",
-        execute: toolExecute,
-      },
-    ]);
+    createOpenClawToolsMock.mockReturnValue([{ name: "message", execute: toolExecute }]);
 
     const ctx = buildTestCtx({
       Body: "/send_status hello",
@@ -1099,11 +1065,7 @@ describe("handleInlineActions", () => {
         name: "send_status",
         skillName: "send-status",
         description: "Send a status update",
-        dispatch: {
-          kind: "tool",
-          toolName: "message",
-          argMode: "raw",
-        },
+        dispatch: { kind: "tool", toolName: "message", argMode: "raw" },
         sourceFilePath: "/tmp/plugin/commands/send-status.md",
       },
     ];
@@ -1140,92 +1102,70 @@ describe("handleInlineActions", () => {
   });
 
   it("applies subagent policy to ACP envelope inline dispatch sessions", async () => {
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-inline-acp-policy-"));
-    try {
-      const storeTemplate = path.join(tmpDir, "sessions-{agentId}.json");
-      await writeSessionStore(storeTemplate, "main", {
-        "agent:main:acp:leaf": {
-          sessionId: "session-acp-leaf",
-          updatedAt: Date.now(),
-          spawnedBy: "agent:main:subagent:parent",
-          spawnDepth: 2,
-          subagentRole: "leaf",
-          subagentControlScope: "none",
-        },
-      });
+    const typing = createTypingController();
+    const toolExecute = vi.fn(async () => ({ content: "spawned" }));
+    createOpenClawToolsMock.mockReturnValue([{ name: "sessions_spawn", execute: toolExecute }]);
 
-      const typing = createTypingController();
-      const toolExecute = vi.fn(async () => ({ content: "spawned" }));
-      createOpenClawToolsMock.mockReturnValue([
-        {
-          name: "sessions_spawn",
-          execute: toolExecute,
-        },
-      ]);
+    const ctx = buildTestCtx({
+      Body: "/spawn_subagent investigate",
+      CommandBody: "/spawn_subagent investigate",
+    });
+    const skillCommands: SkillCommandSpec[] = [
+      {
+        name: "spawn_subagent",
+        skillName: "spawn-subagent",
+        description: "Spawn a subagent",
+        dispatch: { kind: "tool", toolName: "sessions_spawn", argMode: "raw" },
+        sourceFilePath: "/tmp/plugin/commands/spawn-subagent.md",
+      },
+    ];
 
-      const ctx = buildTestCtx({
-        Body: "/spawn_subagent investigate",
-        CommandBody: "/spawn_subagent investigate",
-      });
-      const skillCommands: SkillCommandSpec[] = [
-        {
-          name: "spawn_subagent",
-          skillName: "spawn-subagent",
-          description: "Spawn a subagent",
-          dispatch: {
-            kind: "tool",
-            toolName: "sessions_spawn",
-            argMode: "raw",
+    const result = await handleInlineActions(
+      createHandleInlineActionsInput({
+        ctx,
+        typing,
+        cleanedBody: "/spawn_subagent investigate",
+        command: {
+          isAuthorizedSender: true,
+          senderId: "sender-1",
+          senderIsOwner: true,
+          abortKey: "sender-1",
+          rawBodyNormalized: "/spawn_subagent investigate",
+          commandBodyNormalized: "/spawn_subagent investigate",
+        },
+        overrides: {
+          cfg: {
+            commands: { text: true },
+            agents: { defaults: { subagents: { maxSpawnDepth: 2 } } },
           },
-          sourceFilePath: "/tmp/plugin/commands/spawn-subagent.md",
-        },
-      ];
-
-      const result = await handleInlineActions(
-        createHandleInlineActionsInput({
-          ctx,
-          typing,
-          cleanedBody: "/spawn_subagent investigate",
-          command: {
-            isAuthorizedSender: true,
-            senderId: "sender-1",
-            senderIsOwner: true,
-            abortKey: "sender-1",
-            rawBodyNormalized: "/spawn_subagent investigate",
-            commandBodyNormalized: "/spawn_subagent investigate",
-          },
-          overrides: {
-            cfg: {
-              commands: { text: true },
-              session: { store: storeTemplate },
-              agents: { defaults: { subagents: { maxSpawnDepth: 2 } } },
+          sessionKey: "agent:main:acp:leaf",
+          sessionStore: {
+            "agent:main:acp:leaf": {
+              sessionId: "session-acp-leaf",
+              updatedAt: Date.now(),
+              spawnedBy: "agent:main:subagent:parent",
+              spawnDepth: 2,
+              subagentRole: "leaf",
+              subagentControlScope: "none",
             },
-            sessionKey: "agent:main:acp:leaf",
-            allowTextCommands: true,
-            skillCommands,
           },
-        }),
-      );
+          allowTextCommands: true,
+          skillCommands,
+        },
+      }),
+    );
 
-      expect(result).toEqual({
-        kind: "reply",
-        reply: { text: "❌ Tool not available: sessions_spawn" },
-      });
-      expect(toolExecute).not.toHaveBeenCalled();
-    } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    }
+    expect(result).toEqual({
+      kind: "reply",
+      reply: { text: "❌ Tool not available: sessions_spawn" },
+    });
+    expect(toolExecute).not.toHaveBeenCalled();
   });
 
   it("passes sandboxed runtime state into inline tool construction", async () => {
     const typing = createTypingController();
     const toolExecute = vi.fn(async () => ({ content: "listed" }));
-    createOpenClawToolsMock.mockReturnValue([
-      {
-        name: "sessions_list",
-        execute: toolExecute,
-      },
-    ]);
+    createOpenClawToolsMock.mockReturnValue([{ name: "sessions_list", execute: toolExecute }]);
 
     const ctx = buildTestCtx({
       Body: "/list_sessions now",
@@ -1236,11 +1176,7 @@ describe("handleInlineActions", () => {
         name: "list_sessions",
         skillName: "list-sessions",
         description: "List sessions",
-        dispatch: {
-          kind: "tool",
-          toolName: "sessions_list",
-          argMode: "raw",
-        },
+        dispatch: { kind: "tool", toolName: "sessions_list", argMode: "raw" },
         sourceFilePath: "/tmp/plugin/commands/list-sessions.md",
       },
     ];
@@ -1272,14 +1208,12 @@ describe("handleInlineActions", () => {
 
     expect(result).toEqual({ kind: "reply", reply: { text: "listed" } });
     expect(createOpenClawToolsMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sandboxed: true,
-      }),
+      expect.objectContaining({ sandboxed: true }),
     );
     expect(toolExecute).toHaveBeenCalled();
   });
 
-  it("marks command-handler terminal replies with deliverDespiteSourceReplySuppression so they are not dropped under message_tool_only delivery (#87107)", async () => {
+  it("marks command-handler terminal replies for delivery under message-tool-only suppression", async () => {
     const typing = createTypingController();
     handleCommandsMock.mockResolvedValueOnce({
       shouldContinue: false,
@@ -1316,9 +1250,6 @@ describe("handleInlineActions", () => {
       throw new Error("expected reply");
     }
     expect(result.reply).toEqual({ text: "⚙️ Compacted (76k → 934 tokens)" });
-    // Reply must carry deliverDespiteSourceReplySuppression so dispatch-from-config
-    // does not silently `continue` past it when sourceReplyDeliveryMode is
-    // "message_tool_only" (Feishu group / WebChat default).
     expect(
       getReplyPayloadMetadata(result.reply as object)?.deliverDespiteSourceReplySuppression,
     ).toBe(true);

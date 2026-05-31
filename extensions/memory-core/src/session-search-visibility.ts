@@ -3,7 +3,7 @@ import type { MemorySearchResult } from "openclaw/plugin-sdk/memory-core-host-ru
 import { resolveSessionAgentId } from "openclaw/plugin-sdk/memory-host-core";
 import {
   extractTranscriptIdentityFromSessionsMemoryHit,
-  loadCombinedSessionStoreForGateway,
+  loadCombinedSessionEntriesForGateway,
   resolveTranscriptStemToSessionKeys,
 } from "openclaw/plugin-sdk/session-transcript-hit";
 import {
@@ -69,7 +69,7 @@ export async function filterMemorySearchHitsBySessionVisibility(params: {
       })
     : null;
 
-  const { store: combinedSessionStore } = loadCombinedSessionStoreForGateway(
+  const { entries: combinedSessionEntries } = loadCombinedSessionEntriesForGateway(
     params.cfg,
     scopedAgentId ? { agentId: scopedAgentId } : {},
   );
@@ -110,7 +110,7 @@ export async function filterMemorySearchHitsBySessionVisibility(params: {
       : undefined;
     const liveKeys = identity.liveStem
       ? resolveTranscriptStemToSessionKeys({
-          store: combinedSessionStore,
+          entries: combinedSessionEntries,
           stem: identity.liveStem,
           allowQmdSlugFallback: false,
         })
@@ -122,7 +122,7 @@ export async function filterMemorySearchHitsBySessionVisibility(params: {
         liveKeys.length > 0
           ? liveKeys
           : resolveTranscriptStemToSessionKeys({
-              store: combinedSessionStore,
+              entries: combinedSessionEntries,
               stem: identity.stem,
               allowQmdSlugFallback: isQmdSessionHit && !identity.archived,
               ...(archivedOwnerAgentId ? { archivedOwnerAgentId } : {}),

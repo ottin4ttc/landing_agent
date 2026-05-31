@@ -66,7 +66,7 @@ export async function handleDiscordAction(
     mediaLocalRoots?: readonly string[];
     mediaReadFile?: (filePath: string) => Promise<Buffer>;
   },
-): Promise<AgentToolResult<unknown>> {
+): Promise<AgentToolResult> {
   const action = readStringParam(params, "action", { required: true });
   const accountId = readStringParam(params, "accountId");
   const isActionEnabled = createDiscordActionGate({ cfg, accountId });

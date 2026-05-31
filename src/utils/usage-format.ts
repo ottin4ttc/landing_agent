@@ -1,13 +1,12 @@
-import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveDefaultAgentDir } from "../agents/agent-scope-config.js";
 import { modelKey, normalizeModelRef, normalizeProviderId } from "../agents/model-selection.js";
+import { readStoredModelsConfigRaw } from "../agents/models-config-store.js";
 import type { NormalizedUsage } from "../agents/usage.js";
 import type { ModelProviderConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getGatewayModelPricingCacheFingerprint } from "../gateway/model-pricing-cache-state.js";
 import { getCachedGatewayModelPricing } from "../gateway/model-pricing-cache.js";
-import { tryReadJsonSync } from "../infra/json-files.js";
 
 /**
  * A single tier in a tiered-pricing schedule.  Prices are expressed as
@@ -55,7 +54,7 @@ export type UsageTotals = {
 };
 
 type ModelsJsonCostCache = {
-  path: string;
+  agentDir: string;
   providers: Record<string, ModelProviderConfig> | undefined;
   normalizedEntries: Map<string, ModelCostConfig> | null;
   rawEntries: Map<string, ModelCostConfig> | null;
@@ -362,17 +361,18 @@ function loadModelsJsonCostIndex(options?: {
   allowPluginNormalization?: boolean;
 }): Map<string, ModelCostConfig> {
   const useRawEntries = options?.allowPluginNormalization === false;
-  const modelsPath = path.join(resolveDefaultAgentDir({}), "models.json");
+  const agentDir = resolveDefaultAgentDir({});
   try {
-    if (!modelsJsonCostCache || modelsJsonCostCache.path !== modelsPath) {
-      const parsed = tryReadJsonSync<{
-        providers?: Record<string, ModelProviderConfig>;
-      }>(modelsPath);
-      if (!parsed) {
+    if (!modelsJsonCostCache || modelsJsonCostCache.agentDir !== agentDir) {
+      const stored = readStoredModelsConfigRaw(agentDir);
+      if (!stored) {
         return EMPTY_PROVIDER_COST_INDEX;
       }
+      const parsed = JSON.parse(stored.raw) as {
+        providers?: Record<string, ModelProviderConfig>;
+      };
       modelsJsonCostCache = {
-        path: modelsPath,
+        agentDir,
         providers: parsed?.providers,
         normalizedEntries: null,
         rawEntries: null,

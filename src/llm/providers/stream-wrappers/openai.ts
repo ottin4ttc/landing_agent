@@ -1,3 +1,4 @@
+import type { StreamFn } from "../../../agents/agent-core-contract.js";
 import {
   normalizeOptionalLowercaseString,
   readStringValue,
@@ -21,13 +22,12 @@ import {
   type OpenAITextVerbosity,
 } from "../../../agents/openai-text-verbosity.js";
 import { createOpenAIResponsesTransportStreamFn } from "../../../agents/openai-transport-stream.js";
+import type { SimpleStreamOptions } from "../../../agents/pi-ai-contract.js";
+import { streamSimple } from "../../../agents/pi-ai-contract.js";
 import { resolveProviderRequestPolicyConfig } from "../../../agents/provider-request-config.js";
-import type { StreamFn } from "../../../agents/runtime/index.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
-import { streamSimple } from "../../stream.js";
-import type { SimpleStreamOptions } from "../../types.js";
 import { mapThinkingLevelToReasoningEffort } from "./reasoning-effort-utils.js";
 import { streamWithPayloadPatch } from "./stream-payload-utils.js";
 
@@ -608,8 +608,8 @@ export function createCodexNativeWebSearchWrapper(
   const underlying = baseStreamFn ?? streamSimple;
   return (model, context, options) => {
     if (
-      (params.codeModeToolSurfaceEnabled === true || isCodeModeEnabled(params.config)) &&
-      hasCodeModeVisibleTools(context)
+      params.codeModeToolSurfaceEnabled === true ||
+      (isCodeModeEnabled(params.config) && hasCodeModeVisibleTools(context))
     ) {
       emitModelTransportDebug(
         log,

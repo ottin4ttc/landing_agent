@@ -1,8 +1,8 @@
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
-import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
-import type { ToolResultMessage, UserMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
+import type { ToolResultMessage, UserMessage } from "../pi-ai-contract.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
+import { SessionManager } from "../transcript/session-transcript-contract.js";
 import { sanitizeSessionHistory } from "./replay-history.js";
 
 vi.mock("../../plugins/provider-runtime.js", () => ({

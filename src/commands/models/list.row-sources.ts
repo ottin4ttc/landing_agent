@@ -1,4 +1,4 @@
-import type { ModelRegistry } from "../../llm/model-registry.js";
+import type { ModelRegistry } from "../../agents/model-registry-contract.js";
 import {
   appendCatalogSupplementRows,
   appendAuthenticatedCatalogRows,

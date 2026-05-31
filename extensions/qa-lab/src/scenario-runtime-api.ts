@@ -59,12 +59,7 @@ export type QaScenarioRuntimeDeps = {
   createSession: QaScenarioRuntimeFunction;
   readEffectiveTools: QaScenarioRuntimeFunction;
   readSkillStatus: QaScenarioRuntimeFunction;
-  readRawQaSessionStore: QaScenarioRuntimeFunction;
-  readGatewayLogs: QaScenarioRuntimeFunction;
-  markGatewayLogCursor: QaScenarioRuntimeFunction;
-  scanGatewayLogSentinels: QaScenarioRuntimeFunction;
-  assertNoGatewayLogSentinels: QaScenarioRuntimeFunction;
-  readSessionTranscriptSummary: QaScenarioRuntimeFunction;
+  readRawQaSessionEntries: QaScenarioRuntimeFunction;
   runQaCli: QaScenarioRuntimeFunction;
   extractMediaPathFromText: QaScenarioRuntimeFunction;
   resolveGeneratedImagePath: QaScenarioRuntimeFunction;
@@ -84,7 +79,6 @@ export type QaScenarioRuntimeDeps = {
   runRuntimeToolFixture: QaScenarioRuntimeFunction;
   extractQaToolPayload: QaScenarioRuntimeFunction;
   formatMemoryDreamingDay: QaScenarioRuntimeFunction;
-  resolveSessionTranscriptsDirForAgent: QaScenarioRuntimeFunction;
   buildAgentSessionKey: QaScenarioRuntimeFunction;
   normalizeLowercaseStringOrEmpty: QaScenarioRuntimeFunction;
   formatErrorMessage: QaScenarioRuntimeFunction;
@@ -95,7 +89,7 @@ export type QaScenarioRuntimeDeps = {
   hasDiscoveryLabels: QaScenarioRuntimeFunction;
   reportsDiscoveryScopeLeak: QaScenarioRuntimeFunction;
   reportsMissingDiscoveryFiles: QaScenarioRuntimeFunction;
-  hasModelSwitchContinuitySignal: QaScenarioRuntimeFunction;
+  hasModelSwitchContinuityEvidence: QaScenarioRuntimeFunction;
 };
 
 export type QaScenarioRuntimeConstants = {
@@ -150,12 +144,7 @@ type QaScenarioRuntimeApi<
   createSession: TDeps["createSession"];
   readEffectiveTools: TDeps["readEffectiveTools"];
   readSkillStatus: TDeps["readSkillStatus"];
-  readRawQaSessionStore: TDeps["readRawQaSessionStore"];
-  readGatewayLogs: TDeps["readGatewayLogs"];
-  markGatewayLogCursor: TDeps["markGatewayLogCursor"];
-  scanGatewayLogSentinels: TDeps["scanGatewayLogSentinels"];
-  assertNoGatewayLogSentinels: TDeps["assertNoGatewayLogSentinels"];
-  readSessionTranscriptSummary: TDeps["readSessionTranscriptSummary"];
+  readRawQaSessionEntries: TDeps["readRawQaSessionEntries"];
   runQaCli: TDeps["runQaCli"];
   extractMediaPathFromText: TDeps["extractMediaPathFromText"];
   resolveGeneratedImagePath: TDeps["resolveGeneratedImagePath"];
@@ -175,7 +164,6 @@ type QaScenarioRuntimeApi<
   runRuntimeToolFixture: TDeps["runRuntimeToolFixture"];
   extractQaToolPayload: TDeps["extractQaToolPayload"];
   formatMemoryDreamingDay: TDeps["formatMemoryDreamingDay"];
-  resolveSessionTranscriptsDirForAgent: TDeps["resolveSessionTranscriptsDirForAgent"];
   buildAgentSessionKey: TDeps["buildAgentSessionKey"];
   normalizeLowercaseStringOrEmpty: TDeps["normalizeLowercaseStringOrEmpty"];
   formatErrorMessage: TDeps["formatErrorMessage"];
@@ -186,7 +174,7 @@ type QaScenarioRuntimeApi<
   hasDiscoveryLabels: TDeps["hasDiscoveryLabels"];
   reportsDiscoveryScopeLeak: TDeps["reportsDiscoveryScopeLeak"];
   reportsMissingDiscoveryFiles: TDeps["reportsMissingDiscoveryFiles"];
-  hasModelSwitchContinuitySignal: TDeps["hasModelSwitchContinuitySignal"];
+  hasModelSwitchContinuityEvidence: TDeps["hasModelSwitchContinuityEvidence"];
   imageUnderstandingPngBase64: string;
   imageUnderstandingLargePngBase64: string;
   imageUnderstandingValidPngBase64: string;
@@ -256,12 +244,7 @@ export function createQaScenarioRuntimeApi<
     createSession: params.deps.createSession,
     readEffectiveTools: params.deps.readEffectiveTools,
     readSkillStatus: params.deps.readSkillStatus,
-    readRawQaSessionStore: params.deps.readRawQaSessionStore,
-    readGatewayLogs: params.deps.readGatewayLogs,
-    markGatewayLogCursor: params.deps.markGatewayLogCursor,
-    scanGatewayLogSentinels: params.deps.scanGatewayLogSentinels,
-    assertNoGatewayLogSentinels: params.deps.assertNoGatewayLogSentinels,
-    readSessionTranscriptSummary: params.deps.readSessionTranscriptSummary,
+    readRawQaSessionEntries: params.deps.readRawQaSessionEntries,
     runQaCli: params.deps.runQaCli,
     extractMediaPathFromText: params.deps.extractMediaPathFromText,
     resolveGeneratedImagePath: params.deps.resolveGeneratedImagePath,
@@ -281,7 +264,6 @@ export function createQaScenarioRuntimeApi<
     runRuntimeToolFixture: params.deps.runRuntimeToolFixture,
     extractQaToolPayload: params.deps.extractQaToolPayload,
     formatMemoryDreamingDay: params.deps.formatMemoryDreamingDay,
-    resolveSessionTranscriptsDirForAgent: params.deps.resolveSessionTranscriptsDirForAgent,
     buildAgentSessionKey: params.deps.buildAgentSessionKey,
     normalizeLowercaseStringOrEmpty: params.deps.normalizeLowercaseStringOrEmpty,
     formatErrorMessage: params.deps.formatErrorMessage,
@@ -292,7 +274,7 @@ export function createQaScenarioRuntimeApi<
     hasDiscoveryLabels: params.deps.hasDiscoveryLabels,
     reportsDiscoveryScopeLeak: params.deps.reportsDiscoveryScopeLeak,
     reportsMissingDiscoveryFiles: params.deps.reportsMissingDiscoveryFiles,
-    hasModelSwitchContinuitySignal: params.deps.hasModelSwitchContinuitySignal,
+    hasModelSwitchContinuityEvidence: params.deps.hasModelSwitchContinuityEvidence,
     imageUnderstandingPngBase64: params.constants.imageUnderstandingPngBase64,
     imageUnderstandingLargePngBase64: params.constants.imageUnderstandingLargePngBase64,
     imageUnderstandingValidPngBase64: params.constants.imageUnderstandingValidPngBase64,

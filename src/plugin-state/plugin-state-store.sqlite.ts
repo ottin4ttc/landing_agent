@@ -1,12 +1,16 @@
+import { existsSync, rmSync } from "node:fs";
+import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/number-coercion";
 import type { Insertable, Selectable } from "kysely";
+import { resolveStateDir } from "../config/paths.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../infra/kysely-sync.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabase,
@@ -34,6 +38,7 @@ type PluginStateEntriesTable = OpenClawStateKyselyDatabase["plugin_state_entries
 type PluginStateStoreDatabase = Pick<OpenClawStateKyselyDatabase, "plugin_state_entries">;
 
 type PluginStateRow = Selectable<PluginStateEntriesTable>;
+type LegacyPluginStateRow = Insertable<PluginStateEntriesTable>;
 
 type CountRow = {
   count: number | bigint;
@@ -54,6 +59,8 @@ type PluginStateSeedEntryForTests = {
 };
 
 let cachedDatabase: PluginStateDatabase | null = null;
+const importedLegacyPluginStatePaths = new Set<string>();
+const LEGACY_PLUGIN_STATE_SIDECAR_SUFFIXES = ["", "-shm", "-wal"] as const;
 
 function normalizeNumber(value: number | bigint | null): number | undefined {
   if (typeof value === "bigint") {
@@ -287,6 +294,18 @@ function countLivePluginStateEntries(
   return countRow(row);
 }
 
+/** Count live rows for one plugin across all namespaces in the shared state DB. */
+export function countLivePluginStateEntriesForPlugin(params: {
+  pluginId: string;
+  env?: NodeJS.ProcessEnv;
+}): number {
+  const { db } = openPluginStateDatabase("probe", envOptions(params.env));
+  return countLivePluginStateEntries(db, {
+    pluginId: params.pluginId,
+    now: Date.now(),
+  });
+}
+
 function deleteOldestPluginStateNamespaceEntries(
   db: DatabaseSync,
   params: { pluginId: string; namespace: string; protectedKey: string; now: number; limit: number },
@@ -331,6 +350,7 @@ function openPluginStateDatabase(
   const env = options.env ?? process.env;
   const pathname = resolveOpenClawStateSqlitePath(env);
   if (cachedDatabase && cachedDatabase.path === pathname && cachedDatabase.db.isOpen) {
+    importLegacyPluginStateIfPresent({ targetDb: cachedDatabase.db, env });
     return cachedDatabase;
   }
   if (cachedDatabase && !cachedDatabase.db.isOpen) {
@@ -339,6 +359,7 @@ function openPluginStateDatabase(
 
   try {
     const database = openOpenClawStateDatabase(options);
+    importLegacyPluginStateIfPresent({ targetDb: database.db, env });
     cachedDatabase = {
       db: database.db,
       path: database.path,
@@ -358,6 +379,69 @@ function openPluginStateDatabase(
 function countRow(row: CountRow | undefined): number {
   const raw = row?.count ?? 0;
   return typeof raw === "bigint" ? Number(raw) : raw;
+}
+
+function resolveLegacyPluginStateSqlitePath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveStateDir(env), "plugin-state", "state.sqlite");
+}
+
+function removeLegacyPluginStateSqliteFiles(sourcePath: string): void {
+  for (const suffix of LEGACY_PLUGIN_STATE_SIDECAR_SUFFIXES) {
+    rmSync(`${sourcePath}${suffix}`, { force: true });
+  }
+}
+
+function readLegacyPluginStateRows(sourcePath: string): LegacyPluginStateRow[] {
+  let sourceDb: DatabaseSync | undefined;
+  try {
+    const sqlite = requireNodeSqlite();
+    sourceDb = new sqlite.DatabaseSync(sourcePath, { readOnly: true });
+    return sourceDb
+      .prepare(
+        `
+          SELECT plugin_id, namespace, entry_key, value_json, created_at, expires_at
+          FROM plugin_state_entries
+          ORDER BY plugin_id ASC, namespace ASC, entry_key ASC
+        `,
+      )
+      .all() as LegacyPluginStateRow[];
+  } finally {
+    sourceDb?.close();
+  }
+}
+
+function importLegacyPluginStateIfPresent(params: {
+  targetDb: DatabaseSync;
+  env: NodeJS.ProcessEnv;
+}): void {
+  const sourcePath = resolveLegacyPluginStateSqlitePath(params.env);
+  if (importedLegacyPluginStatePaths.has(sourcePath) || !existsSync(sourcePath)) {
+    return;
+  }
+
+  try {
+    const rows = readLegacyPluginStateRows(sourcePath);
+    if (rows.length > 0) {
+      runSqliteImmediateTransactionSync(params.targetDb, () => {
+        const db = getPluginStateKysely(params.targetDb);
+        for (const row of rows) {
+          executeSqliteQuerySync(
+            params.targetDb,
+            db
+              .insertInto("plugin_state_entries")
+              .values(row)
+              .onConflict((conflict) =>
+                conflict.columns(["plugin_id", "namespace", "entry_key"]).doNothing(),
+              ),
+          );
+        }
+      });
+    }
+    removeLegacyPluginStateSqliteFiles(sourcePath);
+    importedLegacyPluginStatePaths.add(sourcePath);
+  } catch {
+    // Runtime import is best-effort; doctor --fix reports detailed legacy migration failures.
+  }
 }
 
 function envOptions(env?: NodeJS.ProcessEnv): OpenClawStateDatabaseOptions {
@@ -847,6 +931,7 @@ export function probePluginStateStore(): PluginStateStoreProbeResult {
 
 export function closePluginStateDatabase(): void {
   cachedDatabase = null;
+  importedLegacyPluginStatePaths.clear();
   closeOpenClawStateDatabase();
 }
 

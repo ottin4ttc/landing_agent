@@ -133,7 +133,7 @@ describe("createOpenClawCodingTools read behavior", () => {
   });
 
   it("returns already-read adaptive content when pagination reaches EOF", async () => {
-    const readResult: AgentToolResult<unknown> = {
+    const readResult: AgentToolResult = {
       content: [
         {
           type: "text",
@@ -195,7 +195,7 @@ describe("createOpenClawCodingTools read behavior", () => {
   });
 
   it("strips truncation.content details from read results while preserving other fields", async () => {
-    const readResult: AgentToolResult<unknown> = {
+    const readResult: AgentToolResult = {
       content: [{ type: "text" as const, text: "line-0001" }],
       details: {
         truncation: {

@@ -1,6 +1,3 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createMockCronStateForJobs } from "./service.test-harness.js";
 import { listPage } from "./service/ops.js";
@@ -138,21 +135,16 @@ describe("cron listPage sort guards", () => {
       }),
     ];
     const state = createMockCronStateForJobs({ jobs });
-    const storeDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-cron-list-page-"));
-    try {
-      state.deps.storePath = path.join(storeDir, "jobs.json");
+    state.deps.storeKey = "cron-list-page-filter";
 
-      const page = await listPage(state, {
-        scheduleKind: "cron",
-        lastRunStatus: "unknown",
-        limit: 1,
-      });
+    const page = await listPage(state, {
+      scheduleKind: "cron",
+      lastRunStatus: "unknown",
+      limit: 1,
+    });
 
-      expect(page.jobs.map((job) => job.id)).toEqual(["cron-unknown"]);
-      expect(page.total).toBe(1);
-      expect(page.hasMore).toBe(false);
-    } finally {
-      await fs.rm(storeDir, { recursive: true, force: true });
-    }
+    expect(page.jobs.map((job) => job.id)).toEqual(["cron-unknown"]);
+    expect(page.total).toBe(1);
+    expect(page.hasMore).toBe(false);
   });
 });

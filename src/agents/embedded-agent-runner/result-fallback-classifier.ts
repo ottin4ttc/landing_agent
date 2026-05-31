@@ -173,3 +173,6 @@ export function classifyEmbeddedAgentRunResultForModelFallback(params: {
     code: "incomplete_result",
   };
 }
+
+export const classifyEmbeddedPiRunResultForModelFallback =
+  classifyEmbeddedAgentRunResultForModelFallback;

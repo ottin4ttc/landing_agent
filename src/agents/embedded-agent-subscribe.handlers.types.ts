@@ -5,6 +5,7 @@ import type { ReplyDirectiveParseResult } from "../auto-reply/reply/reply-direct
 import type { ReasoningLevel } from "../auto-reply/thinking.js";
 import type { HookRunner } from "../plugins/hooks.js";
 import type { AcceptedSessionSpawn } from "./accepted-session-spawn.js";
+import type { AgentMessage } from "./agent-core-contract.js";
 import type { EmbeddedBlockChunker } from "./embedded-agent-block-chunker.js";
 import type {
   MessagingToolSend,
@@ -18,7 +19,6 @@ import type {
   SubscribeEmbeddedAgentSessionParams,
 } from "./embedded-agent-subscribe.types.js";
 import type { AgentRunTimeoutPhase } from "./run-timeout-attribution.js";
-import type { AgentMessage } from "./runtime/index.js";
 import type { AgentSessionEvent } from "./sessions/index.js";
 import type { ToolErrorSummary } from "./tool-error-summary.js";
 import type { NormalizedUsage } from "./usage.js";
@@ -43,7 +43,7 @@ export type ToolCallSummary = {
 
 export type EmbeddedAgentSubscribeState = {
   assistantTexts: string[];
-  toolMetas: Array<{ toolName?: string; meta?: string; asyncStarted?: boolean }>;
+  toolMetas: Array<{ toolName?: string; meta?: string }>;
   acceptedSessionSpawns: AcceptedSessionSpawn[];
   toolMetaById: Map<string, ToolCallSummary>;
   toolSummaryById: Set<string>;
@@ -215,6 +215,8 @@ export type EmbeddedAgentSubscribeContext = {
   emitBlockReply: (payload: BlockReplyPayload) => void;
 };
 
+export type EmbeddedPiSubscribeContext = EmbeddedAgentSubscribeContext;
+
 /**
  * Minimal context type for tool execution handlers. Allows
  * tests provide only the fields they exercise
@@ -239,8 +241,8 @@ type ToolHandlerState = Pick<
   EmbeddedAgentSubscribeState,
   | "toolMetaById"
   | "toolMetas"
-  | "acceptedSessionSpawns"
   | "toolSummaryById"
+  | "acceptedSessionSpawns"
   | "execLiveUpdateStateById"
   | "itemActiveIds"
   | "itemStartedCount"

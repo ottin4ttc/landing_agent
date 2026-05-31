@@ -29,7 +29,7 @@ export {
   type DirectDmPreCryptoGuardPolicy,
   type DirectDmPreCryptoGuardPolicyOverrides,
   type ResolvedInboundDirectDmAccess,
-} from "../channels/direct-dm.js";
+} from "./direct-dm.js";
 export {
   formatInboundEnvelope,
   formatInboundFromLabel,

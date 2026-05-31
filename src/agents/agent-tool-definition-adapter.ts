@@ -218,12 +218,12 @@ function describeToolFailureInputs(params: {
 function normalizeToolExecutionResult(params: {
   toolName: string;
   result: unknown;
-}): AgentToolResult<unknown> {
+}): AgentToolResult {
   const { toolName, result } = params;
   if (result && typeof result === "object") {
     const record = result as Record<string, unknown>;
     if (Array.isArray(record.content)) {
-      return result as AgentToolResult<unknown>;
+      return result as AgentToolResult;
     }
     logDebug(`tools: ${toolName} returned non-standard result (missing content[]); coercing`);
     const details = "details" in record ? record.details : record;
@@ -237,7 +237,7 @@ function normalizeToolExecutionResult(params: {
 function buildToolExecutionErrorResult(params: {
   toolName: string;
   message: string;
-}): AgentToolResult<unknown> {
+}): AgentToolResult {
   return jsonResult({
     status: "error",
     tool: params.toolName,
@@ -326,7 +326,7 @@ export function toToolDefinitions(
       label: tool.label ?? name,
       description: tool.description ?? "",
       parameters: tool.parameters,
-      execute: async (...args: ToolExecuteArgs): Promise<AgentToolResult<unknown>> => {
+      execute: async (...args: ToolExecuteArgs): Promise<AgentToolResult> => {
         const { toolCallId, params, onUpdate, signal } = splitToolExecuteArgs(args);
         let executeParams = params;
         try {
@@ -440,7 +440,7 @@ export function toClientToolDefinitions(
       label: func.name,
       description: func.description ?? "",
       parameters: func.parameters as ToolDefinition["parameters"],
-      execute: async (...args: ToolExecuteArgs): Promise<AgentToolResult<unknown>> => {
+      execute: async (...args: ToolExecuteArgs): Promise<AgentToolResult> => {
         const { toolCallId, params } = splitToolExecuteArgs(args);
         if (onClientToolCall && typeof onClientToolCall !== "function") {
           onClientToolCall.reserve?.(toolCallId, func.name);

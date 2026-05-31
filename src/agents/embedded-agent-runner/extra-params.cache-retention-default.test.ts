@@ -39,7 +39,7 @@ vi.mock("./logger.js", () => ({
   },
 }));
 
-vi.mock("../../llm/stream.js", () => createLlmStreamSimpleMock());
+vi.mock("../pi-ai-contract.js", () => createLlmStreamSimpleMock());
 
 beforeEach(() => {
   extraParamsTesting.setProviderRuntimeDepsForTest({

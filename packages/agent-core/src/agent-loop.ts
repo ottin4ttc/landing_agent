@@ -627,18 +627,18 @@ type PreparedToolCall = {
 
 type ImmediateToolCallOutcome = {
   kind: "immediate";
-  result: AgentToolResult<unknown>;
+  result: AgentToolResult;
   isError: boolean;
 };
 
 type ExecutedToolCallOutcome = {
-  result: AgentToolResult<unknown>;
+  result: AgentToolResult;
   isError: boolean;
 };
 
 type FinalizedToolCallOutcome = {
   toolCall: AgentToolCall;
-  result: AgentToolResult<unknown>;
+  result: AgentToolResult;
   isError: boolean;
 };
 
@@ -813,7 +813,7 @@ async function finalizeExecutedToolCall(
   };
 }
 
-function createErrorToolResult(message: string): AgentToolResult<unknown> {
+function createErrorToolResult(message: string): AgentToolResult {
   return {
     content: [{ type: "text", text: message }],
     details: {},

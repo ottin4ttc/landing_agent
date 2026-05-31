@@ -169,6 +169,12 @@ function createMockSessionRuntime(sessionStore: Record<string, unknown>) {
     getSessionEntry: vi.fn(
       ({ sessionKey }: { sessionKey: string }) => sessionStore[sessionKey] as MockSessionEntry,
     ),
+    listSessionEntries: vi.fn(() =>
+      Object.entries(sessionStore).map(([sessionKey, entry]) => ({
+        sessionKey,
+        entry: entry as MockSessionEntry,
+      })),
+    ),
     patchSessionEntry: vi.fn(
       async ({
         sessionKey,
@@ -184,6 +190,11 @@ function createMockSessionRuntime(sessionStore: Record<string, unknown>) {
         const next = { ...current, ...patch };
         sessionStore[sessionKey] = next;
         return next;
+      },
+    ),
+    upsertSessionEntry: vi.fn(
+      ({ sessionKey, entry }: { sessionKey: string; entry: MockSessionEntry }) => {
+        sessionStore[sessionKey] = entry;
       },
     ),
     resolveSessionFilePath: vi.fn(() => "/tmp/session.json"),

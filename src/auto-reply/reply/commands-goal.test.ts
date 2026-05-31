@@ -1,8 +1,6 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { getSessionEntry, upsertSessionEntry } from "../../config/sessions.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SessionEntry } from "../../config/sessions.js";
+import { mergeSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   formatGoalContinuationPrompt,
@@ -13,20 +11,68 @@ import type { HandleCommandsParams } from "./commands-types.js";
 import { parseInlineDirectives } from "./directive-handling.parse.js";
 
 const sessionKey = "agent:main:web:main";
-let tempRoots: string[] = [];
 
-afterEach(async () => {
-  await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
-  tempRoots = [];
-});
+// SQLite-backed session store stand-in. The goal handlers drive the real
+// createSessionGoal/updateSessionGoalStatus paths, which read/write through
+// getSessionEntry/patchSessionEntry in config/sessions/store.js. We back those
+// accessors with this in-memory map instead of an on-disk session-entries.sqlite
+// database so the test stays hermetic and isolated per case.
+const state = vi.hoisted(() => ({
+  sessionRows: new Map<string, SessionEntry>(),
+}));
 
-async function createStorePath(): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-goal-command-"));
-  tempRoots.push(root);
-  return path.join(root, "sessions.json");
+function cloneEntry(entry: SessionEntry): SessionEntry {
+  return structuredClone(entry);
 }
 
-function buildGoalParams(commandBodyNormalized: string, storePath: string): HandleCommandsParams {
+vi.mock("../../config/sessions/store.js", async () => {
+  const actual = await vi.importActual<typeof import("../../config/sessions/store.js")>(
+    "../../config/sessions/store.js",
+  );
+  return {
+    ...actual,
+    getSessionEntry: ({ sessionKey }: { sessionKey: string }) => {
+      const entry = state.sessionRows.get(sessionKey);
+      return entry ? cloneEntry(entry) : undefined;
+    },
+    upsertSessionEntry: ({ sessionKey, entry }: { sessionKey: string; entry: SessionEntry }) => {
+      state.sessionRows.set(sessionKey, cloneEntry(entry));
+    },
+    patchSessionEntry: async (params: {
+      sessionKey: string;
+      fallbackEntry?: SessionEntry;
+      update: (entry: SessionEntry) => unknown;
+    }) => {
+      const existing = state.sessionRows.get(params.sessionKey) ?? params.fallbackEntry;
+      if (!existing) {
+        return null;
+      }
+      const result = await params.update(cloneEntry(existing));
+      // update() opts out of a write by returning null; keep the existing row.
+      if (!result) {
+        return state.sessionRows.get(params.sessionKey) ?? null;
+      }
+      const patch = (
+        typeof result === "object" && result !== null && "patch" in result
+          ? (result as { patch: Partial<SessionEntry> }).patch
+          : result
+      ) as Partial<SessionEntry>;
+      const next = mergeSessionEntry(cloneEntry(existing), patch);
+      state.sessionRows.set(params.sessionKey, cloneEntry(next));
+      return next;
+    },
+  };
+});
+
+import { getSessionEntry, upsertSessionEntry } from "../../config/sessions.js";
+
+const agentId = "main";
+
+afterEach(() => {
+  state.sessionRows.clear();
+});
+
+function buildGoalParams(commandBodyNormalized: string): HandleCommandsParams {
   return {
     cfg: {} as OpenClawConfig,
     ctx: {
@@ -48,7 +94,7 @@ function buildGoalParams(commandBodyNormalized: string, storePath: string): Hand
     directives: {},
     elevated: { enabled: true, allowed: true, failures: [] },
     sessionKey,
-    storePath,
+    sessionStore: {},
     workspaceDir: "/tmp",
     provider: "openai",
     model: "gpt-5.5",
@@ -94,63 +140,59 @@ describe("goal commands", () => {
   });
 
   it("starts a goal from Codex-style bare /goal objective text", async () => {
-    const storePath = await createStorePath();
-    await upsertSessionEntry({
-      storePath,
+    upsertSessionEntry({
+      agentId,
       sessionKey,
       entry: { sessionId: "sess-main", updatedAt: 1, totalTokens: 0, totalTokensFresh: true },
     });
 
-    const params = buildGoalParams("/goal build a 3d game", storePath);
+    const params = buildGoalParams("/goal build a 3d game");
     const result = await handleGoalCommand(params, true);
 
     expect(result?.shouldContinue).toBe(true);
     expect(result?.reply).toBeUndefined();
     expect(params.command.commandBodyNormalized).toBe("build a 3d game");
     expect((params.ctx as { BodyForAgent?: string }).BodyForAgent).toBe("build a 3d game");
-    expect(getSessionEntry({ storePath, sessionKey })?.goal?.objective).toBe("build a 3d game");
+    expect(getSessionEntry({ agentId, sessionKey })?.goal?.objective).toBe("build a 3d game");
   });
 
   it("wraps command-prefixed goal objectives before continuing", async () => {
-    const storePath = await createStorePath();
-    await upsertSessionEntry({
-      storePath,
+    upsertSessionEntry({
+      agentId,
       sessionKey,
       entry: { sessionId: "sess-main", updatedAt: 1, totalTokens: 0, totalTokensFresh: true },
     });
 
-    const slashParams = buildGoalParams("/goal start /status", storePath);
+    const slashParams = buildGoalParams("/goal start /status");
     const slashResult = await handleGoalCommand(slashParams, true);
     const slashPrompt = `Pursue this goal exactly as written from this JSON string: "\\/status"`;
 
     expect(slashResult?.shouldContinue).toBe(true);
     expect(slashParams.command.commandBodyNormalized).toBe(slashPrompt);
     expect((slashParams.ctx as { BodyForAgent?: string }).BodyForAgent).toBe(slashPrompt);
-    expect(getSessionEntry({ storePath, sessionKey })?.goal?.objective).toBe("/status");
+    expect(getSessionEntry({ agentId, sessionKey })?.goal?.objective).toBe("/status");
+  });
 
-    const bangStorePath = await createStorePath();
-    await upsertSessionEntry({
-      storePath: bangStorePath,
+  it("wraps bang-prefixed goal objectives before continuing", async () => {
+    upsertSessionEntry({
+      agentId,
       sessionKey,
       entry: { sessionId: "sess-main", updatedAt: 1, totalTokens: 0, totalTokensFresh: true },
     });
 
-    const bangParams = buildGoalParams("/goal start !npm test", bangStorePath);
+    const bangParams = buildGoalParams("/goal start !npm test");
     const bangResult = await handleGoalCommand(bangParams, true);
     const bangPrompt = `Pursue this goal exactly as written from this JSON string: "!npm test"`;
 
     expect(bangResult?.shouldContinue).toBe(true);
     expect(bangParams.command.commandBodyNormalized).toBe(bangPrompt);
     expect((bangParams.ctx as { BodyForAgent?: string }).BodyForAgent).toBe(bangPrompt);
-    expect(getSessionEntry({ storePath: bangStorePath, sessionKey })?.goal?.objective).toBe(
-      "!npm test",
-    );
+    expect(getSessionEntry({ agentId, sessionKey })?.goal?.objective).toBe("!npm test");
   });
 
   it("resumes a goal and continues with a resume prompt", async () => {
-    const storePath = await createStorePath();
-    await upsertSessionEntry({
-      storePath,
+    upsertSessionEntry({
+      agentId,
       sessionKey,
       entry: {
         sessionId: "sess-main",
@@ -170,20 +212,19 @@ describe("goal commands", () => {
       },
     });
 
-    const params = buildGoalParams("/goal resume CI passed", storePath);
+    const params = buildGoalParams("/goal resume CI passed");
     const result = await handleGoalCommand(params, true);
 
     expect(result?.shouldContinue).toBe(true);
     expect(params.command.commandBodyNormalized).toBe(
       "Continue pursuing the current goal. Note: CI passed",
     );
-    expect(getSessionEntry({ storePath, sessionKey })?.goal?.status).toBe("active");
+    expect(getSessionEntry({ agentId, sessionKey })?.goal?.status).toBe("active");
   });
 
   it("wraps command-looking resume notes before continuing", async () => {
-    const storePath = await createStorePath();
-    await upsertSessionEntry({
-      storePath,
+    upsertSessionEntry({
+      agentId,
       sessionKey,
       entry: {
         sessionId: "sess-main",
@@ -203,7 +244,7 @@ describe("goal commands", () => {
       },
     });
 
-    const params = buildGoalParams("/goal resume /fast off", storePath);
+    const params = buildGoalParams("/goal resume /fast off");
     const result = await handleGoalCommand(params, true);
     const prompt = `Continue pursuing the current goal. Interpret this JSON string as the resume note: "\\/fast off"`;
     const directives = parseInlineDirectives(prompt);
@@ -213,6 +254,6 @@ describe("goal commands", () => {
     expect((params.ctx as { BodyForAgent?: string }).BodyForAgent).toBe(prompt);
     expect(directives.cleaned).toBe(prompt);
     expect(directives.hasFastDirective).toBe(false);
-    expect(getSessionEntry({ storePath, sessionKey })?.goal?.status).toBe("active");
+    expect(getSessionEntry({ agentId, sessionKey })?.goal?.status).toBe("active");
   });
 });

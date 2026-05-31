@@ -12,10 +12,16 @@ import {
   type TelegramUpdateOffsetState,
   deleteTelegramUpdateOffset,
   readTelegramUpdateOffset,
+  resetTelegramUpdateOffsetsForTests,
   setTelegramUpdateOffsetStoreForTest,
   shouldReplaceTelegramUpdateOffsetEntry,
   writeTelegramUpdateOffset,
 } from "./update-offset-store.js";
+
+afterEach(async () => {
+  await resetTelegramUpdateOffsetsForTests();
+  resetPluginStateStoreForTests();
+});
 
 describe("deleteTelegramUpdateOffset", () => {
   let updateOffsetStore: PluginStateKeyedStore<TelegramUpdateOffsetState>;

@@ -10,7 +10,7 @@ import { resolveGatewayService } from "../daemon/service.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { resolveCleanupPlanFromDisk } from "./cleanup-plan.js";
 import {
-  listAgentSessionDirs,
+  listAgentSessionStatePaths,
   removePath,
   removeStateAndLinkedPaths,
   removeWorkspaceDirs,
@@ -133,9 +133,9 @@ export async function resetCommand(runtime: RuntimeEnv, opts: ResetOptions) {
   if (scope === "config+creds+sessions") {
     await removePath(configPath, runtime, { dryRun, label: configPath });
     await removePath(oauthDir, runtime, { dryRun, label: oauthDir });
-    const sessionDirs = await listAgentSessionDirs(stateDir);
-    for (const dir of sessionDirs) {
-      await removePath(dir, runtime, { dryRun, label: dir });
+    const sessionPaths = await listAgentSessionStatePaths(stateDir);
+    for (const target of sessionPaths) {
+      await removePath(target, runtime, { dryRun, label: target });
     }
     runtime.log(`Next: ${formatCliCommand("openclaw onboard --install-daemon")}`);
     return;

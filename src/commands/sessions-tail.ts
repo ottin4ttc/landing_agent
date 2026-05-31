@@ -1,16 +1,15 @@
-import fs from "node:fs";
-import path from "node:path";
 import { getRuntimeConfig } from "../config/config.js";
-import { loadSessionStore } from "../config/sessions.js";
-import { resolveSessionFilePath } from "../config/sessions/paths.js";
+import {
+  listSessionEntries,
+  resolveSessionDatabaseTargets,
+  type SessionDatabaseTarget,
+} from "../config/sessions.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { resolveTrajectoryFilePath } from "../trajectory/paths.js";
-import { resolveTrajectoryRuntimeFile } from "../trajectory/runtime-file.js";
+import { listTrajectoryRuntimeEvents } from "../trajectory/runtime-store.sqlite.js";
 import type { TrajectoryEvent } from "../trajectory/types.js";
-import { resolveSessionStoreTargetsOrExit } from "./session-store-targets.js";
 import { shortenText } from "./text-format.js";
 
 type SessionsTailOptions = {
@@ -24,31 +23,14 @@ type SessionsTailOptions = {
 
 type TailSelection = {
   agentId: string;
+  databasePath: string;
   key: string;
   entry: SessionEntry;
-  storePath: string;
-  trajectoryPath: string;
 };
 
 type FollowState = {
   cursor: TrajectoryCursor | null;
-  fileState: FollowFileState | null;
-  offset: number;
-  pending: string;
   selection: TailSelection;
-};
-
-type TrajectorySnapshot = {
-  events: TrajectoryEvent[];
-  fileState: FollowFileState | null;
-  offset: number;
-};
-
-type FollowFileState = {
-  dev: number;
-  ino: number;
-  mtimeMs: number;
-  size: number;
 };
 
 type TrajectoryCursor = {
@@ -60,6 +42,7 @@ const DEFAULT_TAIL_COUNT = 80;
 const SESSION_KEY_PAD = 30;
 const EVENT_TYPE_PAD = 16;
 const FOLLOW_INTERVAL_MS = 1_000;
+const MAX_TRAJECTORY_EVENTS = 200_000;
 let followIntervalMsForTests: number | undefined;
 
 export function setSessionsTailFollowIntervalMsForTests(intervalMs?: number): void {
@@ -84,43 +67,8 @@ function parseTailCount(value: string | number | undefined): number | null {
   return Number.parseInt(trimmed, 10);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function isTrajectoryEvent(value: unknown): value is TrajectoryEvent {
-  return (
-    isRecord(value) &&
-    value.traceSchema === "openclaw-trajectory" &&
-    value.schemaVersion === 1 &&
-    typeof value.type === "string" &&
-    typeof value.ts === "string" &&
-    typeof value.sessionId === "string"
-  );
-}
-
-function parseTrajectoryEventLine(line: string): TrajectoryEvent | null {
-  const trimmed = line.trim();
-  if (!trimmed) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    return isTrajectoryEvent(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseTrajectoryEventLines(lines: string[]): TrajectoryEvent[] {
-  return lines.flatMap((line) => {
-    const event = parseTrajectoryEventLine(line);
-    return event ? [event] : [];
-  });
 }
 
 function eventSequence(event: TrajectoryEvent): number | null {
@@ -267,21 +215,13 @@ function formatProgressLine(event: TrajectoryEvent): string {
   return [formatTimestamp(event.ts), typeLabel, sessionLabel, preview].join(" ").trimEnd();
 }
 
-function readTrajectorySnapshot(filePath: string): TrajectorySnapshot {
-  try {
-    const stat = fs.statSync(filePath);
-    const text = fs.readFileSync(filePath, "utf8");
-    return {
-      events: parseTrajectoryEventLines(text.split(/\r?\n/u)),
-      fileState: fileStateFromStat(stat),
-      offset: Buffer.byteLength(text, "utf8"),
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { events: [], fileState: null, offset: 0 };
-    }
-    throw error;
-  }
+function readTrajectoryEvents(selection: TailSelection): TrajectoryEvent[] {
+  return listTrajectoryRuntimeEvents({
+    agentId: selection.agentId,
+    path: selection.databasePath,
+    sessionId: selection.entry.sessionId,
+    limit: MAX_TRAJECTORY_EVENTS,
+  });
 }
 
 function renderEvents(events: TrajectoryEvent[], runtime: RuntimeEnv): TrajectoryCursor | null {
@@ -293,30 +233,6 @@ function renderEvents(events: TrajectoryEvent[], runtime: RuntimeEnv): Trajector
   return cursor;
 }
 
-function fileStateFromStat(stat: fs.Stats): FollowFileState {
-  return {
-    dev: stat.dev,
-    ino: stat.ino,
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
-  };
-}
-
-function sameFileIdentity(left: FollowFileState | null, right: FollowFileState): boolean {
-  return Boolean(left && left.dev === right.dev && left.ino === right.ino);
-}
-
-function readFollowFileState(filePath: string): FollowFileState | null {
-  try {
-    return fileStateFromStat(fs.statSync(filePath));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  }
-}
-
 function isRunningSession(entry: SessionEntry): boolean {
   return entry.status === "running" || entry.acp?.state === "running";
 }
@@ -325,33 +241,15 @@ function compareSelectionsByUpdatedAt(a: TailSelection, b: TailSelection): numbe
   return (b.entry.updatedAt ?? 0) - (a.entry.updatedAt ?? 0);
 }
 
-async function buildTailSelection(params: {
-  agentId: string;
-  entry: SessionEntry;
-  key: string;
-  storePath: string;
-}): Promise<TailSelection> {
-  const sessionsDir = path.dirname(params.storePath);
-  const sessionFile = resolveSessionFilePath(params.entry.sessionId, params.entry, {
-    agentId: params.agentId,
-    sessionsDir,
-  });
-  const trajectoryPath =
-    (await resolveTrajectoryRuntimeFile({
-      sessionFile,
-      sessionId: params.entry.sessionId,
-    })) ??
-    resolveTrajectoryFilePath({
-      sessionFile,
-      sessionId: params.entry.sessionId,
-    });
-  return {
-    agentId: params.agentId,
-    entry: params.entry,
-    key: params.key,
-    storePath: params.storePath,
-    trajectoryPath,
-  };
+function buildTailSelections(target: SessionDatabaseTarget): TailSelection[] {
+  return listSessionEntries({ agentId: target.agentId, path: target.databasePath }).map(
+    ({ sessionKey, entry }) => ({
+      agentId: target.agentId,
+      databasePath: target.databasePath,
+      key: sessionKey,
+      entry,
+    }),
+  );
 }
 
 function selectSessionsToTail(selections: TailSelection[], sessionKey?: string): TailSelection[] {
@@ -369,57 +267,9 @@ function selectSessionsToTail(selections: TailSelection[], sessionKey?: string):
   return latest ? [latest] : [];
 }
 
-function statFileSize(filePath: string): number {
-  try {
-    return fs.statSync(filePath).size;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return 0;
-    }
-    throw error;
-  }
-}
-
 function readNewFollowEvents(state: FollowState): TrajectoryEvent[] {
-  const fileState = readFollowFileState(state.selection.trajectoryPath);
-  if (!fileState) {
-    state.fileState = null;
-    state.offset = 0;
-    state.pending = "";
-    return [];
-  }
-
-  const replaced = !sameFileIdentity(state.fileState, fileState);
-  const truncated = fileState.size < state.offset;
-  const possiblyRewrittenSameSize =
-    fileState.size === state.offset && state.fileState?.mtimeMs !== fileState.mtimeMs;
-
-  if (replaced || truncated || possiblyRewrittenSameSize) {
-    const snapshot = readTrajectorySnapshot(state.selection.trajectoryPath);
-    state.fileState = snapshot.fileState;
-    state.offset = snapshot.offset;
-    state.pending = "";
-    return eventsAfterCursor(snapshot.events, state.cursor);
-  }
-
-  if (fileState.size === state.offset) {
-    state.fileState = fileState;
-    return [];
-  }
-
-  const fd = fs.openSync(state.selection.trajectoryPath, "r");
-  try {
-    const buffer = Buffer.alloc(fileState.size - state.offset);
-    fs.readSync(fd, buffer, 0, buffer.length, state.offset);
-    state.offset = fileState.size;
-    state.fileState = fileState;
-    const combined = `${state.pending}${buffer.toString("utf8")}`;
-    const lines = combined.split(/\r?\n/u);
-    state.pending = lines.pop() ?? "";
-    return parseTrajectoryEventLines(lines);
-  } finally {
-    fs.closeSync(fd);
-  }
+  const events = readTrajectoryEvents(state.selection);
+  return eventsAfterCursor(events, state.cursor);
 }
 
 function renderFollowEvents(
@@ -436,15 +286,12 @@ function renderFollowEvents(
 async function followSelections(
   selections: TailSelection[],
   runtime: RuntimeEnv,
-  initialSnapshots: Map<string, TrajectorySnapshot>,
+  initialCursors: Map<string, TrajectoryCursor | null>,
 ): Promise<void> {
   const states = selections.map((selection): FollowState => {
-    const snapshot = initialSnapshots.get(selection.trajectoryPath);
+    const cursorKey = followCursorKey(selection);
     return {
-      cursor: snapshot ? maxCursorFromEvents(snapshot.events) : null,
-      fileState: snapshot?.fileState ?? readFollowFileState(selection.trajectoryPath),
-      offset: snapshot?.offset ?? statFileSize(selection.trajectoryPath),
-      pending: "",
+      cursor: initialCursors.get(cursorKey) ?? null,
       selection,
     };
   });
@@ -475,6 +322,11 @@ async function followSelections(
   });
 }
 
+// Follow cursors are keyed per database + session so two agents sharing a session id stay distinct.
+function followCursorKey(selection: TailSelection): string {
+  return `${selection.databasePath}\0${selection.entry.sessionId}`;
+}
+
 function resolveTailTargetAgent(opts: SessionsTailOptions): string | undefined {
   if (opts.agent?.trim() || opts.store?.trim() || opts.allAgents === true) {
     return opts.agent;
@@ -494,33 +346,19 @@ export async function sessionsTailCommand(
   }
 
   const cfg = getRuntimeConfig();
-  const targets = resolveSessionStoreTargetsOrExit({
-    cfg,
-    opts: {
-      store: opts.store,
+  let targets: SessionDatabaseTarget[];
+  try {
+    targets = resolveSessionDatabaseTargets(cfg, {
       agent: resolveTailTargetAgent(opts),
       allAgents: opts.allAgents,
-    },
-    runtime,
-  });
-  if (!targets) {
+    });
+  } catch (error) {
+    runtime.error(formatErrorMessage(error));
+    runtime.exit(1);
     return;
   }
 
-  const selections: TailSelection[] = [];
-  for (const target of targets) {
-    const store = loadSessionStore(target.storePath);
-    for (const [key, entry] of Object.entries(store)) {
-      selections.push(
-        await buildTailSelection({
-          agentId: target.agentId,
-          entry,
-          key,
-          storePath: target.storePath,
-        }),
-      );
-    }
-  }
+  const selections = targets.flatMap((target) => buildTailSelections(target));
   const selected = selectSessionsToTail(selections, opts.sessionKey);
   if (selected.length === 0) {
     const suffix = opts.sessionKey ? ` for ${opts.sessionKey}` : "";
@@ -528,14 +366,14 @@ export async function sessionsTailCommand(
     return;
   }
 
-  const followSnapshots = new Map<string, TrajectorySnapshot>();
+  const followCursors = new Map<string, TrajectoryCursor | null>();
   for (const selection of selected) {
-    const snapshot = readTrajectorySnapshot(selection.trajectoryPath);
-    followSnapshots.set(selection.trajectoryPath, snapshot);
-    renderEvents(tailCount > 0 ? snapshot.events.slice(-tailCount) : [], runtime);
+    const events = readTrajectoryEvents(selection);
+    followCursors.set(followCursorKey(selection), maxCursorFromEvents(events));
+    renderEvents(tailCount > 0 ? events.slice(-tailCount) : [], runtime);
   }
 
   if (opts.follow) {
-    await followSelections(selected, runtime, followSnapshots);
+    await followSelections(selected, runtime, followCursors);
   }
 }

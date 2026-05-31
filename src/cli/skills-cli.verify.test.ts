@@ -1,8 +1,13 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createCorePluginStateKeyedStore,
+  resetPluginStateStoreForTests,
+} from "../plugin-state/plugin-state-store.js";
 import { registerSkillsCli } from "./skills-cli.js";
 
 const mocks = vi.hoisted(() => {
@@ -76,9 +81,14 @@ vi.mock("../infra/clawhub.js", () => ({
 
 describe("skills verify CLI", () => {
   let workspaceDir: string;
+  let stateDir: string;
+  const originalOpenClawStateDir = process.env.OPENCLAW_STATE_DIR;
 
   beforeEach(async () => {
     workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-cli-"));
+    stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-state-"));
+    resetPluginStateStoreForTests();
+    process.env.OPENCLAW_STATE_DIR = stateDir;
     mocks.runtimeStdout.length = 0;
     mocks.runtimeErrors.length = 0;
     mocks.resolveAgentWorkspaceDirMock.mockReset();
@@ -93,7 +103,14 @@ describe("skills verify CLI", () => {
   });
 
   afterEach(async () => {
+    resetPluginStateStoreForTests();
+    if (originalOpenClawStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = originalOpenClawStateDir;
+    }
     await fs.rm(workspaceDir, { recursive: true, force: true });
+    await fs.rm(stateDir, { recursive: true, force: true });
   });
 
   async function runCommand(argv: string[]) {
@@ -119,40 +136,35 @@ describe("skills verify CLI", () => {
       "# Generated Skill Card\n\nThis file is added by ClawHub during bundle assembly.\n",
       "utf8",
     );
-    await fs.writeFile(
-      path.join(skillDir, ".clawhub", "origin.json"),
-      `${JSON.stringify(
-        {
-          version: 1,
-          registry: "https://private.example.com/clawhub",
-          slug: "agentreceipt",
-          installedVersion: "1.2.3",
-          installedAt: 123,
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    );
-    await fs.mkdir(path.join(workspaceDir, ".clawhub"), { recursive: true });
-    await fs.writeFile(
-      path.join(workspaceDir, ".clawhub", "lock.json"),
-      `${JSON.stringify(
-        {
-          version: 1,
-          skills: {
-            agentreceipt: {
-              version: "1.2.3",
-              installedAt: 123,
-              registry: "https://private.example.com/clawhub",
-            },
-          },
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    );
+    const workspaceKey = crypto
+      .createHash("sha256")
+      .update(path.resolve(workspaceDir))
+      .digest("hex")
+      .slice(0, 24);
+    const store = createCorePluginStateKeyedStore<{
+      version: 1;
+      registry: string;
+      slug: string;
+      installedVersion: string;
+      installedAt: number;
+      workspaceDir: string;
+      targetDir: string;
+      updatedAt: number;
+    }>({
+      ownerId: "core:clawhub-skills",
+      namespace: "skill-installs",
+      maxEntries: 10_000,
+    });
+    await store.register(`${workspaceKey}:agentreceipt`, {
+      version: 1,
+      registry: "https://private.example.com/clawhub",
+      slug: "agentreceipt",
+      installedVersion: "1.2.3",
+      installedAt: 123,
+      workspaceDir: path.resolve(workspaceDir),
+      targetDir: skillDir,
+      updatedAt: 123,
+    });
   }
 
   it("does not reject an installed bundle just because ClawHub generated skill-card.md", async () => {

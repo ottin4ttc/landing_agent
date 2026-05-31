@@ -1,5 +1,5 @@
-import type { AssistantMessage, UserMessage } from "openclaw/plugin-sdk/llm";
-import type { AgentMessage } from "../runtime/index.js";
+import type { AgentMessage } from "../agent-core-contract.js";
+import type { AssistantMessage, UserMessage } from "../pi-ai-contract.js";
 import { ZERO_USAGE_FIXTURE } from "./usage-fixtures.js";
 
 export function castAgentMessage(message: unknown): AgentMessage {

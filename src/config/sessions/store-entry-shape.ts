@@ -37,26 +37,20 @@ export function normalizePersistedSessionEntryShape(value: unknown): SessionEntr
   }
 
   let next = value as unknown as SessionEntry;
-  const sessionFile = typeof value.sessionFile === "string" ? value.sessionFile.trim() : undefined;
   if (value.sessionId !== undefined) {
     if (!isSafeSessionId(value.sessionId)) {
       return undefined;
     }
     const sessionId = value.sessionId.trim();
     const transcriptSessionId = normalizeTranscriptSessionId(sessionId);
-    if (!transcriptSessionId && !sessionFile) {
+    // SQLite transcripts are keyed solely by sessionId; without a usable
+    // transcript session id there is no file fallback, so drop the id.
+    if (!transcriptSessionId) {
       const { sessionId: _dropSessionId, ...rest } = next;
       next = rest as SessionEntry;
     } else if (sessionId !== value.sessionId) {
       next = { ...next, sessionId };
     }
-  }
-
-  if (value.sessionFile !== undefined && typeof value.sessionFile !== "string") {
-    if (next === value) {
-      next = { ...next };
-    }
-    delete next.sessionFile;
   }
 
   const updatedAt = normalizeOptionalTimestamp(value.updatedAt);

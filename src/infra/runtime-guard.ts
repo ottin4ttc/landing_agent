@@ -111,7 +111,7 @@ export function assertSupportedRuntime(
 
   runtime.error(
     [
-      "openclaw requires Node >=22.19.0.",
+      `openclaw requires Node >=${MIN_NODE.major}.${MIN_NODE.minor}.${MIN_NODE.patch}.`,
       `Detected: ${runtimeLabel} (exec: ${execLabel}).`,
       `PATH searched: ${details.pathEnv}`,
       "Install Node: https://nodejs.org/en/download",

@@ -93,14 +93,11 @@ describe("handlePluginCommand", () => {
     } as OpenClawConfig);
     params.sessionEntry = {
       sessionId: "wrapper-session",
-      sessionFile: "/tmp/wrapper-session.jsonl",
       updatedAt: Date.now(),
     } as HandleCommandsParams["sessionEntry"];
     params.sessionStore = {
       [params.sessionKey]: {
         sessionId: "target-session",
-        sessionFile: "/tmp/target-session.jsonl",
-        authProfileOverride: "openai:owner@example.com",
         updatedAt: Date.now(),
       },
     };
@@ -109,11 +106,9 @@ describe("handlePluginCommand", () => {
 
     expect(executePluginCommandMock).toHaveBeenCalledTimes(1);
     const [[commandParams]] = executePluginCommandMock.mock.calls as unknown as Array<
-      [{ authProfileId?: string; sessionId?: string; sessionFile?: string }]
+      [{ sessionId?: string }]
     >;
     expect(commandParams.sessionId).toBe("target-session");
-    expect(commandParams.sessionFile).toBe("/tmp/target-session.jsonl");
-    expect(commandParams.authProfileId).toBe("openai:owner@example.com");
   });
 
   it("continues the agent without leaking continueAgent into the reply payload", async () => {

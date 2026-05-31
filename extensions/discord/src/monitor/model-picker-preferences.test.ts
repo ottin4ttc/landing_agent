@@ -32,6 +32,12 @@ async function createStateEnv(): Promise<NodeJS.ProcessEnv> {
   return env;
 }
 
+async function createDetachedStateEnv(): Promise<NodeJS.ProcessEnv> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-model-picker-detached-"));
+  tempDirs.push(dir);
+  return { ...process.env, OPENCLAW_STATE_DIR: dir };
+}
+
 afterEach(async () => {
   resetPluginStateStoreForTests();
   await Promise.all(
@@ -67,6 +73,19 @@ describe("discord model picker preferences", () => {
       allowedModelRefs: new Set(["openai/gpt-4.1"]),
     });
     expect(recent).toEqual(["openai/gpt-4.1"]);
+  });
+
+  it("uses the supplied state env without mutating process env", async () => {
+    await createStateEnv();
+    const env = await createDetachedStateEnv();
+    const scope = { userId: "detached" };
+
+    await recordDiscordModelPickerRecentModel({ env, scope, modelRef: "openai/gpt-5.5" });
+
+    await expect(readDiscordModelPickerRecentModels({ env, scope })).resolves.toEqual([
+      "openai/gpt-5.5",
+    ]);
+    await expect(readDiscordModelPickerRecentModels({ scope })).resolves.toEqual([]);
   });
 
   it("prunes older stored models beyond the recent limit", async () => {

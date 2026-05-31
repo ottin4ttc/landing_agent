@@ -64,7 +64,6 @@ export async function setupWizardShellCompletion(params: {
   const completionStatus = await deps.checkShellCompletionStatus(cliName);
 
   if (completionStatus.usesSlowPattern) {
-    // Case 1: Profile uses slow dynamic pattern - silently upgrade to cached version
     const cacheGenerated = await deps.ensureCompletionCacheExists(cliName);
     if (cacheGenerated) {
       await deps.installCompletion(completionStatus.shell, true, cliName);
@@ -73,13 +72,11 @@ export async function setupWizardShellCompletion(params: {
   }
 
   if (completionStatus.profileInstalled && !completionStatus.cacheExists) {
-    // Case 2: Profile has completion but no cache - auto-fix silently
     await deps.ensureCompletionCacheExists(cliName);
     return;
   }
 
   if (!completionStatus.profileInstalled) {
-    // Case 3: No completion at all
     const shouldInstall =
       params.flow === "quickstart"
         ? true
@@ -95,7 +92,6 @@ export async function setupWizardShellCompletion(params: {
       return;
     }
 
-    // Generate cache first (required for fast shell startup)
     const cacheGenerated = await deps.ensureCompletionCacheExists(cliName);
     if (!cacheGenerated) {
       await params.prompter.note(
@@ -105,7 +101,6 @@ export async function setupWizardShellCompletion(params: {
       return;
     }
 
-    // Install to shell profile
     await deps.installCompletion(completionStatus.shell, true, cliName);
 
     const profileHint = await resolveProfileHint(completionStatus.shell);
@@ -116,5 +111,4 @@ export async function setupWizardShellCompletion(params: {
       t("wizard.completion.title"),
     );
   }
-  // Case 4: Both profile and cache exist (using cached version) - all good, nothing to do
 }

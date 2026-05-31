@@ -13,19 +13,6 @@ export type SessionChannelId = ChannelId;
 
 export type SessionChatType = ChatType;
 
-export type SessionOrigin = {
-  label?: string;
-  provider?: string;
-  surface?: string;
-  chatType?: SessionChatType;
-  from?: string;
-  to?: string;
-  nativeChannelId?: string;
-  nativeDirectUserId?: string;
-  accountId?: string;
-  threadId?: string | number;
-};
-
 export type SessionAcpIdentitySource = "ensure" | "status" | "event";
 
 export type SessionAcpIdentityState = "pending" | "resolved";
@@ -93,6 +80,7 @@ export type SessionCompactionCheckpointReason =
 
 export type SessionCompactionTranscriptReference = {
   sessionId: string;
+  /** Deprecated JSONL snapshot path for checkpoints created before SQLite transcript snapshots. */
   sessionFile?: string;
   leafId?: string;
   entryId?: string;
@@ -253,12 +241,11 @@ export type SessionEntry = {
   pluginNextTurnInjections?: Record<string, SessionPluginNextTurnInjection[]>;
   sessionId: string;
   updatedAt: number;
-  sessionFile?: string;
   /** Parent session key that spawned this session (used for sandbox session-tool scoping). */
   spawnedBy?: string;
   /** Workspace inherited by spawned sessions and reused on later turns for the same child session. */
   spawnedWorkspaceDir?: string;
-  /** Task working directory inherited by spawned sessions and reused on later turns. */
+  /** Task working directory inherited by spawned sessions when it differs from the workspace. */
   spawnedCwd?: string;
   /** Explicit parent session linkage for dashboard-created child sessions. */
   parentSessionKey?: string;
@@ -377,7 +364,7 @@ export type SessionEntry = {
   restartRecoveryDeliveryRunId?: string;
   /**
    * Whether totalTokens reflects a fresh context snapshot for the latest run.
-   * Undefined means legacy/unknown freshness; false forces consumers to treat
+   * Undefined means unknown freshness; false forces consumers to treat
    * totalTokens as stale/unknown for context-utilization displays.
    */
   totalTokensFresh?: boolean;
@@ -406,9 +393,7 @@ export type SessionEntry = {
   memoryFlushAt?: number;
   memoryFlushCompactionCount?: number;
   memoryFlushContextHash?: string;
-  cliSessionIds?: Record<string, string>;
   cliSessionBindings?: Record<string, CliSessionBinding>;
-  claudeCliSessionId?: string;
   label?: string;
   displayName?: string;
   channel?: string;
@@ -416,13 +401,30 @@ export type SessionEntry = {
   subject?: string;
   groupChannel?: string;
   space?: string;
-  origin?: SessionOrigin;
+  origin?: {
+    chatType?: SessionChatType;
+    provider?: string;
+    label?: string;
+    surface?: string;
+    from?: string;
+    to?: string;
+    nativeChannelId?: string;
+    nativeDirectUserId?: string;
+    accountId?: string;
+    threadId?: string | number;
+  };
+  claudeCliSessionId?: string;
+  cliSessionIds?: Record<string, string> | string[];
   route?: ChannelRouteRef;
   deliveryContext?: DeliveryContext;
   lastChannel?: SessionChannelId;
   lastTo?: string;
   lastAccountId?: string;
   lastThreadId?: string | number;
+  /** Provider-native conversation id, such as a Matrix room id. */
+  nativeChannelId?: string;
+  /** Provider-native direct peer id, such as a Matrix user id. */
+  nativeDirectUserId?: string;
   skillsSnapshot?: SessionSkillSnapshot;
   systemPromptReport?: SessionSystemPromptReport;
   /**
@@ -660,8 +662,8 @@ export type SessionSkillSnapshot = {
   /**
    * Runtime-only, never persisted. Carries the full parsed Skill[] (including
    * each SKILL.md body) so the embedded runner can skip a workspace skill
-   * scan within a turn. Stripped from sessions.json on every read and write
-   * via normalizeSessionStore — see store-load.ts. On a cold session resume
+   * scan within a turn. Stripped from persistent session entries on every
+   * read and write via normalizeSessionEntries in the SQLite row layer. On a cold session resume
    * this is undefined and src/skills/runtime/embedded-run-entries.ts
    * rebuilds it by reloading skill entries from disk.
    */

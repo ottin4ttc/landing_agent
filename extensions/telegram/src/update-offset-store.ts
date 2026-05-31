@@ -1,5 +1,8 @@
 import { readJsonFileWithFallback } from "openclaw/plugin-sdk/json-store";
-import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import {
+  createPluginStateKeyedStore,
+  type PluginStateKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import { getTelegramRuntime } from "./runtime.js";
 import { fingerprintTelegramBotToken } from "./token-fingerprint.js";
 
@@ -179,6 +182,27 @@ export async function writeTelegramUpdateOffset(params: {
   );
 }
 
+export async function importTelegramUpdateOffsetState(params: {
+  accountId?: string;
+  state: unknown;
+  env?: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  const parsed = safeParseState(params.state);
+  if (!parsed || parsed.lastUpdateId === null) {
+    return false;
+  }
+  await openUpdateOffsetStore(params.env).register(
+    normalizeTelegramUpdateOffsetAccountId(params.accountId),
+    {
+      version: STORE_VERSION,
+      lastUpdateId: parsed.lastUpdateId,
+      botId: parsed.botId,
+      tokenFingerprint: parsed.tokenFingerprint,
+    },
+  );
+  return true;
+}
+
 export async function deleteTelegramUpdateOffset(params: {
   accountId?: string;
   env?: NodeJS.ProcessEnv;
@@ -192,6 +216,16 @@ export function setTelegramUpdateOffsetStoreForTest(
   store: TelegramUpdateOffsetStore | undefined,
 ): void {
   updateOffsetStoreForTest = store;
+}
+
+export async function resetTelegramUpdateOffsetsForTests(): Promise<void> {
+  // Clear via a directly-constructed store so test cleanup works without an
+  // installed Telegram runtime; targets the same plugin id + namespace the
+  // runtime and injected test stores use.
+  await createPluginStateKeyedStore<TelegramUpdateOffsetState>("telegram", {
+    namespace: TELEGRAM_UPDATE_OFFSET_NAMESPACE,
+    maxEntries: TELEGRAM_UPDATE_OFFSET_MAX_ENTRIES,
+  }).clear();
 }
 
 export async function listTelegramLegacyUpdateOffsetEntries(params: {

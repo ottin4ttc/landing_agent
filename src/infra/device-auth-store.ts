@@ -1,76 +1,306 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import type { Insertable, Selectable } from "kysely";
 import { z } from "zod";
 import { resolveStateDir } from "../config/paths.js";
 import {
-  clearDeviceAuthTokenFromStore,
   type DeviceAuthEntry,
-  loadDeviceAuthTokenFromStore,
-  storeDeviceAuthTokenInStore,
-} from "../shared/device-auth-store.js";
-import type { DeviceAuthStore } from "../shared/device-auth.js";
-import { privateFileStoreSync } from "./private-file-store.js";
+  type DeviceAuthStore,
+  normalizeDeviceAuthRole,
+  normalizeDeviceAuthScopes,
+} from "../shared/device-auth.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabaseOptions,
+} from "../state/openclaw-state-db.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "./kysely-sync.js";
 
-const DEVICE_AUTH_FILE = "device-auth.json";
 const DeviceAuthStoreSchema = z.object({
   version: z.literal(1),
   deviceId: z.string(),
   tokens: z.record(z.string(), z.unknown()),
-}) as z.ZodType<DeviceAuthStore>;
+});
 
-type StoreCacheEntry = { store: DeviceAuthStore | null; mtimeMs: number; size: number };
-const storeReadCache = new Map<string, StoreCacheEntry>();
+type DeviceAuthDatabase = Pick<OpenClawStateKyselyDatabase, "device_auth_tokens">;
+type DeviceAuthTokenRow = Selectable<DeviceAuthDatabase["device_auth_tokens"]>;
+type DeviceAuthTokenInsert = Insertable<DeviceAuthDatabase["device_auth_tokens"]>;
 
-function storeCacheHit(
-  cached: StoreCacheEntry | undefined,
-  stat: { mtimeMs: number; size: number },
-): boolean {
-  return cached !== undefined && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size;
+const ANDROID_SECURE_PREFS_TOKEN_MARKER = "__openclaw_secure_prefs__";
+
+function resolveLegacyDeviceAuthPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveStateDir(env), "identity", "device-auth.json");
 }
 
-function resolveDeviceAuthPath(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(resolveStateDir(env), "identity", DEVICE_AUTH_FILE);
+function sqliteOptions(env: NodeJS.ProcessEnv | undefined): OpenClawStateDatabaseOptions {
+  return env ? { env } : {};
 }
 
-function readStore(filePath: string): DeviceAuthStore | null {
+function parseScopesJson(value: string): string[] {
   try {
-    let stat: fs.Stats | null = null;
-    try {
-      stat = fs.statSync(filePath);
-    } catch {
-      const cached = storeReadCache.get(filePath);
-      if (cached?.mtimeMs === -1 && cached.size === -1) {
-        return cached.store;
-      }
-      storeReadCache.set(filePath, { store: null, mtimeMs: -1, size: -1 });
-      return null;
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((scope) => typeof scope === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function coerceDeviceAuthEntry(role: string, value: unknown): DeviceAuthEntry | null {
+  if (!isRecord(value) || typeof value.token !== "string") {
+    return null;
+  }
+  return {
+    token: value.token,
+    role,
+    scopes: normalizeDeviceAuthScopes(Array.isArray(value.scopes) ? value.scopes : undefined),
+    updatedAtMs:
+      typeof value.updatedAtMs === "number" && Number.isFinite(value.updatedAtMs)
+        ? value.updatedAtMs
+        : 0,
+  };
+}
+
+function copyCanonicalDeviceAuthTokens(
+  tokens: Record<string, unknown>,
+): Record<string, DeviceAuthEntry> {
+  const out: Record<string, DeviceAuthEntry> = {};
+  for (const [rawRole, value] of Object.entries(tokens)) {
+    const role = normalizeDeviceAuthRole(rawRole);
+    if (!role) {
+      continue;
     }
-    const cached = storeReadCache.get(filePath);
-    if (cached !== undefined && storeCacheHit(cached, stat)) {
-      return cached.store;
+    const entry = coerceDeviceAuthEntry(role, value);
+    if (entry) {
+      out[role] = entry;
     }
-    const parsed = privateFileStoreSync(path.dirname(filePath)).readJsonIfExists(
-      path.basename(filePath),
+  }
+  return out;
+}
+
+function rowToDeviceAuthEntry(row: DeviceAuthTokenRow): DeviceAuthEntry | null {
+  if (row.token === ANDROID_SECURE_PREFS_TOKEN_MARKER) {
+    return null;
+  }
+  return {
+    token: row.token,
+    role: row.role,
+    scopes: parseScopesJson(row.scopes_json),
+    updatedAtMs: row.updated_at_ms,
+  };
+}
+
+function deviceAuthEntryToRow(deviceId: string, entry: DeviceAuthEntry): DeviceAuthTokenInsert {
+  return {
+    device_id: deviceId,
+    role: entry.role,
+    token: entry.token,
+    scopes_json: JSON.stringify(entry.scopes),
+    updated_at_ms: entry.updatedAtMs,
+  };
+}
+
+function upsertDeviceAuthTokenRow(
+  db: ReturnType<typeof getNodeSqliteKysely<DeviceAuthDatabase>>,
+  sqliteDb: DatabaseSync,
+  row: DeviceAuthTokenInsert,
+): void {
+  executeSqliteQuerySync(
+    sqliteDb,
+    db
+      .insertInto("device_auth_tokens")
+      .values(row)
+      .onConflict((conflict) =>
+        conflict.columns(["device_id", "role"]).doUpdateSet({
+          token: (eb) => eb.ref("excluded.token"),
+          scopes_json: (eb) => eb.ref("excluded.scopes_json"),
+          updated_at_ms: (eb) => eb.ref("excluded.updated_at_ms"),
+        }),
+      ),
+  );
+}
+
+function hasSqliteDeviceAuthTokens(
+  db: ReturnType<typeof getNodeSqliteKysely<DeviceAuthDatabase>>,
+  sqliteDb: DatabaseSync,
+): boolean {
+  const row = executeSqliteQueryTakeFirstSync(
+    sqliteDb,
+    db.selectFrom("device_auth_tokens").select("device_id").limit(1),
+  );
+  return Boolean(row);
+}
+
+function seedSameDeviceLegacyAuthRowsForFirstWrite(params: {
+  db: ReturnType<typeof getNodeSqliteKysely<DeviceAuthDatabase>>;
+  sqliteDb: DatabaseSync;
+  deviceId: string;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  if (hasSqliteDeviceAuthTokens(params.db, params.sqliteDb)) {
+    return false;
+  }
+  const legacy = readLegacyDeviceAuthState(params.env);
+  if (!legacy || legacy.deviceId !== params.deviceId) {
+    return false;
+  }
+  for (const entry of Object.values(legacy.tokens)) {
+    upsertDeviceAuthTokenRow(
+      params.db,
+      params.sqliteDb,
+      deviceAuthEntryToRow(legacy.deviceId, entry),
     );
-    const result = DeviceAuthStoreSchema.safeParse(parsed);
-    const store = result.success ? result.data : null;
-    storeReadCache.set(filePath, { store, mtimeMs: stat.mtimeMs, size: stat.size });
-    return store;
+  }
+  return true;
+}
+
+function readLegacyDeviceAuthState(env?: NodeJS.ProcessEnv): DeviceAuthStore | null {
+  try {
+    return parseDeviceAuthStoreSnapshot(
+      JSON.parse(fs.readFileSync(resolveLegacyDeviceAuthPath(env), "utf8")),
+    );
   } catch {
     return null;
   }
 }
 
-function writeStore(filePath: string, store: DeviceAuthStore): void {
-  privateFileStoreSync(path.dirname(filePath)).writeJson(path.basename(filePath), store, {
-    trailingNewline: true,
-  });
+function removeLegacyDeviceAuthState(env?: NodeJS.ProcessEnv): void {
   try {
-    const stat = fs.statSync(filePath);
-    storeReadCache.set(filePath, { store, mtimeMs: stat.mtimeMs, size: stat.size });
+    fs.rmSync(resolveLegacyDeviceAuthPath(env), { force: true });
   } catch {
-    storeReadCache.delete(filePath);
+    // SQLite is authoritative after a successful write; stale legacy cleanup is best effort.
   }
+}
+
+function readLegacyDeviceAuthStateAndSeedSqlite(env?: NodeJS.ProcessEnv): DeviceAuthStore | null {
+  const legacy = readLegacyDeviceAuthState(env);
+  if (legacy) {
+    try {
+      writeDeviceAuthState(env, legacy);
+    } catch {
+      // Compatibility read should still succeed if opportunistic seeding fails.
+    }
+  }
+  return legacy;
+}
+
+function readDeviceAuthState(env?: NodeJS.ProcessEnv): DeviceAuthStore | null {
+  try {
+    const database = openOpenClawStateDatabase(sqliteOptions(env));
+    const db = getNodeSqliteKysely<DeviceAuthDatabase>(database.db);
+    const latest = executeSqliteQueryTakeFirstSync(
+      database.db,
+      db
+        .selectFrom("device_auth_tokens")
+        .select(["device_id"])
+        .orderBy("updated_at_ms", "desc")
+        .orderBy("device_id", "asc")
+        .limit(1),
+    );
+    if (!latest) {
+      return readLegacyDeviceAuthStateAndSeedSqlite(env);
+    }
+    const rows = executeSqliteQuerySync(
+      database.db,
+      db
+        .selectFrom("device_auth_tokens")
+        .selectAll()
+        .where("device_id", "=", latest.device_id)
+        .orderBy("role", "asc"),
+    ).rows;
+    if (rows.length === 0) {
+      return null;
+    }
+    const tokenEntries: Array<[string, DeviceAuthEntry]> = [];
+    for (const row of rows) {
+      const entry = rowToDeviceAuthEntry(row);
+      if (entry) {
+        tokenEntries.push([row.role, entry]);
+      }
+    }
+    const tokens: Record<string, DeviceAuthEntry> = Object.fromEntries(tokenEntries);
+    if (Object.keys(tokens).length === 0) {
+      return null;
+    }
+    return {
+      version: 1,
+      deviceId: latest.device_id,
+      tokens,
+    };
+  } catch {
+    return readLegacyDeviceAuthStateAndSeedSqlite(env);
+  }
+}
+
+function writeDeviceAuthState(env: NodeJS.ProcessEnv | undefined, store: DeviceAuthStore): void {
+  const rows = Object.values(store.tokens).map((entry) =>
+    deviceAuthEntryToRow(store.deviceId, entry),
+  );
+  runOpenClawStateWriteTransaction((database) => {
+    const db = getNodeSqliteKysely<DeviceAuthDatabase>(database.db);
+    if (rows.length === 0) {
+      executeSqliteQuerySync(database.db, db.deleteFrom("device_auth_tokens"));
+      return;
+    }
+    const roles = rows.map((row) => row.role);
+    executeSqliteQuerySync(
+      database.db,
+      db.deleteFrom("device_auth_tokens").where("device_id", "!=", store.deviceId),
+    );
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .deleteFrom("device_auth_tokens")
+        .where("device_id", "=", store.deviceId)
+        .where("role", "not in", roles),
+    );
+    for (const row of rows) {
+      upsertDeviceAuthTokenRow(db, database.db, row);
+    }
+  }, sqliteOptions(env));
+  removeLegacyDeviceAuthState(env);
+}
+
+export function loadDeviceAuthStore(
+  params: { env?: NodeJS.ProcessEnv } = {},
+): DeviceAuthStore | null {
+  return readDeviceAuthState(params.env);
+}
+
+export function storeDeviceAuthStore(params: {
+  store: DeviceAuthStore;
+  env?: NodeJS.ProcessEnv;
+}): DeviceAuthStore {
+  writeDeviceAuthState(params.env, params.store);
+  return params.store;
+}
+
+export function parseDeviceAuthStoreSnapshot(raw: unknown): DeviceAuthStore | null {
+  const store = DeviceAuthStoreSchema.safeParse(raw);
+  if (!store.success) {
+    return null;
+  }
+  return {
+    version: 1,
+    deviceId: store.data.deviceId,
+    tokens: copyCanonicalDeviceAuthTokens(store.data.tokens),
+  };
+}
+
+export function writeDeviceAuthStoreSnapshot(
+  env: NodeJS.ProcessEnv | undefined,
+  store: DeviceAuthStore,
+): void {
+  writeDeviceAuthState(env, store);
 }
 
 export function loadDeviceAuthToken(params: {
@@ -78,12 +308,33 @@ export function loadDeviceAuthToken(params: {
   role: string;
   env?: NodeJS.ProcessEnv;
 }): DeviceAuthEntry | null {
-  const filePath = resolveDeviceAuthPath(params.env);
-  return loadDeviceAuthTokenFromStore({
-    adapter: { readStore: () => readStore(filePath), writeStore: (_store) => {} },
-    deviceId: params.deviceId,
-    role: params.role,
-  });
+  const role = normalizeDeviceAuthRole(params.role);
+  try {
+    const database = openOpenClawStateDatabase(sqliteOptions(params.env));
+    const db = getNodeSqliteKysely<DeviceAuthDatabase>(database.db);
+    const row = executeSqliteQueryTakeFirstSync(
+      database.db,
+      db
+        .selectFrom("device_auth_tokens")
+        .selectAll()
+        .where("device_id", "=", params.deviceId)
+        .where("role", "=", role),
+    );
+    if (row) {
+      return rowToDeviceAuthEntry(row);
+    }
+    if (hasSqliteDeviceAuthTokens(db, database.db)) {
+      return null;
+    }
+  } catch {
+    // Fall through to legacy JSON compatibility below.
+  }
+  const legacy = readLegacyDeviceAuthStateAndSeedSqlite(params.env);
+  if (!legacy || legacy.deviceId !== params.deviceId) {
+    return null;
+  }
+  const entry = legacy.tokens[role];
+  return entry ? coerceDeviceAuthEntry(role, entry) : null;
 }
 
 export function storeDeviceAuthToken(params: {
@@ -93,17 +344,29 @@ export function storeDeviceAuthToken(params: {
   scopes?: string[];
   env?: NodeJS.ProcessEnv;
 }): DeviceAuthEntry {
-  const filePath = resolveDeviceAuthPath(params.env);
-  return storeDeviceAuthTokenInStore({
-    adapter: {
-      readStore: () => readStore(filePath),
-      writeStore: (store) => writeStore(filePath, store),
-    },
-    deviceId: params.deviceId,
-    role: params.role,
+  const entry: DeviceAuthEntry = {
     token: params.token,
-    scopes: params.scopes,
-  });
+    role: normalizeDeviceAuthRole(params.role),
+    scopes: normalizeDeviceAuthScopes(params.scopes),
+    updatedAtMs: Date.now(),
+  };
+  const row = deviceAuthEntryToRow(params.deviceId, entry);
+  runOpenClawStateWriteTransaction((database) => {
+    const db = getNodeSqliteKysely<DeviceAuthDatabase>(database.db);
+    seedSameDeviceLegacyAuthRowsForFirstWrite({
+      db,
+      sqliteDb: database.db,
+      deviceId: params.deviceId,
+      env: params.env,
+    });
+    executeSqliteQuerySync(
+      database.db,
+      db.deleteFrom("device_auth_tokens").where("device_id", "!=", params.deviceId),
+    );
+    upsertDeviceAuthTokenRow(db, database.db, row);
+  }, sqliteOptions(params.env));
+  removeLegacyDeviceAuthState(params.env);
+  return entry;
 }
 
 export function clearDeviceAuthToken(params: {
@@ -111,13 +374,29 @@ export function clearDeviceAuthToken(params: {
   role: string;
   env?: NodeJS.ProcessEnv;
 }): void {
-  const filePath = resolveDeviceAuthPath(params.env);
-  clearDeviceAuthTokenFromStore({
-    adapter: {
-      readStore: () => readStore(filePath),
-      writeStore: (store) => writeStore(filePath, store),
-    },
-    deviceId: params.deviceId,
-    role: params.role,
-  });
+  const role = normalizeDeviceAuthRole(params.role);
+  let shouldRemoveLegacy = false;
+  runOpenClawStateWriteTransaction((database) => {
+    const db = getNodeSqliteKysely<DeviceAuthDatabase>(database.db);
+    const hasRows = hasSqliteDeviceAuthTokens(db, database.db);
+    const seeded = hasRows
+      ? false
+      : seedSameDeviceLegacyAuthRowsForFirstWrite({
+          db,
+          sqliteDb: database.db,
+          deviceId: params.deviceId,
+          env: params.env,
+        });
+    shouldRemoveLegacy = hasRows || seeded;
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .deleteFrom("device_auth_tokens")
+        .where("device_id", "=", params.deviceId)
+        .where("role", "=", role),
+    );
+  }, sqliteOptions(params.env));
+  if (shouldRemoveLegacy) {
+    removeLegacyDeviceAuthState(params.env);
+  }
 }

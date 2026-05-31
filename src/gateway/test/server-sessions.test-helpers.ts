@@ -1,30 +1,32 @@
-import fsSync from "node:fs";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AssistantMessage, UserMessage } from "openclaw/plugin-sdk/llm";
 import { afterAll, beforeAll, beforeEach, expect, vi } from "vitest";
+import type { AssistantMessage, UserMessage } from "../../agents/pi-ai-contract.js";
+import { readTranscriptStateForSession } from "../../agents/transcript/transcript-persistence.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { replaceSqliteSessionTranscriptEvents } from "../../config/sessions/transcript-store.sqlite.js";
 import type { InternalHookEvent } from "../../hooks/internal-hooks.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "../server.e2e-ws-harness.js";
+import { captureCompactionCheckpointSnapshotAsync } from "../session-compaction-checkpoints.js";
 import {
   connectOk,
   embeddedRunMock,
   installGatewayTestHooks,
   agentDiscoveryMock,
   rpcReq,
-  testState,
-  writeSessionStore,
+  seedGatewaySessionEntries,
 } from "../test-helpers.js";
 
 let sessionManagerModulePromise:
-  | Promise<typeof import("../../agents/sessions/index.js")>
+  | Promise<typeof import("../../agents/transcript/session-manager.js")>
   | undefined;
 let gatewayConfigModulePromise: Promise<typeof import("../../config/config.js")> | undefined;
 
 export async function getSessionManagerModule() {
-  sessionManagerModulePromise ??= import("../../agents/sessions/index.js");
+  sessionManagerModulePromise ??= import("../../agents/transcript/session-manager.js");
   return await sessionManagerModulePromise;
 }
 
@@ -243,19 +245,19 @@ vi.mock("../../agents/agent-bundle-mcp-tools.js", () => ({
 export function setupGatewaySessionsTestHarness() {
   installGatewayTestHooks({ scope: "suite" });
 
-  let harness: GatewayServerHarness | undefined;
-  let sharedSessionStoreDir: string | undefined;
-  let sessionStoreCaseSeq = 0;
+  let harness: GatewayServerHarness;
+  let sharedSessionFixtureDir: string;
+  let sessionFixtureCaseSeq = 0;
 
   beforeAll(async () => {
     harness = await startGatewayServerHarness();
-    sharedSessionStoreDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sessions-"));
+    sharedSessionFixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sessions-"));
   });
 
   afterAll(async () => {
     await harness?.close();
-    if (sharedSessionStoreDir) {
-      await fs.rm(sharedSessionStoreDir, { recursive: true, force: true });
+    if (sharedSessionFixtureDir) {
+      await fs.rm(sharedSessionFixtureDir, { recursive: true, force: true });
     }
   });
 
@@ -295,56 +297,48 @@ export function setupGatewaySessionsTestHarness() {
     bundleMcpRuntimeMocks.disposeSessionMcpRuntime.mockResolvedValue(undefined);
   });
 
-  const requireHarness = () => {
-    if (!harness) {
-      throw new Error("Gateway sessions test harness was not started");
-    }
-    return harness;
-  };
-
-  const requireSharedSessionStoreDir = () => {
-    if (!sharedSessionStoreDir) {
-      throw new Error("Gateway sessions shared session store dir was not created");
-    }
-    return sharedSessionStoreDir;
-  };
-
   const openClient = async (opts?: Parameters<typeof connectOk>[1]) =>
-    await requireHarness().openClient(opts);
+    await harness.openClient(opts);
 
-  async function createSessionStoreDir() {
-    const dir = path.join(requireSharedSessionStoreDir(), `case-${sessionStoreCaseSeq++}`);
+  async function createSessionFixtureDir() {
+    const dir = path.join(sharedSessionFixtureDir, `case-${sessionFixtureCaseSeq++}`);
     await fs.mkdir(dir, { recursive: true });
-    const storePath = path.join(dir, "sessions.json");
-    testState.sessionStorePath = storePath;
-    return { dir, storePath };
+    return { dir };
   }
 
   async function seedActiveMainSession() {
-    const { dir, storePath } = await createSessionStoreDir();
-    await writeSingleLineSession(dir, "sess-main", "hello");
-    await writeSessionStore({
+    await seedSqliteSessionTranscript("sess-main", "hello");
+    await seedGatewaySessionEntries({
       entries: {
         main: sessionStoreEntry("sess-main"),
       },
     });
-    return { dir, storePath };
   }
 
   return {
-    createSessionStoreDir,
-    getHarness: requireHarness,
+    createSessionFixtureDir,
+    getHarness: () => harness,
     openClient,
     seedActiveMainSession,
   };
 }
 
-export async function writeSingleLineSession(dir: string, sessionId: string, content: string) {
-  await fs.writeFile(
-    path.join(dir, `${sessionId}.jsonl`),
-    `${JSON.stringify({ role: "user", content })}\n`,
-    "utf-8",
-  );
+export async function seedSqliteSessionTranscript(
+  sessionId: string,
+  content: string,
+  opts: { agentId?: string } = {},
+): Promise<void> {
+  replaceSqliteSessionTranscriptEvents({
+    agentId: opts.agentId ?? "main",
+    sessionId,
+    events: [
+      {
+        type: "message",
+        id: `${sessionId}-message`,
+        message: { role: "user", content },
+      },
+    ],
+  });
 }
 
 export function sessionStoreEntry(sessionId: string, overrides: Partial<SessionEntry> = {}) {
@@ -355,12 +349,13 @@ export function sessionStoreEntry(sessionId: string, overrides: Partial<SessionE
   };
 }
 
-export async function createCheckpointFixture(
-  dir: string,
-  options: { legacyPreCompactionSnapshot?: boolean } = { legacyPreCompactionSnapshot: true },
-) {
-  const { SessionManager } = await getSessionManagerModule();
-  const session = SessionManager.create(dir, dir);
+export async function createCheckpointFixture(dir: string) {
+  const { openTranscriptSessionManagerForSession } = await getSessionManagerModule();
+  const session = openTranscriptSessionManagerForSession({
+    agentId: "main",
+    sessionId: randomUUID(),
+    cwd: dir,
+  });
   const userMessage: UserMessage = {
     role: "user",
     content: "before compaction",
@@ -395,20 +390,25 @@ export async function createCheckpointFixture(
   if (!preCompactionLeafId) {
     throw new Error("expected persisted session leaf before compaction");
   }
-  const sessionFile = session.getSessionFile();
-  if (!sessionFile) {
-    throw new Error("expected persisted session file");
+  const header = session.getHeader();
+  if (!header?.id) {
+    throw new Error("expected persisted session header");
   }
-  const legacyPreCompactionSnapshot = options.legacyPreCompactionSnapshot ?? true;
-  const preCompactionSessionFile = legacyPreCompactionSnapshot
-    ? path.join(dir, `${path.parse(sessionFile).name}.checkpoint-test.jsonl`)
-    : undefined;
-  if (preCompactionSessionFile) {
-    fsSync.copyFileSync(sessionFile, preCompactionSessionFile);
+  const checkpointSnapshot = await captureCompactionCheckpointSnapshotAsync({
+    agentId: "main",
+    sessionId: header.id,
+  });
+  if (!checkpointSnapshot?.sessionId) {
+    throw new Error("expected persisted checkpoint snapshot");
   }
-  const preCompactionSession = preCompactionSessionFile
-    ? SessionManager.open(preCompactionSessionFile, dir)
-    : undefined;
+  const preCompactionSession = await readTranscriptStateForSession({
+    agentId: checkpointSnapshot.agentId,
+    sessionId: checkpointSnapshot.sessionId,
+  });
+  const preCompactionSessionId = preCompactionSession.getHeader()?.id;
+  if (!preCompactionSessionId) {
+    throw new Error("expected pre-compaction checkpoint session id");
+  }
   session.appendCompaction("checkpoint summary", preCompactionLeafId, 123, { ok: true });
   const postCompactionLeafId = session.getLeafId();
   if (!postCompactionLeafId) {
@@ -417,9 +417,8 @@ export async function createCheckpointFixture(
   return {
     session,
     sessionId: session.getSessionId(),
-    sessionFile,
     preCompactionSession,
-    preCompactionSessionFile,
+    preCompactionSessionId,
     preCompactionLeafId,
     postCompactionLeafId,
   };

@@ -330,7 +330,6 @@ export function formatPrePromptPrecheckLog(params: {
   unwindowedMessageCount?: number;
   contextTokenBudget: number;
   reserveTokens: number;
-  sessionFile?: string;
 }): string {
   const { result } = params;
   return (
@@ -347,8 +346,7 @@ export function formatPrePromptPrecheckLog(params: {
     `effectiveReserveTokens=${result.effectiveReserveTokens} ` +
     `contextTokenBudget=${params.contextTokenBudget} ` +
     `messages=${params.messageCount} ` +
-    `unwindowedMessages=${params.unwindowedMessageCount ?? params.messageCount} ` +
-    `sessionFile=${params.sessionFile}`
+    `unwindowedMessages=${params.unwindowedMessageCount ?? params.messageCount}`
   );
 }
 

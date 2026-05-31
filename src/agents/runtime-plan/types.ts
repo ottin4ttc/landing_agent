@@ -1,5 +1,5 @@
 import type { TSchema } from "typebox";
-import type { AgentTool } from "../runtime/index.js";
+import type { AgentTool } from "../agent-core-contract.js";
 
 export type AgentRuntimeTransport = "sse" | "websocket" | "auto";
 

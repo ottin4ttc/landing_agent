@@ -1,4 +1,3 @@
-import path from "node:path";
 import { MessageFlags } from "discord-api-types/v10";
 import {
   formatReasoningMessage,
@@ -42,11 +41,8 @@ import {
 import type { ReplyDispatchKind, ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { danger, logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
 import {
-  loadSessionStore,
+  getSessionEntry,
   readLatestAssistantTextFromSessionTranscript,
-  resolveAndPersistSessionFile,
-  resolveSessionStoreEntry,
-  resolveStorePath,
 } from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveDiscordMaxLinesPerMessage } from "../accounts.js";
 import { createDiscordRestClient } from "../client.js";
@@ -508,22 +504,14 @@ async function processDiscordMessageInner(
       return undefined;
     }
     try {
-      const storePath = resolveStorePath(cfg.session?.store, { agentId: route.agentId });
-      const store = loadSessionStore(storePath, { clone: false });
-      const sessionEntry = resolveSessionStoreEntry({ store, sessionKey }).existing;
+      const sessionEntry = getSessionEntry({ agentId: route.agentId, sessionKey });
       if (!sessionEntry?.sessionId) {
         return undefined;
       }
-      const { sessionFile } = await resolveAndPersistSessionFile({
-        sessionId: sessionEntry.sessionId,
-        sessionKey,
-        sessionStore: store,
-        storePath,
-        sessionEntry,
+      const latest = await readLatestAssistantTextFromSessionTranscript({
         agentId: route.agentId,
-        sessionsDir: path.dirname(storePath),
+        sessionId: sessionEntry.sessionId,
       });
-      const latest = await readLatestAssistantTextFromSessionTranscript(sessionFile);
       if (!latest?.timestamp || latest.timestamp < dispatchStartedAt) {
         return undefined;
       }
@@ -915,7 +903,6 @@ async function processDiscordMessageInner(
       accountId: route.accountId,
       agentId: route.agentId,
       routeSessionKey: persistedSessionKey,
-      storePath: turn.storePath,
       ctxPayload,
       recordInboundSession,
       dispatchReplyWithBufferedBlockDispatcher,

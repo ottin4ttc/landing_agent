@@ -109,7 +109,7 @@ export type DefinedToolPluginEntry = ReturnType<typeof definePluginEntry> & {
   [toolPluginMetadataSymbol]: ToolPluginMetadata;
 };
 
-function wrapToolPluginResult(result: unknown): AgentToolResult<unknown> {
+function wrapToolPluginResult(result: unknown): AgentToolResult {
   if (typeof result === "string") {
     return textResult(result, result);
   }

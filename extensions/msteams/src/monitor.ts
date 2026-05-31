@@ -40,7 +40,7 @@ import {
   type MSTeamsApp,
   type MSTeamsCardActionResponse,
 } from "./sdk.js";
-import { createMSTeamsSsoTokenStoreFs } from "./sso-token-store.js";
+import { createMSTeamsSsoTokenStore } from "./sso-token-store.js";
 import type { MSTeamsSsoDeps } from "./sso.js";
 import { resolveMSTeamsCredentials } from "./token.js";
 import { applyMSTeamsWebhookTimeouts } from "./webhook-timeouts.js";
@@ -337,7 +337,7 @@ export async function monitorMSTeamsProvider(
   if (msteamsCfg.sso?.enabled && msteamsCfg.sso.connectionName) {
     ssoDeps = {
       tokenProvider,
-      tokenStore: createMSTeamsSsoTokenStoreFs(),
+      tokenStore: createMSTeamsSsoTokenStore(),
       connectionName: msteamsCfg.sso.connectionName,
     };
     log.debug?.("msteams sso enabled", {

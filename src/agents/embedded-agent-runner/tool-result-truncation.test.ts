@@ -1,12 +1,17 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
-import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
-import type { AssistantMessage, ToolResultMessage, UserMessage } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import type { AssistantMessage, ToolResultMessage, UserMessage } from "../pi-ai-contract.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
+import { openTranscriptSessionManagerForSession } from "../transcript/session-manager.js";
+import type { SessionManager } from "../transcript/session-transcript-contract.js";
+import { readTranscriptStateForSession } from "../transcript/transcript-persistence.js";
 
 let truncateToolResultText: typeof import("./tool-result-truncation.js").truncateToolResultText;
 let truncateToolResultMessage: typeof import("./tool-result-truncation.js").truncateToolResultMessage;
@@ -20,6 +25,7 @@ let isOversizedToolResult: typeof import("./tool-result-truncation.js").isOversi
 let sessionLikelyHasOversizedToolResults: typeof import("./tool-result-truncation.js").sessionLikelyHasOversizedToolResults;
 let estimateToolResultReductionPotential: typeof import("./tool-result-truncation.js").estimateToolResultReductionPotential;
 let DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS: typeof import("./tool-result-truncation.js").DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS;
+let XL_CONTEXT_MAX_LIVE_TOOL_RESULT_CHARS: typeof import("./tool-result-truncation.js").XL_CONTEXT_MAX_LIVE_TOOL_RESULT_CHARS;
 let resolveLiveToolResultMaxChars: typeof import("./tool-result-truncation.js").resolveLiveToolResultMaxChars;
 let tmpDir: string | undefined;
 
@@ -37,6 +43,7 @@ async function loadFreshToolResultTruncationModuleForTest() {
     sessionLikelyHasOversizedToolResults,
     estimateToolResultReductionPotential,
     DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS,
+    XL_CONTEXT_MAX_LIVE_TOOL_RESULT_CHARS,
     resolveLiveToolResultMaxChars,
   } = await import("./tool-result-truncation.js"));
 }
@@ -50,6 +57,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  closeOpenClawAgentDatabasesForTest();
+  closeOpenClawStateDatabaseForTest();
+  vi.unstubAllEnvs();
   if (tmpDir) {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     tmpDir = undefined;
@@ -94,7 +104,30 @@ function getFirstToolResultText(message: AgentMessage | ToolResultMessage): stri
 
 async function createTmpDir(): Promise<string> {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "tool-result-truncation-test-"));
+  vi.stubEnv("OPENCLAW_STATE_DIR", tmpDir);
   return tmpDir;
+}
+
+type TranscriptScope = { agentId: string; sessionId: string };
+
+function transcriptScopeForSessionManager(sessionManager: SessionManager): TranscriptScope {
+  const sessionId = sessionManager.getHeader()?.id;
+  if (!sessionId) {
+    throw new Error("missing test session id");
+  }
+  return { agentId: "main", sessionId };
+}
+
+function createScopedSessionManager(cwd: string) {
+  return openTranscriptSessionManagerForSession({
+    agentId: "main",
+    sessionId: randomUUID(),
+    cwd,
+  });
+}
+
+async function loadBranch(scope: TranscriptScope) {
+  return (await readTranscriptStateForSession(scope)).getBranch();
 }
 
 describe("truncateToolResultText", () => {
@@ -198,13 +231,13 @@ describe("calculateMaxToolResultChars", () => {
     expect(large).toBeGreaterThan(small);
   });
 
-  it("exports the low-context live cap constant", () => {
+  it("exports the live tool-result cap", () => {
     expect(DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS).toBe(16_000);
   });
 
-  it("auto-scales above the low-context cap for very large windows", () => {
+  it("caps at the XL live tool-result cap for very large windows", () => {
     const result = calculateMaxToolResultChars(2_000_000); // 2M token window
-    expect(result).toBeGreaterThan(DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS);
+    expect(result).toBeLessThanOrEqual(XL_CONTEXT_MAX_LIVE_TOOL_RESULT_CHARS);
   });
 
   it("uses a larger auto cap for 128K contexts", () => {
@@ -456,18 +489,18 @@ describe("truncateOversizedToolResultsInMessages", () => {
 });
 
 describe("truncateOversizedToolResultsInSession", () => {
-  it("readably truncates aggregate medium tool results in a session file", async () => {
+  it("readably truncates aggregate medium tool results in a SQLite transcript scope", async () => {
     const dir = await createTmpDir();
-    const sm = SessionManager.create(dir, dir);
+    const sm = createScopedSessionManager(dir);
     sm.appendMessage(makeUserMessage("hello"));
     sm.appendMessage(makeAssistantMessage("calling tools"));
     const medium = "alpha beta gamma delta epsilon ".repeat(600);
     sm.appendMessage(makeToolResult(medium, "call_1"));
     sm.appendMessage(makeToolResult(medium, "call_2"));
     sm.appendMessage(makeToolResult(medium, "call_3"));
-    const sessionFile = sm.getSessionFile()!;
+    const scope = transcriptScopeForSessionManager(sm);
 
-    const beforeBranch = SessionManager.open(sessionFile).getBranch();
+    const beforeBranch = await loadBranch(scope);
     const beforeLengths = beforeBranch
       .filter((entry) => entry.type === "message")
       .map((entry) =>
@@ -477,24 +510,23 @@ describe("truncateOversizedToolResultsInSession", () => {
       )
       .filter((length) => length > 0);
 
-    const openSpy = vi.spyOn(SessionManager, "open").mockImplementation(() => {
-      throw new Error("SessionManager.open should not be used for persisted truncation");
-    });
     const listener = vi.fn();
     const cleanup = onSessionTranscriptUpdate(listener);
     const result = await truncateOversizedToolResultsInSession({
-      sessionFile,
+      ...scope,
       sessionKey: "agent:main:test",
       contextWindowTokens: 100,
     });
     cleanup();
-    openSpy.mockRestore();
 
     expect(result.truncated).toBe(true);
     expect(result.truncatedCount).toBeGreaterThan(0);
-    expect(listener).toHaveBeenCalledWith({ sessionFile, sessionKey: "agent:main:test" });
+    expect(listener).toHaveBeenCalledWith({
+      ...scope,
+      sessionKey: "agent:main:test",
+    });
 
-    const afterBranch = SessionManager.open(sessionFile).getBranch();
+    const afterBranch = await loadBranch(scope);
     const afterToolResults = afterBranch.filter(
       (entry) => entry.type === "message" && entry.message.role === "toolResult",
     );
@@ -523,16 +555,16 @@ describe("truncateOversizedToolResultsInSession", () => {
 
   it("prefers truncating older aggregate tool-result entries before newer results", async () => {
     const dir = await createTmpDir();
-    const sm = SessionManager.create(dir, dir);
+    const sm = createScopedSessionManager(dir);
     sm.appendMessage(makeUserMessage("hello"));
     sm.appendMessage(makeAssistantMessage("calling tools"));
     const olderLarge = "older-large ".repeat(1_000);
     const newerEnough = "newer-enough ".repeat(500);
     sm.appendMessage(makeToolResult(olderLarge, "call_1"));
     sm.appendMessage(makeToolResult(newerEnough, "call_2"));
-    const sessionFile = sm.getSessionFile()!;
+    const scope = transcriptScopeForSessionManager(sm);
 
-    const beforeBranch = SessionManager.open(sessionFile).getBranch();
+    const beforeBranch = await loadBranch(scope);
     const beforeToolResults = beforeBranch.filter(
       (entry) => entry.type === "message" && entry.message.role === "toolResult",
     );
@@ -541,7 +573,7 @@ describe("truncateOversizedToolResultsInSession", () => {
     );
 
     const result = await truncateOversizedToolResultsInSession({
-      sessionFile,
+      ...scope,
       contextWindowTokens: 128_000,
       maxCharsOverride: DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS,
     });
@@ -549,7 +581,7 @@ describe("truncateOversizedToolResultsInSession", () => {
     expect(result.truncated).toBe(true);
     expect(result.truncatedCount).toBe(1);
 
-    const afterBranch = SessionManager.open(sessionFile).getBranch();
+    const afterBranch = await loadBranch(scope);
     const afterToolResults = afterBranch.filter(
       (entry) => entry.type === "message" && entry.message.role === "toolResult",
     );
@@ -564,19 +596,19 @@ describe("truncateOversizedToolResultsInSession", () => {
 
   it("allows persisted-session recovery truncation to shrink below the old 2k floor", async () => {
     const dir = await createTmpDir();
-    const sm = SessionManager.create(dir, dir);
+    const sm = createScopedSessionManager(dir);
     sm.appendMessage(makeUserMessage("hello"));
     sm.appendMessage(makeAssistantMessage("calling tools"));
     sm.appendMessage(makeToolResult("x".repeat(500_000), "call_1"));
-    const sessionFile = sm.getSessionFile()!;
+    const scope = transcriptScopeForSessionManager(sm);
 
     const result = await truncateOversizedToolResultsInSession({
-      sessionFile,
+      ...scope,
       contextWindowTokens: 100,
     });
 
     expect(result.truncated).toBe(true);
-    const afterBranch = SessionManager.open(sessionFile).getBranch();
+    const afterBranch = await loadBranch(scope);
     const toolResult = afterBranch.find(
       (entry) => entry.type === "message" && entry.message.role === "toolResult",
     );
@@ -590,24 +622,24 @@ describe("truncateOversizedToolResultsInSession", () => {
   });
   it("combines oversized and aggregate recovery truncation in the same session rewrite", async () => {
     const dir = await createTmpDir();
-    const sm = SessionManager.create(dir, dir);
+    const sm = createScopedSessionManager(dir);
     sm.appendMessage(makeUserMessage("hello"));
     sm.appendMessage(makeAssistantMessage("calling tools"));
     sm.appendMessage(makeToolResult("x".repeat(500_000), "call_1"));
     const medium = "alpha beta gamma delta epsilon ".repeat(800);
     sm.appendMessage(makeToolResult(medium, "call_2"));
     sm.appendMessage(makeToolResult(medium, "call_3"));
-    const sessionFile = sm.getSessionFile()!;
+    const scope = transcriptScopeForSessionManager(sm);
 
     const result = await truncateOversizedToolResultsInSession({
-      sessionFile,
+      ...scope,
       contextWindowTokens: 100,
     });
 
     expect(result.truncated).toBe(true);
     expect(result.truncatedCount).toBe(3);
 
-    const afterBranch = SessionManager.open(sessionFile).getBranch();
+    const afterBranch = await loadBranch(scope);
     const toolResults = afterBranch.filter(
       (entry) => entry.type === "message" && entry.message.role === "toolResult",
     );
@@ -622,23 +654,23 @@ describe("truncateOversizedToolResultsInSession", () => {
 
   it("lets aggregate recovery honor a tiny explicit cap during persisted rewrite", async () => {
     const dir = await createTmpDir();
-    const sm = SessionManager.create(dir, dir);
+    const sm = createScopedSessionManager(dir);
     sm.appendMessage(makeUserMessage("hello"));
     sm.appendMessage(makeAssistantMessage("calling tools"));
     const medium = "alpha beta gamma delta epsilon ".repeat(800);
     sm.appendMessage(makeToolResult(medium, "call_1"));
     sm.appendMessage(makeToolResult(medium, "call_2"));
     sm.appendMessage(makeToolResult(medium, "call_3"));
-    const sessionFile = sm.getSessionFile()!;
+    const scope = transcriptScopeForSessionManager(sm);
 
     const result = await truncateOversizedToolResultsInSession({
-      sessionFile,
+      ...scope,
       contextWindowTokens: 128_000,
       maxCharsOverride: 120,
     });
 
     expect(result.truncated).toBe(true);
-    const afterBranch = SessionManager.open(sessionFile).getBranch();
+    const afterBranch = await loadBranch(scope);
     const toolResults = afterBranch.filter(
       (entry) => entry.type === "message" && entry.message.role === "toolResult",
     );

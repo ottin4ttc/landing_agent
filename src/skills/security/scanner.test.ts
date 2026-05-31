@@ -267,7 +267,7 @@ const options: ExecOptions = { timeout: 5000 };
 
   it("does not flag RegExp.exec when child_process appears elsewhere", () => {
     const source = `
-import type { ExecOptions } from "child_process";
+
 const options: ExecOptions = {};
 const match = /^keychain:(.+)$/.exec(value);
 `;

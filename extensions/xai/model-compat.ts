@@ -17,7 +17,7 @@ const XAI_UNSUPPORTED_SCHEMA_KEYWORDS = new Set([
   "maxContains",
 ]);
 
-function resolveXaiModelCompatPatch(): ModelCompatConfig {
+export function resolveXaiModelCompatPatch(): ModelCompatConfig {
   return {
     toolSchemaProfile: XAI_TOOL_SCHEMA_PROFILE,
     unsupportedToolSchemaKeywords: Array.from(XAI_UNSUPPORTED_SCHEMA_KEYWORDS),

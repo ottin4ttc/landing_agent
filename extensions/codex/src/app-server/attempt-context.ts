@@ -14,7 +14,10 @@ import { resolveAgentWorkspaceDir } from "openclaw/plugin-sdk/agent-runtime";
 import type { CodexDynamicToolSpec, JsonValue } from "./protocol.js";
 import { isJsonObject } from "./protocol.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
-import { readCodexMirroredSessionHistoryMessages } from "./session-history.js";
+import {
+  readCodexMirroredSessionHistoryMessages,
+  type CodexMirroredSessionHistoryScope,
+} from "./session-history.js";
 import {
   areCodexDynamicToolFingerprintsCompatible,
   buildContextEngineBinding,
@@ -70,12 +73,12 @@ type CodexWorkspaceBootstrapContext = CodexBootstrapContext & {
 };
 
 export async function readMirroredSessionHistoryMessages(
-  sessionFile: string,
+  transcriptScope: CodexMirroredSessionHistoryScope,
 ): Promise<AgentMessage[] | undefined> {
-  const messages = await readCodexMirroredSessionHistoryMessages(sessionFile);
+  const messages = await readCodexMirroredSessionHistoryMessages(transcriptScope);
   if (!messages) {
     embeddedAgentLog.warn("failed to read mirrored session history for codex harness hooks", {
-      sessionFile,
+      transcriptScope,
     });
   }
   return messages;

@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  clearRuntimeAuthProfileStoreSnapshots,
+  loadAuthProfileStoreWithoutExternalProfiles,
+} from "openclaw/plugin-sdk/agent-runtime";
 import type { MigrationProviderContext } from "openclaw/plugin-sdk/plugin-entry";
+import { closeOpenClawStateDatabaseForTest } from "openclaw/plugin-sdk/sqlite-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultCodexAppInventoryCache } from "../app-server/app-inventory-cache.js";
 import { CODEX_PLUGINS_MARKETPLACE_NAME } from "../app-server/config.js";
@@ -34,6 +39,15 @@ async function makeTempRoot(): Promise<string> {
 async function writeFile(filePath: string, content = ""): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content, "utf8");
+}
+
+function fixtureAgentDir(fixture: { stateDir: string }): string {
+  return path.join(fixture.stateDir, "agents", "main", "agent");
+}
+
+function readFixtureAuthProfiles(fixture: { stateDir: string }) {
+  clearRuntimeAuthProfileStoreSnapshots();
+  return loadAuthProfileStoreWithoutExternalProfiles(fixtureAgentDir(fixture)).profiles;
 }
 
 function makeContext(params: {
@@ -124,6 +138,7 @@ async function createCodexFixture(): Promise<{
   const stateDir = path.join(root, "state");
   const workspaceDir = path.join(root, "workspace");
   vi.stubEnv("HOME", homeDir);
+  vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   await writeFile(path.join(codexHome, "skills", "tweet-helper", "SKILL.md"), "# Tweet helper\n");
   await writeFile(path.join(codexHome, "skills", ".system", "system-skill", "SKILL.md"));
   await writeFile(path.join(homeDir, ".agents", "skills", "personal-style", "SKILL.md"));
@@ -165,9 +180,11 @@ function sourceAppCacheKey(fixture: { codexHome: string }): string {
 
 afterEach(async () => {
   vi.useRealTimers();
-  vi.unstubAllEnvs();
   appServerRequest.mockReset();
   defaultCodexAppInventoryCache.clear();
+  clearRuntimeAuthProfileStoreSnapshots();
+  closeOpenClawStateDatabaseForTest();
+  vi.unstubAllEnvs();
   for (const root of tempRoots) {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -372,18 +389,8 @@ describe("buildCodexMigrationProvider", () => {
     const result = await provider.apply(ctx, plan);
 
     expectRecordFields(findItem(result.items, "auth:openai"), { status: "migrated" });
-    const authStore = JSON.parse(
-      await fs.readFile(
-        path.join(fixture.stateDir, "agents", "main", "agent", "auth-profiles.json"),
-        "utf8",
-      ),
-    ) as {
-      profiles?: Record<
-        string,
-        { access?: string; provider?: string; refresh?: string; type?: string }
-      >;
-    };
-    expect(authStore.profiles?.["openai:account-acct_test"]).toEqual(
+    const authProfiles = readFixtureAuthProfiles(fixture);
+    expect(authProfiles["openai:account-acct_test"]).toEqual(
       expect.objectContaining({
         type: "oauth",
         provider: "openai",
@@ -506,9 +513,7 @@ describe("buildCodexMigrationProvider", () => {
         reason: "auth profile exists",
       }),
     );
-    await expect(
-      fs.access(path.join(fixture.stateDir, "agents", "main", "agent", "auth-profiles.json")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(readFixtureAuthProfiles(fixture)["openai:codex-import"]).toBeUndefined();
   });
 
   it("skips Codex OAuth import when the source account changes after planning", async () => {
@@ -585,9 +590,7 @@ describe("buildCodexMigrationProvider", () => {
         reason: "auth credential no longer present",
       }),
     );
-    await expect(
-      fs.access(path.join(fixture.stateDir, "agents", "main", "agent", "auth-profiles.json")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(readFixtureAuthProfiles(fixture)["openai-codex:account-acct_planned"]).toBeUndefined();
     expect(configState.auth).toBeUndefined();
   });
 
@@ -616,7 +619,7 @@ describe("buildCodexMigrationProvider", () => {
       }),
     );
     await writeFile(
-      path.join(fixture.stateDir, "agents", "main", "agent", "auth-profiles.json"),
+      path.join(fixtureAgentDir(fixture), "auth-profiles.json"),
       JSON.stringify({
         profiles: {
           "openai:account-acct_old": {
@@ -661,22 +664,15 @@ describe("buildCodexMigrationProvider", () => {
     const result = await provider.apply(ctx, plan);
 
     expectRecordFields(findItem(result.items, "auth:openai"), { status: "migrated" });
-    const authStore = JSON.parse(
-      await fs.readFile(
-        path.join(fixture.stateDir, "agents", "main", "agent", "auth-profiles.json"),
-        "utf8",
-      ),
-    ) as {
-      profiles?: Record<string, { access?: string; accountId?: string; email?: string }>;
-    };
-    expect(authStore.profiles?.["openai:account-acct_old"]).toEqual(
+    const authProfiles = readFixtureAuthProfiles(fixture);
+    expect(authProfiles["openai:account-acct_old"]).toEqual(
       expect.objectContaining({
         access: "old-access-token",
         accountId: "acct_old",
         email: sharedEmail,
       }),
     );
-    expect(authStore.profiles?.["openai:account-acct_new"]).toEqual(
+    expect(authProfiles["openai:account-acct_new"]).toEqual(
       expect.objectContaining({
         access: accessToken,
         accountId: "acct_new",
@@ -734,15 +730,8 @@ describe("buildCodexMigrationProvider", () => {
         configUpdated: false,
       }),
     );
-    const authStore = JSON.parse(
-      await fs.readFile(
-        path.join(fixture.stateDir, "agents", "main", "agent", "auth-profiles.json"),
-        "utf8",
-      ),
-    ) as {
-      profiles?: Record<string, { access?: string; provider?: string; refresh?: string }>;
-    };
-    expect(authStore.profiles?.["openai:account-acct_test"]).toEqual(
+    const authProfiles = readFixtureAuthProfiles(fixture);
+    expect(authProfiles["openai:account-acct_test"]).toEqual(
       expect.objectContaining({
         type: "oauth",
         provider: "openai",
@@ -1462,7 +1451,7 @@ describe("buildCodexMigrationProvider", () => {
         if (method === "plugin/list" && isTarget) {
           targetPluginListCalls += 1;
           if (targetPluginListCalls === 1) {
-            return pluginList([], "openai-bundled");
+            return { marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: [] };
           }
           return pluginList([pluginSummary("google-calendar", { installed: true, enabled: true })]);
         }
@@ -2225,15 +2214,12 @@ function createConfigRuntime(
   } as unknown as MigrationProviderContext["runtime"];
 }
 
-function pluginList(
-  plugins: v2.PluginSummary[],
-  marketplaceName = CODEX_PLUGINS_MARKETPLACE_NAME,
-): v2.PluginListResponse {
+function pluginList(plugins: v2.PluginSummary[]): v2.PluginListResponse {
   return {
     marketplaces: [
       {
-        name: marketplaceName,
-        path: `/marketplaces/${marketplaceName}`,
+        name: CODEX_PLUGINS_MARKETPLACE_NAME,
+        path: "/marketplaces/openai-curated",
         interface: null,
         plugins,
       },

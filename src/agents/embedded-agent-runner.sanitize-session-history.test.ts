@@ -1,10 +1,5 @@
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
-import type {
-  AssistantMessage,
-  ThinkingContent,
-  UserMessage,
-  Usage,
-} from "openclaw/plugin-sdk/llm";
+import type { ThinkingContent } from "openclaw/plugin-sdk/llm";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   expectOpenAIResponsesStrictSanitizeCall,
@@ -22,6 +17,7 @@ import {
 } from "./embedded-agent-runner.sanitize-session-history.test-harness.js";
 import { validateReplayTurns } from "./embedded-agent-runner/replay-history.js";
 import { OMITTED_ASSISTANT_REASONING_TEXT } from "./embedded-agent-runner/thinking.js";
+import type { AssistantMessage, UserMessage, Usage } from "./pi-ai-contract.js";
 import { castAgentMessage, castAgentMessages } from "./test-helpers/agent-message-fixtures.js";
 import { extractToolCallsFromAssistant } from "./tool-call-id.js";
 import type { TranscriptPolicy } from "./transcript-policy.js";

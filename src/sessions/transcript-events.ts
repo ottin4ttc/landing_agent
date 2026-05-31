@@ -2,9 +2,10 @@ import { asPositiveSafeInteger } from "@openclaw/normalization-core/number-coerc
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 
 export type SessionTranscriptUpdate = {
-  sessionFile: string;
-  sessionKey?: string;
   agentId?: string;
+  sessionId?: string;
+  sessionKey?: string;
+  transcriptPath?: string;
   message?: unknown;
   messageId?: string;
   messageSeq?: number;
@@ -21,30 +22,29 @@ export function onSessionTranscriptUpdate(listener: SessionTranscriptListener): 
   };
 }
 
-export function emitSessionTranscriptUpdate(update: string | SessionTranscriptUpdate): void {
-  const normalized =
-    typeof update === "string"
-      ? { sessionFile: update }
-      : {
-          sessionFile: update.sessionFile,
-          sessionKey: update.sessionKey,
-          agentId: update.agentId,
-          message: update.message,
-          messageId: update.messageId,
-          messageSeq: update.messageSeq,
-        };
-  const trimmed = normalizeOptionalString(normalized.sessionFile);
-  if (!trimmed) {
+export function emitSessionTranscriptUpdate(update: SessionTranscriptUpdate): void {
+  const normalized = {
+    agentId: update.agentId,
+    sessionId: update.sessionId,
+    sessionKey: update.sessionKey,
+    transcriptPath: update.transcriptPath,
+    message: update.message,
+    messageId: update.messageId,
+    messageSeq: update.messageSeq,
+  };
+  const agentId = normalizeOptionalString(normalized.agentId);
+  const sessionId = normalizeOptionalString(normalized.sessionId);
+  const sessionKey = normalizeOptionalString(normalized.sessionKey);
+  if (!sessionId && !sessionKey) {
     return;
   }
   const messageSeq = asPositiveSafeInteger(normalized.messageSeq);
   const nextUpdate: SessionTranscriptUpdate = {
-    sessionFile: trimmed,
-    ...(normalizeOptionalString(normalized.sessionKey)
-      ? { sessionKey: normalizeOptionalString(normalized.sessionKey) }
-      : {}),
-    ...(normalizeOptionalString(normalized.agentId)
-      ? { agentId: normalizeOptionalString(normalized.agentId) }
+    ...(agentId ? { agentId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(sessionKey ? { sessionKey } : {}),
+    ...(normalizeOptionalString(normalized.transcriptPath)
+      ? { transcriptPath: normalizeOptionalString(normalized.transcriptPath) }
       : {}),
     ...(normalized.message !== undefined ? { message: normalized.message } : {}),
     ...(normalizeOptionalString(normalized.messageId)

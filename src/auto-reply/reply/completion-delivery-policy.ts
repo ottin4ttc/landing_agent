@@ -1,6 +1,5 @@
 import { normalizeChatType, type ChatType } from "../../channels/chat-type.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { deriveSessionChatTypeFromKey } from "../../sessions/session-chat-type-shared.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { resolveSourceReplyDeliveryMode } from "./source-reply-delivery-mode.js";
 
@@ -8,7 +7,6 @@ export type CompletionChatType = ChatType | "unknown";
 
 export type CompletionDeliverySessionEntry = {
   chatType?: string | null;
-  origin?: { chatType?: string | null } | null;
 };
 
 export function resolveCompletionChatType(params: {
@@ -18,18 +16,24 @@ export function resolveCompletionChatType(params: {
   directOrigin?: DeliveryContext;
   requesterSessionOrigin?: DeliveryContext;
 }): CompletionChatType {
-  const explicit = normalizeChatType(
-    params.requesterEntry?.chatType ?? params.requesterEntry?.origin?.chatType ?? undefined,
-  );
+  const explicit = normalizeChatType(params.requesterEntry?.chatType ?? undefined);
   if (explicit) {
     return explicit;
   }
 
-  for (const key of [params.targetRequesterSessionKey, params.requesterSessionKey]) {
-    const derived = deriveSessionChatTypeFromKey(key);
-    if (derived !== "unknown") {
-      return derived;
-    }
+  const directOriginChatType = normalizeChatType(params.directOrigin?.chatType);
+  if (directOriginChatType) {
+    return directOriginChatType;
+  }
+  const requesterOriginChatType = normalizeChatType(params.requesterSessionOrigin?.chatType);
+  if (requesterOriginChatType) {
+    return requesterOriginChatType;
+  }
+  const sessionKeyChatType = inferCompletionChatTypeFromSessionKey(
+    params.targetRequesterSessionKey ?? params.requesterSessionKey,
+  );
+  if (sessionKeyChatType !== "unknown") {
+    return sessionKeyChatType;
   }
 
   return inferCompletionChatTypeFromTarget(
@@ -57,10 +61,14 @@ export function completionRequiresMessageToolDelivery(params: {
   );
 }
 
-export function shouldRouteCompletionThroughRequesterSession(
-  sessionKey: string | undefined | null,
-): boolean {
-  const chatType = deriveSessionChatTypeFromKey(sessionKey);
+export function shouldRouteCompletionThroughRequesterSession(params: {
+  requesterSessionKey?: string | null;
+  targetRequesterSessionKey?: string | null;
+  requesterEntry?: CompletionDeliverySessionEntry;
+  directOrigin?: DeliveryContext;
+  requesterSessionOrigin?: DeliveryContext;
+}): boolean {
+  const chatType = resolveCompletionChatType(params);
   return chatType === "group" || chatType === "channel";
 }
 
@@ -72,6 +80,9 @@ function inferCompletionChatTypeFromTarget(to: string | undefined): CompletionCh
   if (normalized.startsWith("group:")) {
     return "group";
   }
+  if (normalized.endsWith("@g.us")) {
+    return "group";
+  }
   if (normalized.startsWith("channel:") || normalized.startsWith("thread:")) {
     return "channel";
   }
@@ -79,6 +90,29 @@ function inferCompletionChatTypeFromTarget(to: string | undefined): CompletionCh
     normalized.startsWith("dm:") ||
     normalized.startsWith("direct:") ||
     normalized.startsWith("user:")
+  ) {
+    return "direct";
+  }
+  return "unknown";
+}
+
+function inferCompletionChatTypeFromSessionKey(
+  sessionKey: string | undefined | null,
+): CompletionChatType {
+  const normalized = sessionKey?.trim().toLowerCase();
+  if (!normalized) {
+    return "unknown";
+  }
+  if (normalized.includes(":group:")) {
+    return "group";
+  }
+  if (normalized.includes(":channel:") || normalized.includes(":thread:")) {
+    return "channel";
+  }
+  if (
+    normalized.includes(":dm:") ||
+    normalized.includes(":direct:") ||
+    normalized.includes(":user:")
   ) {
     return "direct";
   }

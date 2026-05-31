@@ -48,26 +48,26 @@ installModelsConfigTestHooks();
 let clearConfigCache: typeof import("../config/io.js").clearConfigCache;
 let clearRuntimeConfigSnapshot: typeof import("../config/io.js").clearRuntimeConfigSnapshot;
 let setRuntimeConfigSnapshot: typeof import("../config/io.js").setRuntimeConfigSnapshot;
-let ensureOpenClawModelsJson: typeof import("./models-config.js").ensureOpenClawModelsJson;
-let resetModelsJsonReadyCacheForTest: typeof import("./models-config.js").resetModelsJsonReadyCacheForTest;
-let planOpenClawModelsJsonWithDeps: typeof import("./models-config.plan.js").planOpenClawModelsJsonWithDeps;
-let readGeneratedModelsJson: typeof import("./models-config.test-utils.js").readGeneratedModelsJson;
+let ensureOpenClawModelCatalog: typeof import("./models-config.js").ensureOpenClawModelCatalog;
+let resetModelCatalogReadyCacheForTest: typeof import("./models-config.js").resetModelCatalogReadyCacheForTest;
+let planOpenClawModelCatalogWithDeps: typeof import("./models-config.plan.js").planOpenClawModelCatalogWithDeps;
+let readStoredModelCatalog: typeof import("./models-config.test-utils.js").readStoredModelCatalog;
 const fixtureSuite = createFixtureSuite("openclaw-models-runtime-source-");
 
 beforeAll(async () => {
   await fixtureSuite.setup();
   ({ clearConfigCache, clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } =
     await import("../config/io.js"));
-  ({ ensureOpenClawModelsJson, resetModelsJsonReadyCacheForTest } =
+  ({ ensureOpenClawModelCatalog, resetModelCatalogReadyCacheForTest } =
     await import("./models-config.js"));
-  ({ planOpenClawModelsJsonWithDeps } = await import("./models-config.plan.js"));
-  ({ readGeneratedModelsJson } = await import("./models-config.test-utils.js"));
+  ({ planOpenClawModelCatalogWithDeps } = await import("./models-config.plan.js"));
+  ({ readStoredModelCatalog } = await import("./models-config.test-utils.js"));
 });
 
 afterEach(() => {
   clearRuntimeConfigSnapshot();
   clearConfigCache();
-  resetModelsJsonReadyCacheForTest();
+  resetModelCatalogReadyCacheForTest();
 });
 
 afterAll(async () => {
@@ -214,7 +214,7 @@ async function expectGeneratedProviderApiKey(
   providerId: string,
   expected: string,
 ) {
-  const parsed = await readGeneratedModelsJson<{
+  const parsed = await readStoredModelCatalog<{
     providers: Record<string, { apiKey?: string }>;
   }>(agentDir);
   expect(parsed.providers[providerId]?.apiKey).toBe(expected);
@@ -224,7 +224,7 @@ async function planGeneratedProviders(params: {
   config: OpenClawConfig;
   sourceConfigForSecrets: OpenClawConfig;
 }) {
-  const plan = await planOpenClawModelsJsonWithDeps(
+  const plan = await planOpenClawModelCatalogWithDeps(
     {
       cfg: params.config,
       sourceConfigForSecrets: params.sourceConfigForSecrets,
@@ -239,7 +239,7 @@ async function planGeneratedProviders(params: {
   );
   expect(plan.action).toBe("write");
   if (plan.action !== "write") {
-    throw new Error(`expected models.json write plan, got ${plan.action}`);
+    throw new Error(`expected model catalog write plan, got ${plan.action}`);
   }
   return JSON.parse(plan.contents).providers as Record<
     string,
@@ -309,7 +309,7 @@ describe("models-config runtime source snapshot", () => {
 
       try {
         setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
-        await ensureOpenClawModelsJson(clonedRuntimeConfig, agentDir);
+        await ensureOpenClawModelCatalog(clonedRuntimeConfig, agentDir);
         await expectGeneratedProviderApiKey(agentDir, "openai", "OPENAI_API_KEY"); // pragma: allowlist secret
       } finally {
         clearRuntimeConfigSnapshot();
@@ -327,7 +327,7 @@ describe("models-config runtime source snapshot", () => {
 
       try {
         setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
-        await ensureOpenClawModelsJson(runtimeConfig, agentDir);
+        await ensureOpenClawModelCatalog(runtimeConfig, agentDir);
         await expectGeneratedProviderApiKey(agentDir, "litellm", "OPENCLAW_MODEL_LITELLM_API_KEY"); // pragma: allowlist secret
       } finally {
         clearRuntimeConfigSnapshot();
@@ -373,8 +373,8 @@ describe("models-config runtime source snapshot", () => {
 
       try {
         setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
-        await ensureOpenClawModelsJson(firstCandidate, agentDir);
-        let parsed = await readGeneratedModelsJson<{
+        await ensureOpenClawModelCatalog(firstCandidate, agentDir);
+        let parsed = await readStoredModelCatalog<{
           providers: Record<
             string,
             { baseUrl?: string; apiKey?: string; headers?: Record<string, string> }
@@ -384,9 +384,9 @@ describe("models-config runtime source snapshot", () => {
         expect(parsed.providers.openai?.apiKey).toBe("OPENAI_API_KEY"); // pragma: allowlist secret
         expect(parsed.providers.openai?.headers?.["X-OpenClaw-Test"]).toBe("one");
 
-        // Header changes still rewrite models.json, but merge mode preserves the existing baseUrl.
-        await ensureOpenClawModelsJson(secondCandidate, agentDir);
-        parsed = await readGeneratedModelsJson<{
+        // Header changes still rewrite the stored catalog, but merge mode preserves the existing baseUrl.
+        await ensureOpenClawModelCatalog(secondCandidate, agentDir);
+        parsed = await readStoredModelCatalog<{
           providers: Record<
             string,
             { baseUrl?: string; apiKey?: string; headers?: Record<string, string> }

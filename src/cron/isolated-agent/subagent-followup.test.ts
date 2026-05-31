@@ -64,7 +64,7 @@ function createDescendantRun(params?: {
       ? {
           execution: {
             status: "terminal" as const,
-            transcriptFile: params.executionTranscriptFile,
+            transcriptSessionId: params.executionTranscriptFile,
           },
         }
       : {}),

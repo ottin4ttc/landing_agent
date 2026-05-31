@@ -4,7 +4,7 @@ import {
   isConfiguredAwsSdkAuthProfileForProvider,
   isProfileInCooldown,
   resolveAuthProfileDisplayLabel,
-  resolveAuthStorePathForDisplay,
+  resolveAuthProfileStoreLocationForDisplay,
 } from "../../agents/auth-profiles.js";
 import type { AuthProfileCredential } from "../../agents/auth-profiles/types.js";
 import {
@@ -224,7 +224,7 @@ export const resolveAuthLabel = async (
     });
     return {
       label: labels.join(", "),
-      source: `auth-profiles.json: ${formatPath(resolveAuthStorePathForDisplay(agentDir))}`,
+      source: `SQLite auth store: ${formatPath(resolveAuthProfileStoreLocationForDisplay(agentDir))}`,
     };
   }
 
@@ -240,7 +240,7 @@ export const resolveAuthLabel = async (
   if (customKey) {
     return {
       label: maskApiKey(customKey),
-      source: mode === "verbose" ? `models.json: ${formatPath(modelsPath)}` : "",
+      source: mode === "verbose" ? `stored model catalog: ${formatPath(modelsPath)}` : "",
     };
   }
   return { label: "missing", source: "missing" };

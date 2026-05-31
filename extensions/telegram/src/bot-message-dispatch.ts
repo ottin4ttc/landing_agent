@@ -1,9 +1,4 @@
-import path from "node:path";
 import type { Bot } from "grammy";
-import {
-  appendSessionTranscriptMessage,
-  emitSessionTranscriptUpdate,
-} from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   DEFAULT_TIMING,
   logAckFailure,
@@ -74,13 +69,11 @@ import { pruneStickerMediaFromContext } from "./bot-message-dispatch.media.js";
 import {
   generateTopicLabel,
   getAgentScopedMediaLocalRoots,
-  loadSessionStore,
   readLatestAssistantTextFromSessionTranscript,
+  getSessionEntry,
   resolveAutoTopicLabelConfig,
   resolveChunkMode,
   resolveMarkdownTableMode,
-  resolveAndPersistSessionFile,
-  resolveSessionStoreEntry,
 } from "./bot-message-dispatch.runtime.js";
 import type { TelegramBotOptions } from "./bot.types.js";
 import { deliverReplies, emitInternalMessageSentHook } from "./bot/delivery.js";
@@ -119,7 +112,6 @@ import {
   type LaneName,
 } from "./lane-delivery.js";
 import { createNativeTelegramToolProgressDraft } from "./native-tool-progress-draft.js";
-import { recordOutboundMessageForPromptContext } from "./outbound-message-context.js";
 import {
   createTelegramReasoningStepState,
   splitTelegramReasoningText,
@@ -251,50 +243,24 @@ type DispatchTelegramMessageParams = {
 
 type TelegramReasoningLevel = "off" | "on" | "stream";
 
-type TelegramTranscriptMirrorPayload = { text?: string; mediaUrls?: string[] };
-type TelegramSessionStore = ReturnType<typeof loadSessionStore>;
-type FreshTelegramSessionStoreLoader = ((agentId: string) => {
-  storePath: string;
-  store: TelegramSessionStore;
-}) & {
-  clear: () => void;
-};
-
-function createFreshTelegramSessionStoreLoader(params: {
-  cfg: OpenClawConfig;
-  telegramDeps: TelegramBotDeps;
-}): FreshTelegramSessionStoreLoader {
-  const storesByPath = new Map<string, TelegramSessionStore>();
-  const load = ((agentId: string) => {
-    const storePath = params.telegramDeps.resolveStorePath(params.cfg.session?.store, { agentId });
-    const cachedStore = storesByPath.get(storePath);
-    if (cachedStore) {
-      return { storePath, store: cachedStore };
-    }
-    const store = (params.telegramDeps.loadSessionStore ?? loadSessionStore)(storePath, {
-      skipCache: true,
-    });
-    storesByPath.set(storePath, store);
-    return { storePath, store };
-  }) as FreshTelegramSessionStoreLoader;
-  load.clear = () => storesByPath.clear();
-  return load;
-}
+type TelegramTranscriptMirror = (payload: {
+  text?: string;
+  mediaUrls?: string[];
+}) => void | Promise<void>;
 
 function resolveTelegramReasoningLevel(params: {
   cfg: OpenClawConfig;
   sessionKey?: string;
   agentId: string;
-  loadFreshSessionStore: FreshTelegramSessionStoreLoader;
+  telegramDeps: TelegramBotDeps;
 }): TelegramReasoningLevel {
-  const { cfg, sessionKey, agentId } = params;
+  const { cfg, sessionKey, agentId, telegramDeps } = params;
   const configDefault = resolveTelegramConfigReasoningDefault(cfg, agentId);
   if (!sessionKey) {
     return configDefault;
   }
   try {
-    const { store } = params.loadFreshSessionStore(agentId);
-    const entry = resolveSessionStoreEntry({ store, sessionKey }).existing;
+    const entry = (telegramDeps.getSessionEntry ?? getSessionEntry)({ agentId, sessionKey });
     const level = entry?.reasoningLevel;
     if (level === "on" || level === "stream" || level === "off") {
       return level;
@@ -303,90 +269,6 @@ function resolveTelegramReasoningLevel(params: {
     return "off";
   }
   return configDefault;
-}
-
-function resolveTelegramMirroredTranscriptText(
-  payload: TelegramTranscriptMirrorPayload,
-): string | null {
-  const mediaUrls = payload.mediaUrls?.filter((url) => url.trim()) ?? [];
-  if (mediaUrls.length > 0) {
-    return mediaUrls
-      .map((url) => {
-        const pathname = url.split("#")[0]?.split("?")[0] ?? url;
-        const base = path.basename(pathname);
-        return base && base !== "." && base !== "/" ? base : "media";
-      })
-      .join(", ");
-  }
-
-  const text = payload.text?.trim();
-  return text ? text : null;
-}
-
-async function mirrorTelegramAssistantReplyToTranscript(params: {
-  cfg: OpenClawConfig;
-  route: TelegramMessageContext["route"];
-  sessionKey: string;
-  loadFreshSessionStore: FreshTelegramSessionStoreLoader;
-  payload: TelegramTranscriptMirrorPayload;
-}) {
-  const text = resolveTelegramMirroredTranscriptText(params.payload);
-  if (!text) {
-    return;
-  }
-  const { storePath, store } = params.loadFreshSessionStore(params.route.agentId);
-  const sessionEntry = resolveSessionStoreEntry({
-    store,
-    sessionKey: params.sessionKey,
-  }).existing;
-  if (!sessionEntry?.sessionId) {
-    return;
-  }
-  const { sessionFile } = await resolveAndPersistSessionFile({
-    sessionId: sessionEntry.sessionId,
-    sessionKey: params.sessionKey,
-    sessionStore: store,
-    storePath,
-    sessionEntry,
-    agentId: params.route.agentId,
-    sessionsDir: path.dirname(storePath),
-  });
-  const message = {
-    role: "assistant" as const,
-    content: [{ type: "text" as const, text }],
-    api: "openai-responses",
-    provider: "openclaw",
-    model: "delivery-mirror",
-    usage: {
-      input: 0,
-      output: 0,
-      total: 0,
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      cache: {
-        read: 0,
-        write: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        total: 0,
-      },
-    },
-    stopReason: "stop" as const,
-    timestamp: Date.now(),
-  };
-  const { messageId, message: appendedMessage } = await appendSessionTranscriptMessage({
-    transcriptPath: sessionFile,
-    message,
-    config: params.cfg,
-  });
-  emitSessionTranscriptUpdate({
-    sessionFile,
-    sessionKey: params.sessionKey,
-    agentId: params.route.agentId,
-    message: appendedMessage,
-    messageId,
-  });
 }
 
 const MAX_PROGRESS_MARKDOWN_TEXT_CHARS = 300;
@@ -700,7 +582,6 @@ export const dispatchTelegramMessage = async ({
   const dispatchContext = resolveDispatchTelegramContext({ cfg, context });
   const telegramDeps =
     injectedTelegramDeps ?? (await import("./bot-deps.js")).defaultTelegramBotDeps;
-  const loadFreshSessionStore = createFreshTelegramSessionStoreLoader({ cfg, telegramDeps });
   const {
     ctxPayload,
     msg,
@@ -816,7 +697,7 @@ export const dispatchTelegramMessage = async ({
     cfg,
     sessionKey: ctxPayload.SessionKey,
     agentId: route.agentId,
-    loadFreshSessionStore,
+    telegramDeps,
   });
   const forceBlockStreamingForReasoning = resolvedReasoningLevel === "on";
   const streamReasoningDraft = resolvedReasoningLevel === "stream";
@@ -1279,24 +1160,17 @@ export const dispatchTelegramMessage = async ({
       return undefined;
     }
     try {
-      const { storePath, store } = loadFreshSessionStore(route.agentId);
-      const sessionEntry = resolveSessionStoreEntry({
-        store,
+      const sessionEntry = getSessionEntry({
+        agentId: route.agentId,
         sessionKey,
-      }).existing;
+      });
       if (!sessionEntry?.sessionId) {
         return undefined;
       }
-      const { sessionFile } = await resolveAndPersistSessionFile({
-        sessionId: sessionEntry.sessionId,
-        sessionKey,
-        sessionStore: store,
-        storePath,
-        sessionEntry,
+      const latest = await readLatestAssistantTextFromSessionTranscript({
         agentId: route.agentId,
-        sessionsDir: path.dirname(storePath),
+        sessionId: sessionEntry.sessionId,
       });
-      const latest = await readLatestAssistantTextFromSessionTranscript(sessionFile);
       if (!latest?.timestamp || latest.timestamp < dispatchStartedAt) {
         return undefined;
       }
@@ -1328,17 +1202,7 @@ export const dispatchTelegramMessage = async ({
     replyQuotePosition,
     replyQuoteEntities,
     replyQuoteByMessageId,
-    transcriptMirror: sessionKey
-      ? async (payload: TelegramTranscriptMirrorPayload) => {
-          await mirrorTelegramAssistantReplyToTranscript({
-            cfg,
-            route,
-            sessionKey,
-            loadFreshSessionStore,
-            payload,
-          });
-        }
-      : undefined,
+    transcriptMirror: undefined as TelegramTranscriptMirror | undefined,
   };
   const silentErrorReplies = telegramCfg.silentErrorReplies === true;
   const isDmTopic = !isGroup && threadSpec.scope === "dm" && threadSpec.id != null;
@@ -1511,42 +1375,22 @@ export const dispatchTelegramMessage = async ({
         isGroup: deliveryBaseOptions.mirrorIsGroup,
         groupId: deliveryBaseOptions.mirrorGroupId,
       });
-      try {
-        await (
-          telegramDeps.recordOutboundMessageForPromptContext ??
-          recordOutboundMessageForPromptContext
-        )({
-          cfg,
-          account: { accountId: route.accountId },
-          chatId: deliveryBaseOptions.chatId,
-          message: { message_id: result.delivery.messageId },
-          messageId: result.delivery.messageId,
-          text: result.delivery.promptContextContent ?? result.delivery.content,
-          ...(threadSpec.id !== undefined ? { messageThreadId: threadSpec.id } : {}),
-        });
-      } catch (error) {
-        logVerbose(
-          `telegram: failed to record streamed reply for prompt context: ${formatErrorMessage(
-            error,
-          )}`,
-        );
-      }
-      if (deliveryBaseOptions.transcriptMirror && result.delivery.content) {
-        void deliveryBaseOptions
-          .transcriptMirror({ text: result.delivery.content })
-          .catch((err: unknown) => {
-            logVerbose(
-              `telegram preview-finalized transcriptMirror failed: ${formatErrorMessage(err)}`,
-            );
-          });
-      }
+      await telegramDeps.recordOutboundMessageForPromptContext?.({
+        cfg,
+        account: { accountId: route.accountId },
+        chatId: deliveryBaseOptions.chatId,
+        message: {},
+        messageId: result.delivery.messageId,
+        text: result.delivery.content,
+        ...(threadSpec.id !== undefined ? { messageThreadId: threadSpec.id } : {}),
+      });
     };
     const deliverLaneText = createLaneTextDeliverer({
       lanes,
       draftMaxChars,
       applyTextToPayload,
       applyTextToFollowUpPayload,
-      splitFinalTextForStream,
+      splitFinalTextForStream: splitFinalTextForStream,
       sendPayload,
       flushDraftLane,
       stopDraftLane: async (lane) => {
@@ -1599,20 +1443,20 @@ export const dispatchTelegramMessage = async ({
 
     if (isDmTopic) {
       try {
-        const { store } = loadFreshSessionStore(route.agentId);
         const sessionKey = ctxPayload.SessionKey;
         if (sessionKey) {
-          const entry = resolveSessionStoreEntry({ store, sessionKey }).existing;
+          const entry = (telegramDeps.getSessionEntry ?? getSessionEntry)({
+            agentId: route.agentId,
+            sessionKey,
+          });
           isFirstTurnInSession = !entry?.systemSent;
         } else {
           logVerbose("auto-topic-label: SessionKey is absent, skipping first-turn detection");
         }
       } catch (err) {
-        logVerbose(`auto-topic-label: session store error: ${formatErrorMessage(err)}`);
+        logVerbose(`auto-topic-label: session row read error: ${formatErrorMessage(err)}`);
       }
     }
-    loadFreshSessionStore.clear();
-
     if (statusReactionController && !isRoomEvent) {
       void statusReactionController.setThinking();
     }
@@ -1654,8 +1498,8 @@ export const dispatchTelegramMessage = async ({
           resolveTurn: () => ({
             channel: "telegram",
             accountId: route.accountId,
+            agentId: route.agentId,
             routeSessionKey: route.sessionKey,
-            storePath: dispatchContext.turn.storePath,
             ctxPayload,
             recordInboundSession: dispatchContext.turn.recordInboundSession,
             record: dispatchContext.turn.record,

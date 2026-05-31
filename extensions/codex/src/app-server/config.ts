@@ -153,7 +153,7 @@ export type CodexAppServerStartOptions = {
 
 export type CodexAppServerRuntimeOptions = {
   start: CodexAppServerStartOptions;
-  codeModeOnly: boolean;
+  codeModeOnly?: boolean;
   requestTimeoutMs: number;
   turnCompletionIdleTimeoutMs: number;
   postToolRawAssistantCompletionIdleTimeoutMs?: number;

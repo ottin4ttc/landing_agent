@@ -239,9 +239,10 @@ export async function installCompletion(shell: string, yes: boolean, binName = "
   const cachePath = resolveCompletionCachePath(shell, binName);
   const cacheExists = await pathExists(cachePath);
   if (!cacheExists) {
-    throw new Error(
+    console.error(
       `Completion cache not found at ${cachePath}. Run \`${binName} completion --write-state\` first.`,
     );
+    return;
   }
 
   let profilePath: string;

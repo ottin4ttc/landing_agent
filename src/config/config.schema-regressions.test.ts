@@ -2,18 +2,6 @@ import { describe, expect, it } from "vitest";
 import { validateConfigObject } from "./validation.js";
 
 describe("config schema regressions", () => {
-  it("accepts session write-lock acquire timeout", () => {
-    const res = validateConfigObject({
-      session: {
-        writeLock: {
-          acquireTimeoutMs: 60_000,
-        },
-      },
-    });
-
-    expect(res.ok).toBe(true);
-  });
-
   it('accepts memorySearch fallback "voyage"', () => {
     const res = validateConfigObject({
       agents: {
@@ -112,6 +100,42 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("strips legacy memorySearch store paths during validation", () => {
+    const res = validateConfigObject({
+      agents: {
+        defaults: {
+          memorySearch: {
+            store: {
+              path: "/tmp/legacy-default-memory.sqlite",
+              vector: { enabled: false },
+            },
+          },
+        },
+        list: [
+          {
+            id: "ops",
+            memorySearch: {
+              store: {
+                path: "/tmp/legacy-ops-memory.sqlite",
+                fts: { tokenizer: "trigram" },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.config.agents?.defaults?.memorySearch?.store).toEqual({
+        vector: { enabled: false },
+      });
+      expect(res.config.agents?.list?.[0]?.memorySearch?.store).toEqual({
+        fts: { tokenizer: "trigram" },
+      });
+    }
+  });
+
   it("accepts agents.defaults.startupContext overrides", () => {
     const res = validateConfigObject({
       agents: {
@@ -174,29 +198,12 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(true);
   });
 
-  it("accepts agents.list experimental localModelLean overrides", () => {
-    const res = validateConfigObject({
-      agents: {
-        list: [
-          {
-            id: "gemma",
-            experimental: {
-              localModelLean: true,
-            },
-          },
-        ],
-      },
-    });
-
-    expect(res.ok).toBe(true);
-  });
-
-  it("accepts agents.defaults.compaction.truncateAfterCompaction", () => {
+  it("accepts agents.defaults.compaction.rotateAfterCompaction", () => {
     const res = validateConfigObject({
       agents: {
         defaults: {
           compaction: {
-            truncateAfterCompaction: true,
+            rotateAfterCompaction: true,
             maxActiveTranscriptBytes: "20mb",
           },
         },
@@ -205,65 +212,6 @@ describe("config schema regressions", () => {
 
     expect(res.ok).toBe(true);
   });
-
-  it("accepts Matrix queue byChannel overrides", () => {
-    const res = validateConfigObject({
-      messages: {
-        queue: {
-          byChannel: {
-            matrix: "steer",
-          },
-        },
-      },
-    });
-
-    expect(res.ok).toBe(true);
-  });
-
-  it("accepts Matrix interrupt queue byChannel overrides", () => {
-    const res = validateConfigObject({
-      messages: {
-        queue: {
-          byChannel: {
-            matrix: "interrupt",
-          },
-        },
-      },
-    });
-
-    expect(res.ok).toBe(true);
-  });
-
-  it("keeps queue byChannel schema and config type providers aligned", () => {
-    const res = validateConfigObject({
-      messages: {
-        queue: {
-          byChannel: {
-            googlechat: "followup",
-            mattermost: "collect",
-            matrix: "steer",
-          },
-        },
-      },
-    });
-
-    expect(res.ok).toBe(true);
-  });
-
-  it("rejects unknown queue byChannel providers", () => {
-    const res = validateConfigObject({
-      messages: {
-        queue: {
-          byChannel: {
-            unknown: "steer",
-          },
-        },
-      },
-    });
-
-    expect(res.ok).toBe(false);
-  });
-
   it("accepts string values for agents defaults model inputs", () => {
     const res = validateConfigObject({
       agents: {

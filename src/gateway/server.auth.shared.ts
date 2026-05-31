@@ -1,5 +1,3 @@
-import os from "node:os";
-import path from "node:path";
 import { expect } from "vitest";
 import { WebSocket } from "ws";
 import {
@@ -26,20 +24,11 @@ import {
   withGatewayServer,
 } from "./test-helpers.js";
 
-let authIdentityPathSeq = 0;
+let authIdentityKeySeq = 0;
 
-function nextAuthIdentityPath(prefix: string): string {
+function nextAuthIdentityKey(prefix: string): string {
   const poolId = process.env.VITEST_POOL_ID ?? "0";
-  const fileName =
-    prefix +
-    "-" +
-    String(process.pid) +
-    "-" +
-    poolId +
-    "-" +
-    String(authIdentityPathSeq++) +
-    ".json";
-  return path.join(os.tmpdir(), fileName);
+  return `test:${prefix}:${process.pid}:${poolId}:${authIdentityKeySeq++}`;
 }
 
 async function waitForWsClose(ws: WebSocket, timeoutMs: number): Promise<boolean> {
@@ -169,15 +158,15 @@ async function createSignedDevice(params: {
   clientId: string;
   clientMode: string;
   role?: "operator" | "node";
-  identityPath?: string;
+  identityKey?: string;
   nonce: string;
   signedAtMs?: number;
 }) {
   const { loadOrCreateDeviceIdentity, publicKeyRawBase64UrlFromPem, signDevicePayload } =
     await import("../infra/device-identity.js");
-  const identity = params.identityPath
-    ? loadOrCreateDeviceIdentity(params.identityPath)
-    : loadOrCreateDeviceIdentity();
+  const identity = loadOrCreateDeviceIdentity(
+    params.identityKey ? { key: params.identityKey } : undefined,
+  );
   const signedAtMs = params.signedAtMs ?? Date.now();
   const payload = buildDeviceAuthPayload({
     deviceId: identity.deviceId,
@@ -319,14 +308,14 @@ async function sendRawConnectReq(
   return response;
 }
 
-async function resolvePairedTokenForDeviceIdentityPath(deviceIdentityPath: string): Promise<{
+async function resolvePairedTokenForDeviceIdentityKey(deviceIdentityKey: string): Promise<{
   identity: { deviceId: string };
   deviceToken: string;
 }> {
   const { loadOrCreateDeviceIdentity } = await import("../infra/device-identity.js");
   const { getPairedDevice } = await import("../infra/device-pairing.js");
 
-  const identity = loadOrCreateDeviceIdentity(deviceIdentityPath);
+  const identity = loadOrCreateDeviceIdentity({ key: deviceIdentityKey });
   const paired = await getPairedDevice(identity.deviceId);
   const deviceToken = paired?.tokens?.operator?.token;
   expect(paired?.deviceId).toBe(identity.deviceId);
@@ -346,16 +335,16 @@ async function startRateLimitedTokenServerWithPairedDeviceToken() {
   const { server, ws, port, prevToken } = await startServerWithClient(undefined, {
     controlUiEnabled: true,
   });
-  const deviceIdentityPath = nextAuthIdentityPath("openclaw-auth-rate-limit");
+  const deviceIdentityKey = nextAuthIdentityKey("openclaw-auth-rate-limit");
   try {
-    const initial = await connectReq(ws, { token: "secret", deviceIdentityPath });
+    const initial = await connectReq(ws, { token: "secret", deviceIdentityKey });
     if (!initial.ok) {
       await approvePendingPairingIfNeeded();
     }
-    const { deviceToken } = await resolvePairedTokenForDeviceIdentityPath(deviceIdentityPath);
+    const { deviceToken } = await resolvePairedTokenForDeviceIdentityKey(deviceIdentityKey);
 
     ws.close();
-    return { server, port, prevToken, deviceToken: deviceToken ?? "", deviceIdentityPath };
+    return { server, port, prevToken, deviceToken: deviceToken ?? "", deviceIdentityKey };
   } catch (err) {
     ws.close();
     await server.close();
@@ -367,20 +356,19 @@ async function startRateLimitedTokenServerWithPairedDeviceToken() {
 async function ensurePairedDeviceTokenForCurrentIdentity(ws: WebSocket): Promise<{
   identity: { deviceId: string };
   deviceToken: string;
-  deviceIdentityPath: string;
+  deviceIdentityKey: string;
 }> {
-  const deviceIdentityPath = nextAuthIdentityPath("openclaw-auth-device");
+  const deviceIdentityKey = nextAuthIdentityKey("openclaw-auth-device");
 
-  const res = await connectReq(ws, { token: "secret", deviceIdentityPath });
+  const res = await connectReq(ws, { token: "secret", deviceIdentityKey });
   if (!res.ok) {
     await approvePendingPairingIfNeeded();
   }
-  const { identity, deviceToken } =
-    await resolvePairedTokenForDeviceIdentityPath(deviceIdentityPath);
+  const { identity, deviceToken } = await resolvePairedTokenForDeviceIdentityKey(deviceIdentityKey);
   return {
     identity,
     deviceToken,
-    deviceIdentityPath,
+    deviceIdentityKey,
   };
 }
 

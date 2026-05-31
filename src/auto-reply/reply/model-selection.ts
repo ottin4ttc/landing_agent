@@ -26,6 +26,7 @@ import {
 } from "../../agents/openai-routing.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { applyModelOverrideToSessionEntry } from "../../sessions/model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { ThinkLevel } from "./directives.js";
@@ -91,7 +92,7 @@ function loadModelCatalogRuntime() {
   return modelCatalogRuntimeLoader.load();
 }
 
-function loadSessionStoreRuntime() {
+function loadSessionRowRuntime() {
   return sessionStoreRuntimeLoader.load();
 }
 
@@ -113,7 +114,6 @@ export async function createModelSelectionState(params: {
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
   parentSessionKey?: string;
-  storePath?: string;
   defaultProvider: string;
   defaultModel: string;
   primaryProvider?: string;
@@ -145,7 +145,6 @@ export async function createModelSelectionState(params: {
     sessionStore,
     sessionKey,
     parentSessionKey,
-    storePath,
     defaultProvider,
     defaultModel,
   } = params;
@@ -267,13 +266,14 @@ export async function createModelSelectionState(params: {
       });
       if (updated) {
         sessionStore[sessionKey] = sessionEntry;
-        if (storePath) {
-          await (
-            await loadSessionStoreRuntime()
-          ).updateSessionStore(storePath, (store) => {
-            store[sessionKey] = sessionEntry;
-          });
-        }
+        const { getSessionEntry, mergeSessionEntry, upsertSessionEntry } =
+          await loadSessionRowRuntime();
+        const agentId = params.agentId ?? resolveAgentIdFromSessionKey(sessionKey) ?? "main";
+        upsertSessionEntry({
+          agentId,
+          sessionKey,
+          entry: mergeSessionEntry(getSessionEntry({ agentId, sessionKey }), { ...sessionEntry }),
+        });
       }
       resetModelOverride = updated;
       if (updated) {
@@ -372,7 +372,6 @@ export async function createModelSelectionState(params: {
         sessionEntry,
         sessionStore,
         sessionKey,
-        storePath,
       });
     }
   }

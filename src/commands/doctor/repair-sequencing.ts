@@ -4,7 +4,7 @@ import {
   collectOpenAICodexAuthProfileStoreIdMap,
   maybeRepairOpenAICodexAuthConfig,
   maybeRepairOpenAICodexAuthProfileStores,
-} from "../doctor-auth-flat-profiles.js";
+} from "./legacy/auth-flat-profiles.js";
 import { maybeRepairLegacyOAuthSidecarProfiles } from "../doctor-auth-oauth-sidecar.js";
 import {
   maybeRepairManagedNpmOpenClawPeerLinks,

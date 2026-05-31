@@ -1,8 +1,7 @@
-import { getApiProvider } from "../../llm/api-registry.js";
-import { streamSimple } from "../../llm/stream.js";
+import type { StreamFn } from "../agent-core-contract.js";
 import { createAnthropicVertexStreamFnForModel } from "../anthropic-vertex-stream.js";
+import { getApiProvider, streamSimple } from "../pi-ai-contract.js";
 import { createBoundaryAwareStreamFnForModel } from "../provider-transport-stream.js";
-import type { StreamFn } from "../runtime/index.js";
 import { stripSystemPromptCacheBoundary } from "../system-prompt-cache-boundary.js";
 import type { EmbeddedRunAttemptParams } from "./run/types.js";
 

@@ -76,14 +76,14 @@ export interface CreateAgentSessionOptions {
   /** Resource loader. When omitted, DefaultResourceLoader is used. */
   resourceLoader?: ResourceLoader;
 
-  /** Session manager. Default: SessionManager.create(cwd) */
+  /** Session manager. Default: SessionManager.createForCwd(cwd) */
   sessionManager?: SessionManager;
 
   /** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
   settingsManager?: SettingsManager;
   /** Session start event metadata for extension runtime startup. */
   sessionStartEvent?: SessionStartEvent;
-  /** Optional lock used before session-file writes or write-capable extension hooks. */
+  /** Optional lock used before transcript writes or write-capable extension hooks. */
   withSessionWriteLock?: AgentSessionWriteLockRunner;
 }
 
@@ -212,7 +212,7 @@ export async function createAgentSession(
 
   const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
   const sessionManager =
-    options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+    options.sessionManager ?? SessionManager.createForCwd(cwd, getDefaultSessionDir(cwd, agentDir));
 
   if (!resourceLoader) {
     resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });

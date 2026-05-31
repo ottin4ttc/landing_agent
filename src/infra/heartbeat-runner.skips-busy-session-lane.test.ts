@@ -11,7 +11,10 @@ import type { CommandLaneSnapshot } from "../process/command-queue.js";
 import { CommandLane } from "../process/lanes.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { type HeartbeatDeps, runHeartbeatOnce } from "./heartbeat-runner.js";
-import { seedMainSessionStore, withTempHeartbeatSandbox } from "./heartbeat-runner.test-utils.js";
+import {
+  seedMainHeartbeatSession,
+  withTempHeartbeatSandbox,
+} from "./heartbeat-runner.test-utils.js";
 import {
   HEARTBEAT_SKIP_CRON_IN_PROGRESS,
   HEARTBEAT_SKIP_LANES_BUSY,
@@ -68,10 +71,9 @@ function createHeartbeatTelegramConfig(): OpenClawConfig {
   } as unknown as OpenClawConfig;
 }
 
-async function seedHeartbeatTelegramSession(storePath: string, cfg: OpenClawConfig) {
-  return seedMainSessionStore(storePath, cfg, {
+async function seedHeartbeatTelegramSession(agentId: string, cfg: OpenClawConfig) {
+  return seedMainHeartbeatSession(agentId, cfg, {
     lastChannel: "telegram",
-    lastProvider: "telegram",
     lastTo: "123",
   });
 }
@@ -89,9 +91,9 @@ function createBusyLaneSnapshot(lane: string): CommandLaneSnapshot {
 
 describe("heartbeat runner skips when target session lane is busy", () => {
   it("returns cron-in-progress when cron has an active job", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      await seedHeartbeatTelegramSession(agentId, cfg);
       markCronJobActive("local-model-report");
 
       const result = await runHeartbeatOnce({
@@ -109,9 +111,9 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("returns cron-in-progress when cron lanes have queued work", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      await seedHeartbeatTelegramSession(agentId, cfg);
 
       const result = await runHeartbeatOnce({
         cfg,
@@ -127,15 +129,11 @@ describe("heartbeat runner skips when target session lane is busy", () => {
     });
   });
 
-  it("does not return lanes-busy for global subagent-lane work alone", async () => {
-    // The global Subagent lane has no agent identity in its name — a stalled
-    // subagent on any one agent must not silently disable every other
-    // agent's heartbeat. Per-agent attribution comes from the session-keyed
-    // lane variants exercised below.
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+  it("returns lanes-busy for opt-in broader busy-lane checks", async () => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
       cfg.agents!.defaults!.heartbeat = { every: "30m", skipWhenBusy: true };
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      await seedHeartbeatTelegramSession(agentId, cfg);
 
       const result = await runHeartbeatOnce({
         cfg,
@@ -152,10 +150,10 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("returns lanes-busy for opt-in work in this agent's nested session lane", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
       cfg.agents!.defaults!.heartbeat = { every: "30m", skipWhenBusy: true };
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      await seedHeartbeatTelegramSession(agentId, cfg);
       const nestedSessionLane = resolveNestedAgentLaneForSession("agent:main:telegram:123");
 
       const result = await runHeartbeatOnce({
@@ -173,13 +171,11 @@ describe("heartbeat runner skips when target session lane is busy", () => {
     });
   });
 
-  it("does not return lanes-busy for another agent's session-scoped nested lane", async () => {
-    // Per-agent scoping: a zombie subagent or nested run belonging to a
-    // different agent must not block this agent's heartbeat.
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+  it("returns lanes-busy for opt-in work in any session-scoped nested lane", async () => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
       cfg.agents!.defaults!.heartbeat = { every: "30m", skipWhenBusy: true };
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      await seedHeartbeatTelegramSession(agentId, cfg);
       const nestedSessionLane = resolveNestedAgentLaneForSession("agent:other:telegram:123");
 
       const result = await runHeartbeatOnce({
@@ -197,9 +193,9 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("returns requests-in-flight when session lane has queued work", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      const sessionKey = await seedHeartbeatTelegramSession(storePath, cfg);
+      const sessionKey = await seedHeartbeatTelegramSession(agentId, cfg);
 
       enqueueSystemEvent("Exec completed (test-id, code 0) :: test output", {
         sessionKey,
@@ -234,9 +230,9 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("returns requests-in-flight when the target session has an active reply run", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      const sessionKey = await seedHeartbeatTelegramSession(storePath, cfg);
+      const sessionKey = await seedHeartbeatTelegramSession(agentId, cfg);
       const isReplyRunActive = vi.fn((key: string) => key === sessionKey);
 
       const result = await runHeartbeatOnce({
@@ -256,9 +252,9 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("returns requests-in-flight when another session for the same agent has an active reply run", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      await seedHeartbeatTelegramSession(agentId, cfg);
       const listActiveReplyRunSessionKeys = vi.fn(() => [
         "agent:main:telegram:group:-1003966283270:topic:547",
       ]);
@@ -280,9 +276,9 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("ignores unscoped active reply runs when checking same-agent heartbeat work", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      await seedHeartbeatTelegramSession(agentId, cfg);
       const listActiveReplyRunSessionKeys = vi.fn(() => ["legacy-session-key"]);
       replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
 
@@ -303,9 +299,9 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("does not defer immediate heartbeat wakes for another active session", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      await seedHeartbeatTelegramSession(agentId, cfg);
       const listActiveReplyRunSessionKeys = vi.fn(() => [
         "agent:main:telegram:group:-1003966283270:topic:547",
       ]);
@@ -328,9 +324,9 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("returns requests-in-flight when a reply run is still active after queues drain", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      const sessionKey = await seedHeartbeatTelegramSession(storePath, cfg);
+      const sessionKey = await seedHeartbeatTelegramSession(agentId, cfg);
       const operation = createReplyOperation({
         sessionKey,
         sessionId: "active-reply-session",
@@ -360,10 +356,10 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("returns requests-in-flight when an isolated heartbeat reply run is still active", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
       cfg.agents!.defaults!.heartbeat = { every: "30m", isolatedSession: true };
-      const baseSessionKey = await seedHeartbeatTelegramSession(storePath, cfg);
+      const baseSessionKey = await seedHeartbeatTelegramSession(agentId, cfg);
       const isolatedSessionKey = `${baseSessionKey}:heartbeat`;
       const operation = createReplyOperation({
         sessionKey: isolatedSessionKey,
@@ -394,12 +390,10 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("does not defer on a recent heartbeat ack pending final delivery", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      cfg.session = { store: storePath };
-      await seedMainSessionStore(storePath, cfg, {
+      await seedMainHeartbeatSession(agentId, cfg, {
         lastChannel: "telegram",
-        lastProvider: "heartbeat",
         lastTo: "heartbeat",
         updatedAt: Date.now(),
         pendingFinalDelivery: true,
@@ -422,13 +416,11 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("keeps deferring recent pending delivery when ackMaxChars makes the remainder real content", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      cfg.session = { store: storePath };
       cfg.agents!.defaults!.heartbeat = { every: "30m", ackMaxChars: 0 };
-      await seedMainSessionStore(storePath, cfg, {
+      await seedMainHeartbeatSession(agentId, cfg, {
         lastChannel: "telegram",
-        lastProvider: "heartbeat",
         lastTo: "heartbeat",
         updatedAt: Date.now(),
         pendingFinalDelivery: true,
@@ -451,16 +443,14 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("does not replay stale pending final delivery through a later heartbeat", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      cfg.session = { store: storePath };
       cfg.agents!.defaults!.heartbeat = {
         every: "30m",
         target: "telegram",
       };
-      await seedMainSessionStore(storePath, cfg, {
+      await seedMainHeartbeatSession(agentId, cfg, {
         lastChannel: "telegram",
-        lastProvider: "telegram",
         lastTo: "default-heartbeat-target",
         updatedAt: Date.now() - 60_000,
         pendingFinalDelivery: true,
@@ -490,9 +480,9 @@ describe("heartbeat runner skips when target session lane is busy", () => {
   });
 
   it("proceeds normally when session lane is idle", async () => {
-    await withTempHeartbeatSandbox(async ({ storePath, replySpy }) => {
+    await withTempHeartbeatSandbox(async ({ agentId, replySpy }) => {
       const cfg = createHeartbeatTelegramConfig();
-      await seedHeartbeatTelegramSession(storePath, cfg);
+      await seedHeartbeatTelegramSession(agentId, cfg);
 
       // Both lanes idle
       const getQueueSize = vi.fn((_lane?: string) => 0);

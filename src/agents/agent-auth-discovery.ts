@@ -84,5 +84,5 @@ export function resolveAgentCredentialsForDiscovery(
 
 export {
   addEnvBackedAgentCredentials,
-  scrubLegacyStaticAuthJsonEntriesForDiscovery,
+  addEnvBackedAgentCredentials as addEnvBackedPiCredentials,
 } from "./agent-auth-discovery-core.js";

@@ -64,13 +64,13 @@ export type StatusSummary = {
   taskAudit: TaskAuditSummary;
   taskAuditRetainedLost?: RetainedLostTaskAuditSummary;
   sessions: {
-    paths: string[];
+    databasePaths: string[];
     count: number;
     defaults: { model: string | null; contextTokens: number | null };
     recent: SessionStatus[];
     byAgent: Array<{
       agentId: string;
-      path: string;
+      databasePath: string;
       count: number;
       recent: SessionStatus[];
     }>;

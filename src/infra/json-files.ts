@@ -1,8 +1,16 @@
 import "./fs-safe-defaults.js";
 import {
   JsonFileReadError,
-  readJson as readJsonImpl,
-  readJsonIfExists as readJsonIfExistsImpl,
+  readJson as readJsonWithoutRetry,
+  readJsonIfExists as readJsonIfExistsWithoutRetry,
+  readJsonSync,
+  readRootJsonObjectSync,
+  readRootJsonSync,
+  readRootStructuredFileSync,
+  tryReadJson,
+  tryReadJsonSync,
+  writeJson,
+  writeJsonSync,
 } from "@openclaw/fs-safe/json";
 import { replaceFileAtomic } from "./replace-file.js";
 
@@ -17,59 +25,56 @@ export {
   readRootJsonObjectSync,
   readRootJsonSync,
   readRootStructuredFileSync,
+  tryReadJson,
+  tryReadJson as readJsonFile,
   tryReadJsonSync,
   tryReadJsonSync as readJsonFileSync,
   writeJson,
   writeJson as writeJsonAtomic,
   writeJsonSync,
-} from "@openclaw/fs-safe/json";
+};
+
+const STABLE_READ_RETRY_LIMIT = 3;
+const STABLE_READ_RETRY_DELAY_MS = 5;
+
+function isFileChangedDuringReadError(err: unknown): boolean {
+  if (!(err instanceof JsonFileReadError) || err.reason !== "read") {
+    return false;
+  }
+  const cause = err.cause;
+  return cause instanceof Error && cause.message.includes("File changed during read:");
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withStableReadRetry<T>(read: () => Promise<T>): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await read();
+    } catch (err) {
+      attempt += 1;
+      if (!isFileChangedDuringReadError(err) || attempt >= STABLE_READ_RETRY_LIMIT) {
+        throw err;
+      }
+      await delay(STABLE_READ_RETRY_DELAY_MS);
+    }
+  }
+}
 
 export async function readJson<T>(filePath: string): Promise<T> {
-  try {
-    return await readJsonImpl<T>(filePath);
-  } catch (err) {
-    throw err instanceof JsonFileReadError ? err : new JsonFileReadError(filePath, "read", err);
-  }
+  return await withStableReadRetry(() => readJsonWithoutRetry<T>(filePath));
 }
 
-export async function readJsonFileStrict<T>(filePath: string): Promise<T> {
-  return readJson<T>(filePath);
-}
+export const readJsonFileStrict = readJson;
 
 export async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
-  try {
-    return await readJsonIfExistsImpl<T>(filePath);
-  } catch (err) {
-    if (err instanceof JsonFileReadError) {
-      throw err;
-    }
-    throw new JsonFileReadError(filePath, "read", err);
-  }
+  return await withStableReadRetry(() => readJsonIfExistsWithoutRetry<T>(filePath));
 }
 
-export async function readDurableJsonFile<T>(filePath: string): Promise<T | null> {
-  return readJsonIfExists<T>(filePath);
-}
-
-/**
- * tryReadJson delegates to readJsonIfExists instead of the internal
- * tryReadJsonImpl from @openclaw/fs-safe. The fs-safe implementation retries
- * race conditions before propagating errors; this wrapper keeps the historical
- * null-on-error contract for callers that intentionally treat reads as optional.
- */
-export async function tryReadJson<T>(filePath: string): Promise<T | null> {
-  try {
-    return await readJsonIfExists<T>(filePath);
-  } catch {
-    return null;
-  }
-}
-
-export async function readJsonFile<T>(filePath: string): Promise<T | null> {
-  return tryReadJson<T>(filePath);
-}
-
-export { createAsyncLock } from "@openclaw/fs-safe/advanced";
+export const readDurableJsonFile = readJsonIfExists;
 
 export type WriteTextAtomicOptions = {
   mode?: number;

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  noopLogger,
   setupCronIssueRegressionFixtures,
   startCronForStore,
   topOfHourOffsetMs,
+  writeCronStoreSnapshot,
 } from "./service.issue-regressions.test-helpers.js";
 import { loadCronStore, saveCronStore } from "./store.js";
 import type { CronJob, CronJobState } from "./types.js";
@@ -12,9 +12,9 @@ describe("Cron issue regressions", () => {
   const cronIssueRegressionFixtures = setupCronIssueRegressionFixtures();
 
   it("covers schedule updates and payload patching", async () => {
-    const store = cronIssueRegressionFixtures.makeStorePath();
+    const store = cronIssueRegressionFixtures.makeStoreKey();
     const cron = await startCronForStore({
-      storePath: store.storePath,
+      storeKey: store.storeKey,
       cronEnabled: false,
     });
 
@@ -58,40 +58,37 @@ describe("Cron issue regressions", () => {
   });
 
   it("does not rewrite unchanged stores during startup", async () => {
-    const store = cronIssueRegressionFixtures.makeStorePath();
+    const store = cronIssueRegressionFixtures.makeStoreKey();
     const scheduledAt = Date.parse("2026-02-06T11:00:00.000Z");
-    await saveCronStore(store.storePath, {
-      version: 1,
-      jobs: [
-        {
-          id: "startup-stable",
-          name: "startup stable",
-          createdAtMs: scheduledAt - 60_000,
-          updatedAtMs: scheduledAt - 60_000,
-          enabled: true,
-          schedule: { kind: "at", at: new Date(scheduledAt).toISOString() },
-          sessionTarget: "main",
-          wakeMode: "next-heartbeat",
-          payload: { kind: "systemEvent", text: "stable" },
-          state: { nextRunAtMs: scheduledAt },
-        },
-      ],
-    });
-    const before = await loadCronStore(store.storePath);
+    await writeCronStoreSnapshot(store.storeKey, [
+      {
+        id: "startup-stable",
+        name: "startup stable",
+        createdAtMs: scheduledAt - 60_000,
+        updatedAtMs: scheduledAt - 60_000,
+        enabled: true,
+        schedule: { kind: "at", at: new Date(scheduledAt).toISOString() },
+        sessionTarget: "main",
+        wakeMode: "next-heartbeat",
+        payload: { kind: "systemEvent", text: "stable" },
+        state: { nextRunAtMs: scheduledAt },
+      },
+    ]);
+    const before = JSON.stringify(await loadCronStore(store.storeKey));
 
     const cron = await startCronForStore({
-      storePath: store.storePath,
+      storeKey: store.storeKey,
       cronEnabled: true,
     });
-    const after = await loadCronStore(store.storePath);
+    const after = JSON.stringify(await loadCronStore(store.storeKey));
 
     expect(after).toEqual(before);
     cron.stop();
   });
 
   it("repairs missing nextRunAtMs on non-schedule updates without touching other jobs", async () => {
-    const store = cronIssueRegressionFixtures.makeStorePath();
-    const cron = await startCronForStore({ storePath: store.storePath, cronEnabled: false });
+    const store = cronIssueRegressionFixtures.makeStoreKey();
+    const cron = await startCronForStore({ storeKey: store.storeKey, cronEnabled: false });
 
     const created = await cron.add({
       name: "repair-target",
@@ -114,10 +111,10 @@ describe("Cron issue regressions", () => {
   });
 
   it("does not advance unrelated due jobs when updating another job", async () => {
-    const store = cronIssueRegressionFixtures.makeStorePath();
+    const store = cronIssueRegressionFixtures.makeStoreKey();
     const now = Date.parse("2026-02-06T10:05:00.000Z");
     vi.setSystemTime(now);
-    const cron = await startCronForStore({ storePath: store.storePath, cronEnabled: false });
+    const cron = await startCronForStore({ storeKey: store.storeKey, cronEnabled: false });
 
     const dueJob = await cron.add({
       name: "due-preserved",
@@ -145,7 +142,7 @@ describe("Cron issue regressions", () => {
       payload: { kind: "systemEvent", text: "other-updated" },
     });
 
-    const storeData = await loadCronStore(store.storePath);
+    const storeData = await loadCronStore(store.storeKey);
     const persistedDueJob = storeData.jobs.find((job) => job.id === dueJob.id);
     expect(persistedDueJob?.state?.nextRunAtMs).toBe(originalDueNextRunAtMs);
 
@@ -153,8 +150,8 @@ describe("Cron issue regressions", () => {
   });
 
   it("rejects invalid cron schedule updates without mutating disabled jobs", async () => {
-    const store = cronIssueRegressionFixtures.makeStorePath();
-    const cron = await startCronForStore({ storePath: store.storePath, cronEnabled: false });
+    const store = cronIssueRegressionFixtures.makeStoreKey();
+    const cron = await startCronForStore({ storeKey: store.storeKey, cronEnabled: false });
 
     const disabledJob = await cron.add({
       name: "disabled-cron",
@@ -171,7 +168,7 @@ describe("Cron issue regressions", () => {
       }),
     ).rejects.toThrow("CronPattern");
 
-    const persisted = await loadCronStore(store.storePath);
+    const persisted = await loadCronStore(store.storeKey);
     const storedJob = persisted.jobs.find((job) => job.id === disabledJob.id);
     expect(storedJob?.enabled).toBe(false);
     expect(storedJob?.schedule.kind).toBe("cron");
@@ -185,21 +182,21 @@ describe("Cron issue regressions", () => {
   });
 
   it("keeps telegram delivery target writeback after manual cron.run", async () => {
-    const store = cronIssueRegressionFixtures.makeStorePath();
+    const store = cronIssueRegressionFixtures.makeStoreKey();
     const originalTarget = "https://t.me/obviyus";
     const rewrittenTarget = "-10012345/6789";
     const runIsolatedAgentJob = vi.fn(async (params: { job: { id: string } }) => {
-      const persisted = await loadCronStore(store.storePath);
+      const persisted = await loadCronStore(store.storeKey);
       const targetJob = persisted.jobs.find((job) => job.id === params.job.id);
       if (targetJob?.delivery?.channel === "telegram") {
         targetJob.delivery.to = rewrittenTarget;
       }
-      await saveCronStore(store.storePath, persisted);
+      await saveCronStore(store.storeKey, persisted);
       return { status: "ok" as const, summary: "done", delivered: true };
     });
 
     const cron = await startCronForStore({
-      storePath: store.storePath,
+      storeKey: store.storeKey,
       cronEnabled: false,
       runIsolatedAgentJob,
     });
@@ -220,7 +217,7 @@ describe("Cron issue regressions", () => {
     const result = await cron.run(job.id, "force");
     expect(result).toEqual({ ok: true, ran: true });
 
-    const persisted = await loadCronStore(store.storePath);
+    const persisted = await loadCronStore(store.storeKey);
     const persistedJob = persisted.jobs.find((entry) => entry.id === job.id);
     expect(persistedJob?.delivery?.to).toBe(rewrittenTarget);
     expect(persistedJob?.state.lastStatus).toBe("ok");
@@ -230,7 +227,7 @@ describe("Cron issue regressions", () => {
   });
 
   it("#13845: one-shot jobs with terminal statuses do not re-fire on restart", async () => {
-    const store = cronIssueRegressionFixtures.makeStorePath();
+    const store = cronIssueRegressionFixtures.makeStoreKey();
     const pastAt = Date.parse("2026-02-06T09:00:00.000Z");
     const baseJob = {
       name: "reminder",
@@ -264,10 +261,10 @@ describe("Cron issue regressions", () => {
     ];
     for (const { id, state } of terminalStates) {
       const job: CronJob = { id, ...baseJob, state };
-      await saveCronStore(store.storePath, { version: 1, jobs: [job] });
+      await saveCronStore(store.storeKey, { version: 1, jobs: [job] });
       const enqueueSystemEvent = vi.fn();
       const cron = await startCronForStore({
-        storePath: store.storePath,
+        storeKey: store.storeKey,
         enqueueSystemEvent,
         runIsolatedAgentJob: vi.fn().mockResolvedValue({ status: "ok" }),
       });

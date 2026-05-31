@@ -9,12 +9,12 @@ export default defineBundledChannelSetupEntry({
     specifier: "./setup-plugin-api.js",
     exportName: "telegramSetupPlugin",
   },
-  legacyStateMigrations: {
-    specifier: "./legacy-state-migrations-api.js",
-    exportName: "detectTelegramLegacyStateMigrations",
-  },
   secrets: {
     specifier: "./secret-contract-api.js",
     exportName: "channelSecrets",
+  },
+  legacyStateMigrations: {
+    specifier: "./doctor-legacy-state-api.js",
+    exportName: "detectTelegramLegacyStateMigrations",
   },
 });

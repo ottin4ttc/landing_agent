@@ -1,6 +1,6 @@
 import { formatErrorMessage } from "../../infra/errors.js";
-import { createAssistantMessageEventStream } from "../../llm/utils/event-stream.js";
-import type { AgentMessage, StreamFn } from "../runtime/index.js";
+import type { AgentMessage, StreamFn } from "../agent-core-contract.js";
+import { createAssistantMessageEventStream } from "../pi-ai-contract.js";
 import { log } from "./logger.js";
 
 type AssistantContentBlock = Extract<AgentMessage, { role: "assistant" }>["content"][number];

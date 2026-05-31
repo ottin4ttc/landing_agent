@@ -2,8 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import type { PluginCandidate } from "./discovery.js";
-import { resolveInstalledPluginIndexStorePath } from "./installed-plugin-index-store-path.js";
+import { writePersistedInstalledPluginIndexToSqliteSync } from "./installed-plugin-index-persisted-read.js";
 import {
   readPersistedInstalledPluginIndex,
   writePersistedInstalledPluginIndex,
@@ -42,6 +43,7 @@ const tempDirs: string[] = [];
 
 afterEach(() => {
   clearPluginMetadataLifecycleCaches();
+  closeOpenClawStateDatabaseForTest();
   cleanupTrackedTempDirs(tempDirs);
 });
 
@@ -815,18 +817,16 @@ describe("plugin registry facade", () => {
     expectSnapshotPluginIds(second.snapshot, ["second"]);
   });
 
-  it("does not reuse the process registry memo after the persisted registry file changes", async () => {
+  it("does not reuse the process registry memo after the persisted registry row changes", async () => {
     const stateDir = makeTempDir();
     const env = hermeticEnv();
     await writePersistedInstalledPluginIndex(createPersistableIndex("first"), { stateDir });
     const first = loadPluginRegistrySnapshotWithMetadata({ stateDir, env });
-    const filePath = resolveInstalledPluginIndexStorePath({ stateDir, env });
 
-    fs.writeFileSync(
-      filePath,
-      JSON.stringify(createPersistableIndex("second-external"), null, 2),
-      "utf8",
-    );
+    writePersistedInstalledPluginIndexToSqliteSync(createPersistableIndex("second-external"), {
+      stateDir,
+      env,
+    });
     const second = loadPluginRegistrySnapshotWithMetadata({ stateDir, env });
 
     expect(first.source).toBe("persisted");

@@ -1,6 +1,6 @@
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
-import type { AssistantMessage, ToolResultMessage } from "openclaw/plugin-sdk/llm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { AssistantMessage, ToolResultMessage } from "./pi-ai-contract.js";
 import { makeAgentAssistantMessage } from "./test-helpers/agent-message-fixtures.js";
 import "./test-helpers/agent-session-token-mock.js";
 

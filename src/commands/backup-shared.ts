@@ -6,6 +6,7 @@ import {
   resolveOAuthDir,
   resolveStateDir,
 } from "../config/config.js";
+import { formatFilesystemTimestamp } from "../infra/filesystem-timestamp.js";
 import { pathExists, shortenHomePath } from "../utils.js";
 import { buildCleanupPlan, isPathWithin } from "./cleanup-utils.js";
 
@@ -78,7 +79,7 @@ export function formatBackupArchiveTimestamp(
 }
 
 export function buildBackupArchiveRoot(nowMs = Date.now()): string {
-  return `${formatBackupArchiveTimestamp(nowMs)}-openclaw-backup`;
+  return `${formatFilesystemTimestamp(nowMs)}-openclaw-backup`;
 }
 
 export function buildBackupArchiveBasename(nowMs = Date.now()): string {

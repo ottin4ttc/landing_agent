@@ -26,7 +26,6 @@ const {
 } = vi.hoisted(() => ({
   appendAssistantMessageToSessionTranscriptMock: vi.fn().mockResolvedValue({
     ok: true,
-    sessionFile: "session.jsonl",
     messageId: "mirror-message",
   }),
   countActiveDescendantRunsMock: vi.fn().mockReturnValue(0),
@@ -314,7 +313,6 @@ describe("dispatchCronDelivery — double-announce guard", () => {
     vi.mocked(ensureOutboundSessionEntry).mockResolvedValue(undefined);
     vi.mocked(appendAssistantMessageToSessionTranscript).mockResolvedValue({
       ok: true,
-      sessionFile: "session.jsonl",
       messageId: "mirror-message",
     });
     maybeApplyTtsToPayloadMock.mockReset().mockImplementation(async (params) => params.payload);
@@ -1550,7 +1548,6 @@ describe("dispatchCronDelivery — double-announce guard", () => {
       agentId: "main",
       text: "REPRO_TOKEN_K7M3X9",
       mediaUrls: undefined,
-      storePath: expect.stringContaining("cron-mirror-sessions.json"),
       idempotencyKey: expect.stringContaining("test-job"),
       config: params.cfgWithAgentDefaults,
     });
@@ -1615,7 +1612,6 @@ describe("dispatchCronDelivery — double-announce guard", () => {
       agentId: "main",
       text: "custom-session report",
       mediaUrls: undefined,
-      storePath: expect.stringContaining("cron-custom-session-mirror.json"),
       idempotencyKey: expect.stringContaining("test-job"),
       config: params.cfgWithAgentDefaults,
     });

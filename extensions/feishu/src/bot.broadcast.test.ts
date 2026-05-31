@@ -96,7 +96,6 @@ describe("broadcast dispatch", () => {
         resolveAgentRoute: (params: unknown) => mockResolveAgentRoute(params),
       },
       session: {
-        resolveStorePath: vi.fn(() => "/tmp/feishu-session-store.json"),
         recordInboundSession: vi.fn().mockResolvedValue(undefined),
       },
       reply: {
@@ -133,7 +132,6 @@ describe("broadcast dispatch", () => {
             throw new Error("feishu broadcast test runtime only supports prepared turns");
           }
           await turn.recordInboundSession({
-            storePath: turn.storePath,
             sessionKey: turn.ctxPayload.SessionKey ?? turn.routeSessionKey,
             ctx: turn.ctxPayload,
             groupResolution: turn.record?.groupResolution,

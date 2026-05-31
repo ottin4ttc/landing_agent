@@ -1,12 +1,12 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
-import type { Context, Model, SimpleStreamOptions } from "openclaw/plugin-sdk/llm";
-import { createAssistantMessageEventStream } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { testing as extraParamsTesting } from "./embedded-agent-runner/extra-params.js";
+import { __testing as extraParamsTesting } from "./embedded-agent-runner/extra-params.js";
+import { createAssistantMessageEventStream } from "./pi-ai-contract.js";
+import type { Context, Model, SimpleStreamOptions } from "./pi-ai-contract.js";
 
 vi.mock("../plugins/provider-hook-runtime.js", () => ({
   clearProviderRuntimePluginCacheForTest: vi.fn(),
-  testing: {
+  __testing: {
     buildHookProviderCacheKey: () => "test-provider-hook-cache-key",
     clearProviderRuntimePluginCacheForTest: vi.fn(),
   },

@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { migrateLegacyCronRunLogsToSqlite } from "../commands/doctor/cron/legacy-run-log-migration.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
   appendCronRunLog,
   DEFAULT_CRON_RUN_LOG_KEEP_LINES,
@@ -15,6 +16,10 @@ import {
 } from "./run-log.js";
 
 describe("cron run log", () => {
+  afterEach(() => {
+    closeOpenClawStateDatabaseForTest();
+  });
+
   it("resolves prune options from config with defaults", () => {
     expect(resolveCronRunLogPruneOptions()).toEqual({
       maxBytes: DEFAULT_CRON_RUN_LOG_MAX_BYTES,
@@ -42,9 +47,17 @@ describe("cron run log", () => {
 
   async function withRunLogDir(prefix: string, run: (dir: string) => Promise<void>) {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    const originalStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = path.join(dir, "state");
     try {
       await run(dir);
     } finally {
+      closeOpenClawStateDatabaseForTest();
+      if (originalStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = originalStateDir;
+      }
       await fs.rm(dir, { recursive: true, force: true });
     }
   }

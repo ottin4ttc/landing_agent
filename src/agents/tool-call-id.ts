@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentMessage } from "./runtime/index.js";
+import type { AgentMessage } from "./agent-core-contract.js";
 import { isAllowedToolCallName, normalizeAllowedToolNames } from "./tool-call-shared.js";
 
 export type ToolCallIdMode = "strict" | "strict9";

@@ -138,7 +138,7 @@ export function archiveFileOnDisk(filePath: string, reason: ArchiveFileReason): 
   // chat inject, command execution) already emit here; archive was the sole
   // remaining gap, which is why `.jsonl.reset.<iso>` / `.jsonl.deleted.<iso>`
   // files only surfaced in the index after a full reindex.
-  emitSessionTranscriptUpdate({ sessionFile: archived });
+  emitSessionTranscriptUpdate({ transcriptPath: archived });
   return archived;
 }
 

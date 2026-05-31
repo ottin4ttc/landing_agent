@@ -37,29 +37,48 @@ describe("isCliBindingFlushed", () => {
   });
 
   it("retries up to three times before giving up", async () => {
-    const delay = vi.fn(async () => undefined);
-    const probe = vi.fn(async () => false);
-    setCliRunnerTestDeps({ claudeCliSessionTranscriptHasContent: probe, delay });
+    vi.useFakeTimers();
+    try {
+      const probe = vi.fn(async () => false);
+      setCliRunnerTestDeps({ claudeCliSessionTranscriptHasContent: probe });
 
-    expect(await isCliBindingFlushed("sid-cold", "claude-cli", workspaceDir)).toBe(false);
-    expect(probe).toHaveBeenCalledTimes(3);
-    expect(delay).toHaveBeenCalledTimes(2);
-    expect(delay).toHaveBeenNthCalledWith(1, 50);
-    expect(delay).toHaveBeenNthCalledWith(2, 150);
+      const result = isCliBindingFlushed("sid-cold", "claude-cli", workspaceDir);
+
+      // Drive the bounded 0 + 50 + 150ms retry schedule to completion.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(150);
+
+      expect(await result).toBe(false);
+      expect(probe).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("succeeds when the transcript becomes visible on a later retry", async () => {
-    const delay = vi.fn(async () => undefined);
-    let calls = 0;
-    const probe = vi.fn(async () => {
-      calls += 1;
-      return calls >= 2;
-    });
-    setCliRunnerTestDeps({ claudeCliSessionTranscriptHasContent: probe, delay });
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const probe = vi.fn(async () => {
+        calls += 1;
+        return calls >= 2;
+      });
+      setCliRunnerTestDeps({ claudeCliSessionTranscriptHasContent: probe });
 
-    expect(await isCliBindingFlushed("sid-late", "claude-cli", workspaceDir)).toBe(true);
-    expect(probe).toHaveBeenCalledTimes(2);
-    expect(delay).toHaveBeenCalledExactlyOnceWith(50);
+      const result = isCliBindingFlushed("sid-late", "claude-cli", workspaceDir);
+
+      // First probe (0ms) fails; the 50ms retry probe succeeds.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(await result).toBe(true);
+      expect(probe).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("schedules at most 0 + 50 + 150ms of delay across the bounded retry", async () => {

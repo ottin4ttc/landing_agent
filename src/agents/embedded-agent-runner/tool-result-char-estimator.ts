@@ -1,4 +1,4 @@
-import type { AgentMessage } from "../runtime/index.js";
+import type { AgentMessage } from "../agent-core-contract.js";
 
 export const CHARS_PER_TOKEN_ESTIMATE = 4;
 export const TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE = 2;

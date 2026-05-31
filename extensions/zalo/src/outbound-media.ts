@@ -1,35 +1,17 @@
 import { randomBytes } from "node:crypto";
-import { rmSync } from "node:fs";
-import { readdir, readFile, stat, unlink } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { join } from "node:path";
 import {
   asDateTimestampMs,
   resolveExpiresAtMsFromDurationMs,
 } from "openclaw/plugin-sdk/number-runtime";
 import { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
-import { privateFileStore } from "openclaw/plugin-sdk/security-runtime";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
+import { createPluginBlobStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { resolveWebhookPath } from "openclaw/plugin-sdk/webhook-ingress";
 
 const ZALO_OUTBOUND_MEDIA_TTL_MS = 2 * 60_000;
+const ZALO_OUTBOUND_MEDIA_MAX_ENTRIES = 100;
 const ZALO_OUTBOUND_MEDIA_SEGMENT = "media";
 const ZALO_OUTBOUND_MEDIA_PREFIX = `/${ZALO_OUTBOUND_MEDIA_SEGMENT}/`;
-const ZALO_OUTBOUND_MEDIA_DIR_NAME = "openclaw-zalo-outbound-media";
-
-function resolveHostedZaloMediaDirName(): string {
-  const workerId = process.env.VITEST_WORKER_ID ?? process.env.VITEST_POOL_ID;
-  if (!workerId) {
-    return ZALO_OUTBOUND_MEDIA_DIR_NAME;
-  }
-  const safeWorkerId = workerId.replaceAll(/[^a-zA-Z0-9_.-]/gu, "_");
-  return `${ZALO_OUTBOUND_MEDIA_DIR_NAME}-${safeWorkerId}`;
-}
-
-const ZALO_OUTBOUND_MEDIA_DIR = join(
-  resolvePreferredOpenClawTmpDir(),
-  resolveHostedZaloMediaDirName(),
-);
 const ZALO_OUTBOUND_MEDIA_ID_RE = /^[a-f0-9]{24}$/;
 
 type HostedZaloMediaMetadata = {
@@ -39,13 +21,10 @@ type HostedZaloMediaMetadata = {
   expiresAt: number;
 };
 
-function resolveHostedZaloMediaMetadataPath(id: string): string {
-  return join(ZALO_OUTBOUND_MEDIA_DIR, `${id}.json`);
-}
-
-function resolveHostedZaloMediaBufferPath(id: string): string {
-  return join(ZALO_OUTBOUND_MEDIA_DIR, `${id}.bin`);
-}
+const hostedZaloMediaStore = createPluginBlobStore<HostedZaloMediaMetadata>("zalo", {
+  namespace: "outbound-media",
+  maxEntries: ZALO_OUTBOUND_MEDIA_MAX_ENTRIES,
+});
 
 function createHostedZaloMediaId(): string {
   return randomBytes(12).toString("hex");
@@ -55,46 +34,25 @@ function createHostedZaloMediaToken(): string {
   return randomBytes(24).toString("hex");
 }
 
-async function ensureHostedZaloMediaDir(): Promise<void> {
-  await privateFileStore(ZALO_OUTBOUND_MEDIA_DIR).writeText(".ready", "");
-  await unlink(join(ZALO_OUTBOUND_MEDIA_DIR, ".ready")).catch(() => undefined);
-}
-
 async function deleteHostedZaloMediaEntry(id: string): Promise<void> {
-  await Promise.all([
-    unlink(resolveHostedZaloMediaMetadataPath(id)).catch(() => undefined),
-    unlink(resolveHostedZaloMediaBufferPath(id)).catch(() => undefined),
-  ]);
+  await hostedZaloMediaStore.delete(id);
 }
 
 async function cleanupExpiredHostedZaloMedia(nowMs = Date.now()): Promise<void> {
+  // Validate the clock reading before comparing TTLs so a bad now cannot
+  // mass-delete live entries; mirrors main's asDateTimestampMs guard.
   const now = asDateTimestampMs(nowMs);
   if (now === undefined) {
     return;
   }
-  let fileNames: string[];
-  try {
-    fileNames = await readdir(ZALO_OUTBOUND_MEDIA_DIR);
-  } catch {
-    return;
-  }
-
+  const entries = await hostedZaloMediaStore.entries();
   await Promise.all(
-    fileNames
-      .filter((fileName) => fileName.endsWith(".json"))
-      .map(async (fileName) => {
-        const id = fileName.slice(0, -5);
-        try {
-          const metadataRaw = await readFile(resolveHostedZaloMediaMetadataPath(id), "utf8");
-          const metadata = JSON.parse(metadataRaw) as HostedZaloMediaMetadata;
-          const expiresAt = asDateTimestampMs(metadata.expiresAt);
-          if (expiresAt === undefined || expiresAt <= now) {
-            await deleteHostedZaloMediaEntry(id);
-          }
-        } catch {
-          await deleteHostedZaloMediaEntry(id);
-        }
-      }),
+    entries
+      .filter((entry) => {
+        const expiresAt = asDateTimestampMs(entry.metadata.expiresAt);
+        return expiresAt === undefined || expiresAt <= now;
+      })
+      .map((entry) => hostedZaloMediaStore.delete(entry.key)),
   );
 }
 
@@ -102,18 +60,14 @@ async function readHostedZaloMediaEntry(id: string): Promise<{
   metadata: HostedZaloMediaMetadata;
   buffer: Buffer;
 } | null> {
-  try {
-    const [metadataRaw, buffer] = await Promise.all([
-      readFile(resolveHostedZaloMediaMetadataPath(id), "utf8"),
-      readFile(resolveHostedZaloMediaBufferPath(id)),
-    ]);
-    return {
-      metadata: JSON.parse(metadataRaw) as HostedZaloMediaMetadata,
-      buffer,
-    };
-  } catch {
+  const entry = await hostedZaloMediaStore.lookup(id);
+  if (!entry) {
     return null;
   }
+  return {
+    metadata: entry.metadata,
+    buffer: entry.blob,
+  };
 }
 
 export function resolveHostedZaloMediaRoutePrefix(params: {
@@ -147,7 +101,6 @@ export async function prepareHostedZaloMediaUrl(params: {
   maxBytes: number;
   proxyUrl?: string;
 }): Promise<string> {
-  await ensureHostedZaloMediaDir();
   await cleanupExpiredHostedZaloMedia();
 
   const now = asDateTimestampMs(Date.now());
@@ -172,19 +125,16 @@ export async function prepareHostedZaloMediaUrl(params: {
   const token = createHostedZaloMediaToken();
   const publicBaseUrl = new URL(params.webhookUrl).origin;
 
-  const store = privateFileStore(ZALO_OUTBOUND_MEDIA_DIR);
-  await store.writeText(`${id}.bin`, media.buffer);
-  try {
-    await store.writeJson(`${id}.json`, {
+  await hostedZaloMediaStore.register(
+    id,
+    {
       routePath,
       token,
       contentType: media.contentType,
       expiresAt,
-    } satisfies HostedZaloMediaMetadata);
-  } catch (error) {
-    await deleteHostedZaloMediaEntry(id);
-    throw error;
-  }
+    } satisfies HostedZaloMediaMetadata,
+    media.buffer,
+  );
 
   return `${publicBaseUrl}${routePath}${id}?token=${token}`;
 }
@@ -248,10 +198,7 @@ export async function tryHandleHostedZaloMediaRequest(
   }
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
-  const bufferStats = await stat(resolveHostedZaloMediaBufferPath(id)).catch(() => null);
-  if (bufferStats) {
-    res.setHeader("Content-Length", String(bufferStats.size));
-  }
+  res.setHeader("Content-Length", String(entry.buffer.byteLength));
 
   if (method === "HEAD") {
     res.statusCode = 200;
@@ -265,6 +212,6 @@ export async function tryHandleHostedZaloMediaRequest(
   return true;
 }
 
-export function clearHostedZaloMediaForTest(): void {
-  rmSync(ZALO_OUTBOUND_MEDIA_DIR, { recursive: true, force: true });
+export async function clearHostedZaloMediaForTest(): Promise<void> {
+  await hostedZaloMediaStore.clear();
 }

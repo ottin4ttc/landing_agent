@@ -9,20 +9,22 @@ import {
 } from "./subagent-spawn.test-helpers.js";
 
 const callGatewayMock = vi.fn();
-const updateSessionStoreMock = vi.fn();
+const upsertSessionEntryMock = vi.fn();
 
 let configOverride: Record<string, unknown> = {
   ...createSubagentSpawnTestConfig(),
 };
 let workspaceDirOverride = "";
+let sessionStore: Record<string, Record<string, unknown>> = {};
 let subagentSpawnModule: Awaited<ReturnType<typeof loadSubagentSpawnModuleForTest>>;
 
 beforeAll(async () => {
   subagentSpawnModule = await loadSubagentSpawnModuleForTest({
     callGatewayMock,
     getRuntimeConfig: () => configOverride,
-    updateSessionStoreMock,
+    upsertSessionEntryMock,
     workspaceDir: workspaceDirOverride || os.tmpdir(),
+    getSessionStore: () => sessionStore,
   });
 });
 
@@ -92,15 +94,9 @@ describe("spawnSubagentDirect filename validation", () => {
     configOverride = createSubagentSpawnTestConfig(workspaceDirOverride);
     subagentSpawnModule.resetSubagentRegistryForTests();
     callGatewayMock.mockClear();
-    updateSessionStoreMock.mockReset();
-    const store: Record<string, Record<string, unknown>> = {};
-    updateSessionStoreMock.mockImplementation(async (_storePath: unknown, mutator: unknown) => {
-      if (typeof mutator !== "function") {
-        throw new Error("missing session store mutator");
-      }
-      await mutator(store);
-      return store;
-    });
+    upsertSessionEntryMock.mockReset();
+    sessionStore = {};
+    upsertSessionEntryMock.mockImplementation(() => undefined);
     setupAcceptedSubagentGatewayMock(callGatewayMock);
   });
 
@@ -120,6 +116,15 @@ describe("spawnSubagentDirect filename validation", () => {
   };
 
   const validContent = Buffer.from("hello").toString("base64");
+
+  function readAgentInitialVfsEntries(): Array<{ path?: unknown; contentBase64?: unknown }> {
+    const agentCall = callGatewayMock.mock.calls.find(
+      ([request]) => (request as { method?: string }).method === "agent",
+    )?.[0] as { params?: { initialVfsEntries?: unknown } } | undefined;
+    const entries = agentCall?.params?.initialVfsEntries;
+    expect(Array.isArray(entries)).toBe(true);
+    return entries as Array<{ path?: unknown; contentBase64?: unknown }>;
+  }
 
   async function spawnWithName(name: string) {
     const { spawnSubagentDirect } = subagentSpawnModule;
@@ -178,7 +183,7 @@ describe("spawnSubagentDirect filename validation", () => {
     expect(result.error).toMatch(/attachments_invalid_name/);
   });
 
-  it("materializes attachments under explicit cwd when native subagent cwd is provided", async () => {
+  it("passes attachments as initial VFS entries when native subagent cwd is provided", async () => {
     const explicitWorkspaceDir = fs.mkdtempSync(
       path.join(os.tmpdir(), `openclaw-subagent-cwd-attachments-${process.pid}-${Date.now()}-`),
     );
@@ -194,30 +199,41 @@ describe("spawnSubagentDirect filename validation", () => {
       );
 
       expect(result.status).toBe("accepted");
+      const entries = readAgentInitialVfsEntries();
+      expect(entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.stringMatching(/^\.openclaw\/attachments\/[^/]+\/file\.txt$/),
+            contentBase64: validContent,
+          }),
+          expect.objectContaining({
+            path: expect.stringMatching(/^\.openclaw\/attachments\/[^/]+\/\.manifest\.json$/),
+          }),
+        ]),
+      );
       const explicitAttachmentsRoot = path.join(explicitWorkspaceDir, ".openclaw", "attachments");
       const targetAttachmentsRoot = path.join(workspaceDirOverride, ".openclaw", "attachments");
-      expect(fs.existsSync(explicitAttachmentsRoot)).toBe(true);
+      expect(fs.existsSync(explicitAttachmentsRoot)).toBe(false);
       expect(fs.existsSync(targetAttachmentsRoot)).toBe(false);
     } finally {
       fs.rmSync(explicitWorkspaceDir, { recursive: true, force: true });
     }
   });
 
-  it("normalizes explicit cwd before materializing native subagent attachments", async () => {
+  it("normalizes explicit cwd before preparing native subagent attachments", async () => {
     const homeDir = fs.mkdtempSync(
       path.join(os.tmpdir(), `openclaw-subagent-home-attachments-${process.pid}-${Date.now()}-`),
     );
     const expectedCwd = path.join(homeDir, "task-repo");
     let persistedStore: Record<string, Record<string, unknown>> | undefined;
-    const store: Record<string, Record<string, unknown>> = {};
-    updateSessionStoreMock.mockImplementation(async (_storePath: unknown, mutator: unknown) => {
-      if (typeof mutator !== "function") {
-        throw new Error("missing session store mutator");
-      }
-      await mutator(store);
-      persistedStore = store;
-      return store;
-    });
+    upsertSessionEntryMock.mockImplementation(
+      (options: { sessionKey: string; entry: Record<string, unknown> }) => {
+        persistedStore = {
+          ...persistedStore,
+          [options.sessionKey]: options.entry,
+        };
+      },
+    );
     try {
       vi.stubEnv("HOME", homeDir);
       const { spawnSubagentDirect } = subagentSpawnModule;
@@ -231,8 +247,15 @@ describe("spawnSubagentDirect filename validation", () => {
       );
 
       expect(result.status).toBe("accepted");
+      expect(readAgentInitialVfsEntries()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: expect.stringMatching(/^\.openclaw\/attachments\/[^/]+\/file\.txt$/),
+          }),
+        ]),
+      );
       const attachmentsRoot = path.join(expectedCwd, ".openclaw", "attachments");
-      expect(fs.existsSync(attachmentsRoot)).toBe(true);
+      expect(fs.existsSync(attachmentsRoot)).toBe(false);
       const childSessionKey = result.childSessionKey as string;
       expect(persistedStore?.[childSessionKey]?.spawnedCwd).toBe(expectedCwd);
     } finally {
@@ -240,18 +263,13 @@ describe("spawnSubagentDirect filename validation", () => {
     }
   });
 
-  it("removes materialized attachments when lineage patching fails", async () => {
+  it("does not pass prepared attachments to the child run when lineage patching fails", async () => {
     const calls: Array<{ method?: string; params?: Record<string, unknown> }> = [];
-    const store: Record<string, Record<string, unknown>> = {};
-    updateSessionStoreMock.mockImplementation(async (_storePath: unknown, mutator: unknown) => {
-      if (typeof mutator !== "function") {
-        throw new Error("missing session store mutator");
-      }
-      await mutator(store);
-      if (Object.values(store).some((entry) => typeof entry.spawnedBy === "string")) {
+    sessionStore = {};
+    upsertSessionEntryMock.mockImplementation((options: { entry?: Record<string, unknown> }) => {
+      if (typeof options.entry?.spawnedBy === "string") {
         throw new Error("lineage patch failed");
       }
-      return store;
     });
     callGatewayMock.mockImplementation(async (opts: unknown) => {
       const request = opts as { method?: string; params?: Record<string, unknown> };
@@ -273,21 +291,15 @@ describe("spawnSubagentDirect filename validation", () => {
 
     expect(result.status).toBe("error");
     expect(result.error).toContain("lineage patch failed");
-    const attachmentsRoot = path.join(workspaceDirOverride, ".openclaw", "attachments");
-    const retainedDirs = fs.existsSync(attachmentsRoot)
-      ? fs.readdirSync(attachmentsRoot).filter((entry) => !entry.startsWith("."))
-      : [];
-    expect(retainedDirs).toHaveLength(0);
+    expect(calls.some((entry) => entry.method === "agent")).toBe(false);
     const deleteCall = calls.find((entry) => entry.method === "sessions.delete");
     const deleteParams = deleteCall?.params as
       | {
           key?: string;
-          deleteTranscript?: boolean;
           emitLifecycleHooks?: boolean;
         }
       | undefined;
     expect(deleteParams?.key).toMatch(/^agent:main:subagent:/);
-    expect(deleteParams?.deleteTranscript).toBe(true);
     expect(deleteParams?.emitLifecycleHooks).toBe(false);
   });
 });

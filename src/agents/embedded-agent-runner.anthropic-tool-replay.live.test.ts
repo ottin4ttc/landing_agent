@@ -1,4 +1,3 @@
-import type { Message, Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import { wrapStreamFnSanitizeMalformedToolCalls } from "./embedded-agent-runner/run/attempt.tool-call-normalization.js";
 import { OMITTED_ASSISTANT_REASONING_TEXT } from "./embedded-agent-runner/thinking.js";
@@ -8,6 +7,7 @@ import {
   logLiveCache,
 } from "./live-cache-test-support.js";
 import { isLiveTestEnabled } from "./live-test-helpers.js";
+import type { Message, Model } from "./pi-ai-contract.js";
 import { buildAssistantMessageWithZeroUsage } from "./stream-message-shared.js";
 
 const ANTHROPIC_LIVE = isLiveTestEnabled(["ANTHROPIC_LIVE_TEST"]);

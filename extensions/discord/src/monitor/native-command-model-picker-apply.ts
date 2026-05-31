@@ -4,7 +4,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { applyModelOverrideToSessionEntry } from "openclaw/plugin-sdk/model-session-runtime";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
-import { resolveStorePath, updateSessionStore } from "openclaw/plugin-sdk/session-store-runtime";
+import { patchSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { withTimeout } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { ButtonInteraction, StringSelectMenuInteraction } from "../internal/discord.js";
 import {
@@ -35,40 +35,42 @@ async function persistDiscordModelPickerOverride(params: {
   provider: string;
   model: string;
   isDefault: boolean;
-  runtime?: string;
+  selectedRuntime?: string;
 }): Promise<boolean> {
-  const storePath = resolveStorePath(params.cfg.session?.store, {
-    agentId: params.route.agentId,
-  });
   let persisted = false;
-  await updateSessionStore(storePath, (store) => {
-    const entry = store[params.route.sessionKey] ?? {
+  await patchSessionEntry({
+    agentId: params.route.agentId,
+    sessionKey: params.route.sessionKey,
+    fallbackEntry: {
       sessionId: randomUUID(),
       updatedAt: Date.now(),
-    };
-    store[params.route.sessionKey] = entry;
-    persisted =
-      applyModelOverrideToSessionEntry({
-        entry,
+    },
+    update: (entry) => {
+      const next = { ...entry };
+      let updated = applyModelOverrideToSessionEntry({
+        entry: next,
         selection: {
           provider: params.provider,
           model: params.model,
           isDefault: params.isDefault,
         },
         markLiveSwitchPending: true,
-      }).updated || persisted;
-    const runtime = params.runtime?.trim();
-    if (runtime && runtime !== "auto" && runtime !== "default") {
-      if (entry.agentRuntimeOverride !== runtime) {
-        entry.agentRuntimeOverride = runtime;
-        delete entry.agentHarnessId;
-        persisted = true;
+      }).updated;
+      const runtime = params.selectedRuntime?.trim();
+      if (runtime && runtime !== "auto" && runtime !== "default") {
+        if (next.agentRuntimeOverride !== runtime) {
+          next.agentRuntimeOverride = runtime;
+          delete next.agentHarnessId;
+          updated = true;
+        }
+      } else if (runtime && next.agentRuntimeOverride) {
+        delete next.agentRuntimeOverride;
+        delete next.agentHarnessId;
+        updated = true;
       }
-    } else if (runtime && entry.agentRuntimeOverride) {
-      delete entry.agentRuntimeOverride;
-      delete entry.agentHarnessId;
-      persisted = true;
-    }
+      persisted = updated || persisted;
+      return updated ? next : null;
+    },
   });
   return persisted;
 }
@@ -124,21 +126,6 @@ export async function applyDiscordModelPickerSelection(params: {
 
     let effectiveModelRef = params.resolveCurrentModel(fallbackRoute);
     let persisted = effectiveModelRef === params.resolvedModelRef;
-    if (params.selectedRuntime?.trim()) {
-      await persistDiscordModelPickerOverride({
-        cfg: params.cfg,
-        route: fallbackRoute,
-        provider: params.selectedProvider,
-        model: params.selectedModel,
-        isDefault:
-          params.selectedProvider === params.defaultProvider &&
-          params.selectedModel === params.defaultModel,
-        runtime: params.selectedRuntime,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      effectiveModelRef = params.resolveCurrentModel(fallbackRoute);
-      persisted = effectiveModelRef === params.resolvedModelRef;
-    }
 
     if (!persisted) {
       logVerbose(
@@ -150,10 +137,10 @@ export async function applyDiscordModelPickerSelection(params: {
           route: fallbackRoute,
           provider: params.selectedProvider,
           model: params.selectedModel,
+          selectedRuntime: params.selectedRuntime,
           isDefault:
             params.selectedProvider === params.defaultProvider &&
             params.selectedModel === params.defaultModel,
-          runtime: params.selectedRuntime,
         });
         await new Promise((resolve) => setTimeout(resolve, 100));
         effectiveModelRef = params.resolveCurrentModel(fallbackRoute);

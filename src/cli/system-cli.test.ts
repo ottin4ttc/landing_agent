@@ -85,16 +85,12 @@ describe("system-cli", () => {
       "agent:main:telegram:dm:42",
     ]);
 
-    expect(callGatewayFromCli).toHaveBeenCalledTimes(1);
-    const [method, gatewayOptions, params, requestOptions] = gatewayCall();
-    expect(method).toBe("wake");
-    expect(typeof gatewayOptions).toBe("object");
-    expect(params).toEqual({
-      mode: "next-heartbeat",
-      text: "ping",
-      sessionKey: "agent:main:telegram:dm:42",
-    });
-    expect(requestOptions).toEqual({ expectFinal: false });
+    expect(callGatewayFromCli).toHaveBeenCalledWith(
+      "wake",
+      expect.any(Object),
+      { mode: "next-heartbeat", text: "ping", sessionKey: "agent:main:telegram:dm:42" },
+      { expectFinal: false },
+    );
   });
 
   it("omits sessionKey from payload when --session-key not provided", async () => {

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { DefaultResourceLoader } from "../sessions/index.js";
+import { DefaultResourceLoader } from "../pi-coding-agent-contract.js";
 import {
   createEmbeddedAgentResourceLoader,
   EMBEDDED_AGENT_RESOURCE_LOADER_DISCOVERY_OPTIONS,
 } from "./resource-loader.js";
 
-vi.mock("../sessions/index.js", () => ({
+vi.mock("../pi-coding-agent-contract.js", () => ({
   DefaultResourceLoader: vi.fn(function DefaultResourceLoader(
     this: Record<string, unknown>,
     options: unknown,

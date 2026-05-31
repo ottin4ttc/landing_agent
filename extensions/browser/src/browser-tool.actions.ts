@@ -215,16 +215,14 @@ function wrapBrowserExternalJson(params: {
   };
 }
 
-function formatTabsToolResult(tabs: unknown[]): AgentToolResult<unknown> {
+function formatTabsToolResult(tabs: unknown[]): AgentToolResult {
   const formattedTabs = tabs.map((tab) => formatAgentTab(tab));
   const wrapped = wrapBrowserExternalJson({
     kind: "tabs",
     payload: { tabs: formattedTabs },
     includeWarning: false,
   });
-  const content: AgentToolResult<unknown>["content"] = [
-    { type: "text", text: wrapped.wrappedText },
-  ];
+  const content: AgentToolResult["content"] = [{ type: "text", text: wrapped.wrappedText }];
   return {
     content,
     details: {
@@ -239,7 +237,7 @@ function formatConsoleToolResult(result: {
   targetId?: string;
   url?: string;
   messages?: unknown[];
-}): AgentToolResult<unknown> {
+}): AgentToolResult {
   const wrapped = wrapBrowserExternalJson({
     kind: "console",
     payload: result,
@@ -316,7 +314,7 @@ export async function executeTabsAction(params: {
   profile?: string;
   timeoutMs?: number;
   proxyRequest: BrowserProxyRequest | null;
-}): Promise<AgentToolResult<unknown>> {
+}): Promise<AgentToolResult> {
   const { baseUrl, profile, timeoutMs, proxyRequest } = params;
   if (proxyRequest) {
     const result = await proxyRequest({
@@ -338,7 +336,7 @@ export async function executeSnapshotAction(params: {
   profile?: string;
   proxyRequest: BrowserProxyRequest | null;
   onTabActivity?: (targetId: string | undefined) => void;
-}): Promise<AgentToolResult<unknown>> {
+}): Promise<AgentToolResult> {
   const { input, baseUrl, profile, proxyRequest } = params;
   const snapshotDefaults = browserToolActionDeps.getRuntimeConfig().browser?.snapshotDefaults;
   const format: "ai" | "aria" | undefined =
@@ -525,7 +523,7 @@ export async function executeConsoleAction(params: {
   baseUrl?: string;
   profile?: string;
   proxyRequest: BrowserProxyRequest | null;
-}): Promise<AgentToolResult<unknown>> {
+}): Promise<AgentToolResult> {
   const { input, baseUrl, profile, proxyRequest } = params;
   const level = normalizeOptionalString(input.level);
   const targetId = normalizeOptionalString(input.targetId);
@@ -555,7 +553,7 @@ export async function executeActAction(params: {
   profile?: string;
   proxyRequest: BrowserProxyRequest | null;
   onTabActivity?: (targetId: string | undefined) => void;
-}): Promise<AgentToolResult<unknown>> {
+}): Promise<AgentToolResult> {
   const { request, baseUrl, profile, proxyRequest } = params;
   const effectiveRequest = withConfiguredActTimeout(request, profile);
   try {

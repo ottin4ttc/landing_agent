@@ -1,14 +1,15 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 
-const ensureOpenClawModelsJsonMock = vi.fn<
+const ensureOpenClawModelCatalogMock = vi.fn<
   (
     config: unknown,
     agentDir: unknown,
     options?: unknown,
   ) => Promise<{ agentDir: string; wrote: boolean }>
 >(async () => ({ agentDir: "/tmp/agent", wrote: false }));
-const agentModelModuleLoadedMock = vi.fn();
+const piModelModuleLoadedMock = vi.fn();
+const resolveEmbeddedAgentRuntimeMock = vi.fn(() => "auto");
 
 vi.mock("../agents/agent-scope.js", () => ({
   resolveDefaultAgentDir: () => "/tmp/agent",
@@ -17,23 +18,27 @@ vi.mock("../agents/agent-scope.js", () => ({
 }));
 
 vi.mock("../agents/models-config.js", () => ({
-  ensureOpenClawModelsJson: (config: unknown, agentDir: unknown, options?: unknown) =>
-    ensureOpenClawModelsJsonMock(config, agentDir, options),
+  ensureOpenClawModelCatalog: (config: unknown, agentDir: unknown, options?: unknown) =>
+    ensureOpenClawModelCatalogMock(config, agentDir, options),
 }));
 
 vi.mock("../agents/embedded-agent-runner/model.js", () => {
-  agentModelModuleLoadedMock();
+  piModelModuleLoadedMock();
   return {
     resolveModel: () => ({}),
   };
 });
 
+vi.mock("../agents/agent-runtime-id.js", () => ({
+  resolveEmbeddedAgentRuntime: () => resolveEmbeddedAgentRuntimeMock(),
+}));
+
 let prewarmConfiguredPrimaryModel: typeof import("./server-startup-post-attach.js").testing.prewarmConfiguredPrimaryModel;
 let shouldSkipStartupModelPrewarm: typeof import("./server-startup-post-attach.js").testing.shouldSkipStartupModelPrewarm;
 
 function expectModelsJsonPrewarmCall(cfg: OpenClawConfig) {
-  expect(ensureOpenClawModelsJsonMock).toHaveBeenCalledTimes(1);
-  const [calledConfig, agentDir, options] = ensureOpenClawModelsJsonMock.mock.calls.at(0) ?? [];
+  expect(ensureOpenClawModelCatalogMock).toHaveBeenCalledTimes(1);
+  const [calledConfig, agentDir, options] = ensureOpenClawModelCatalogMock.mock.calls[0] ?? [];
   expect(calledConfig).toBe(cfg);
   expect(agentDir).toBe("/tmp/agent");
   expect(options).toEqual({
@@ -52,8 +57,10 @@ describe("gateway startup primary model warmup", () => {
   });
 
   beforeEach(() => {
-    ensureOpenClawModelsJsonMock.mockClear();
-    agentModelModuleLoadedMock.mockClear();
+    ensureOpenClawModelCatalogMock.mockClear();
+    piModelModuleLoadedMock.mockClear();
+    resolveEmbeddedAgentRuntimeMock.mockClear();
+    resolveEmbeddedAgentRuntimeMock.mockReturnValue("auto");
   });
 
   it("prewarms an explicit configured primary model", async () => {
@@ -73,7 +80,7 @@ describe("gateway startup primary model warmup", () => {
     });
 
     expectModelsJsonPrewarmCall(cfg);
-    expect(agentModelModuleLoadedMock).not.toHaveBeenCalled();
+    expect(piModelModuleLoadedMock).not.toHaveBeenCalled();
   });
 
   it("skips warmup when no explicit primary model is configured", async () => {
@@ -82,8 +89,8 @@ describe("gateway startup primary model warmup", () => {
       log: { warn: vi.fn() },
     });
 
-    expect(ensureOpenClawModelsJsonMock).not.toHaveBeenCalled();
-    expect(agentModelModuleLoadedMock).not.toHaveBeenCalled();
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
+    expect(piModelModuleLoadedMock).not.toHaveBeenCalled();
   });
 
   it("honors the startup model prewarm skip env", () => {
@@ -120,12 +127,52 @@ describe("gateway startup primary model warmup", () => {
       log: { warn: vi.fn() },
     });
 
-    expect(ensureOpenClawModelsJsonMock).not.toHaveBeenCalled();
-    expect(agentModelModuleLoadedMock).not.toHaveBeenCalled();
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
+    expect(piModelModuleLoadedMock).not.toHaveBeenCalled();
   });
 
-  it("warns when scoped models.json preparation fails", async () => {
-    ensureOpenClawModelsJsonMock.mockRejectedValueOnce(new Error("models write failed"));
+  it("skips static warmup when a non-embedded agent runtime is forced", async () => {
+    resolveEmbeddedAgentRuntimeMock.mockReturnValue("codex");
+    await prewarmConfiguredPrimaryModel({
+      cfg: {
+        agents: {
+          defaults: {
+            model: {
+              primary: "codex/gpt-5.4",
+            },
+          },
+        },
+      } as OpenClawConfig,
+      log: { warn: vi.fn() },
+    });
+
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
+    expect(piModelModuleLoadedMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps static warmup when the OpenClaw embedded agent runtime is forced", async () => {
+    resolveEmbeddedAgentRuntimeMock.mockReturnValue("openclaw");
+    const cfg = {
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai-codex/gpt-5.4",
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    await prewarmConfiguredPrimaryModel({
+      cfg,
+      log: { warn: vi.fn() },
+    });
+
+    expectModelsJsonPrewarmCall(cfg);
+    expect(piModelModuleLoadedMock).not.toHaveBeenCalled();
+  });
+
+  it("warns when scoped model catalog preparation fails", async () => {
+    ensureOpenClawModelCatalogMock.mockRejectedValueOnce(new Error("models write failed"));
     const warn = vi.fn();
 
     await prewarmConfiguredPrimaryModel({

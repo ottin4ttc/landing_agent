@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { Insertable } from "kysely";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
@@ -8,6 +9,13 @@ import {
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
 import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabaseOptions,
+} from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import type { CommandExplanationSummary } from "./command-analysis/explain.js";
 import { resolveAllowAlwaysPatternEntries } from "./exec-approvals-allowlist.js";
 import { analyzeShellCommand, type ExecCommandSegment } from "./exec-approvals-analysis.js";
@@ -15,6 +23,12 @@ import type { ExecAllowlistEntry } from "./exec-approvals.types.js";
 import { assertNoSymlinkParentsSync } from "./fs-safe-advanced.js";
 import { expandHomePrefix, resolveRequiredHomeDir } from "./home-dir.js";
 import { requestJsonlSocket } from "./jsonl-socket.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "./kysely-sync.js";
+import { sqliteBooleanInteger } from "./sqlite-row-values.js";
 export * from "./exec-approvals-analysis.js";
 export * from "./exec-approvals-allowlist.js";
 export type { ExecAllowlistEntry } from "./exec-approvals.types.js";
@@ -283,7 +297,11 @@ const DEFAULT_ASK: ExecAsk = "off";
 export const DEFAULT_EXEC_APPROVAL_ASK_FALLBACK: ExecSecurity = "full";
 const DEFAULT_AUTO_ALLOW_SKILLS = false;
 const DEFAULT_SOCKET = "~/.openclaw/exec-approvals.sock";
-const DEFAULT_FILE = "~/.openclaw/exec-approvals.json";
+const LEGACY_EXEC_APPROVALS_FILE = "~/.openclaw/exec-approvals.json";
+const EXEC_APPROVALS_CONFIG_KEY = "current";
+
+type ExecApprovalsDatabase = Pick<OpenClawStateKyselyDatabase, "exec_approvals_config">;
+type ExecApprovalsConfigInsert = Insertable<ExecApprovalsDatabase["exec_approvals_config"]>;
 
 function hashExecApprovalsRaw(raw: string | null): string {
   return crypto
@@ -292,12 +310,14 @@ function hashExecApprovalsRaw(raw: string | null): string {
     .digest("hex");
 }
 
-export function resolveExecApprovalsPath(): string {
-  return expandHomePrefix(DEFAULT_FILE);
+export function resolveExecApprovalsStoreLocationForDisplay(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return `${resolveOpenClawStateSqlitePath(env)}#table/exec_approvals_config/${EXEC_APPROVALS_CONFIG_KEY}`;
 }
 
-export function resolveExecApprovalsSocketPath(): string {
-  return expandHomePrefix(DEFAULT_SOCKET);
+export function resolveExecApprovalsSocketPath(env: NodeJS.ProcessEnv = process.env): string {
+  return expandHomePrefix(DEFAULT_SOCKET, { env });
 }
 
 function normalizeAllowlistPattern(value: string | undefined): string | null {
@@ -337,240 +357,6 @@ function mergeLegacyAgent(
     autoAllowSkills: current.autoAllowSkills ?? legacy.autoAllowSkills,
     allowlist: allowlist.length > 0 ? allowlist : undefined,
   };
-}
-
-function ensureDir(filePath: string) {
-  const dir = path.dirname(filePath);
-  assertNoExecApprovalsSymlinkParents(dir, resolveRequiredHomeDir());
-  fs.mkdirSync(dir, { recursive: true });
-  const dirStat = fs.lstatSync(dir);
-  if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) {
-    throw new Error(`Refusing to use unsafe exec approvals directory: ${dir}`);
-  }
-  try {
-    fs.chmodSync(dir, 0o700);
-  } catch (err) {
-    if (process.platform !== "win32") {
-      throw err;
-    }
-  }
-  return dir;
-}
-
-function assertNoExecApprovalsSymlinkParents(targetPath: string, trustedRoot: string): void {
-  assertNoSymlinkParentsSync({
-    rootDir: trustedRoot,
-    targetPath,
-    allowOutsideRoot: true,
-    messagePrefix: "Refusing to traverse symlink in exec approvals path",
-  });
-}
-
-function assertSafeExecApprovalsDestination(filePath: string): void {
-  try {
-    const stat = fs.lstatSync(filePath);
-    if (stat.isSymbolicLink()) {
-      throw new Error(`Refusing to write exec approvals via symlink: ${filePath}`);
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw err;
-    }
-  }
-}
-
-function assertSafeExecApprovalsOverwriteFallback(filePath: string): void {
-  assertSafeExecApprovalsDestination(filePath);
-  try {
-    const stat = fs.statSync(filePath);
-    if (stat.nlink > 1) {
-      throw new Error(`Refusing copy fallback for hard-linked exec approvals file: ${filePath}`);
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw err;
-    }
-  }
-}
-
-type ExecApprovalsFallbackDestination = {
-  existed: boolean;
-  fd: number;
-  snapshot: Buffer | null;
-};
-
-function sameFilesystemEntry(left: fs.Stats, right: fs.Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-function readExecApprovalsFallbackSnapshotFromFd(fd: number): Buffer {
-  const chunks: Buffer[] = [];
-  const buffer = Buffer.alloc(64 * 1024);
-  let position = 0;
-  while (true) {
-    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, position);
-    if (bytesRead === 0) {
-      break;
-    }
-    chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
-    position += bytesRead;
-  }
-  return Buffer.concat(chunks);
-}
-
-function validateExecApprovalsFallbackFd(filePath: string, fd: number): fs.Stats {
-  const linkStat = fs.lstatSync(filePath);
-  if (linkStat.isSymbolicLink()) {
-    throw new Error(`Refusing to write exec approvals via symlink: ${filePath}`);
-  }
-  const pathStat = fs.statSync(filePath);
-  const fdStat = fs.fstatSync(fd);
-  if (!fdStat.isFile()) {
-    throw new Error(`Refusing copy fallback for non-file exec approvals path: ${filePath}`);
-  }
-  if (fdStat.nlink > 1) {
-    throw new Error(`Refusing copy fallback for hard-linked exec approvals file: ${filePath}`);
-  }
-  if (!sameFilesystemEntry(pathStat, fdStat)) {
-    throw new Error(`Refusing copy fallback after exec approvals path changed: ${filePath}`);
-  }
-  return fdStat;
-}
-
-function openExistingExecApprovalsFallbackDestination(
-  filePath: string,
-): ExecApprovalsFallbackDestination {
-  const noFollowFlag = fs.constants.O_NOFOLLOW ?? 0;
-  const fd = fs.openSync(filePath, fs.constants.O_RDWR | noFollowFlag, 0o600);
-  try {
-    validateExecApprovalsFallbackFd(filePath, fd);
-    return {
-      existed: true,
-      fd,
-      snapshot: readExecApprovalsFallbackSnapshotFromFd(fd),
-    };
-  } catch (err) {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      // best-effort after validation failure
-    }
-    throw err;
-  }
-}
-
-function createExecApprovalsFallbackDestination(
-  filePath: string,
-): ExecApprovalsFallbackDestination {
-  const noFollowFlag = fs.constants.O_NOFOLLOW ?? 0;
-  try {
-    const fd = fs.openSync(
-      filePath,
-      fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollowFlag,
-      0o600,
-    );
-    try {
-      validateExecApprovalsFallbackFd(filePath, fd);
-      return { existed: false, fd, snapshot: null };
-    } catch (err) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        // best-effort after validation failure
-      }
-      throw err;
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      return openExistingExecApprovalsFallbackDestination(filePath);
-    }
-    throw err;
-  }
-}
-
-function openExecApprovalsFallbackDestination(filePath: string): ExecApprovalsFallbackDestination {
-  try {
-    return openExistingExecApprovalsFallbackDestination(filePath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return createExecApprovalsFallbackDestination(filePath);
-    }
-    throw err;
-  }
-}
-
-function writeExecApprovalsFallbackBuffer(fd: number, contents: Buffer): void {
-  fs.ftruncateSync(fd, 0);
-  let written = 0;
-  while (written < contents.length) {
-    written += fs.writeSync(fd, contents, written, contents.length - written, written);
-  }
-  fs.ftruncateSync(fd, contents.length);
-  try {
-    fs.fchmodSync(fd, 0o600);
-  } catch {
-    // best-effort on platforms without chmod
-  }
-}
-
-function restoreExecApprovalsFallbackDestination(
-  filePath: string,
-  destination: ExecApprovalsFallbackDestination,
-): void {
-  if (!destination.existed) {
-    try {
-      const pathStat = fs.statSync(filePath);
-      const fdStat = fs.fstatSync(destination.fd);
-      if (sameFilesystemEntry(pathStat, fdStat)) {
-        fs.rmSync(filePath, { force: true });
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw err;
-      }
-    }
-    return;
-  }
-  writeExecApprovalsFallbackBuffer(destination.fd, destination.snapshot ?? Buffer.alloc(0));
-}
-
-function copyExecApprovalsFallback(tempPath: string, filePath: string): void {
-  const contents = fs.readFileSync(tempPath);
-  const destination = openExecApprovalsFallbackDestination(filePath);
-  try {
-    writeExecApprovalsFallbackBuffer(destination.fd, contents);
-    validateExecApprovalsFallbackFd(filePath, destination.fd);
-  } catch (copyErr) {
-    try {
-      restoreExecApprovalsFallbackDestination(filePath, destination);
-    } catch (restoreErr) {
-      throw new Error(
-        `Failed to restore exec approvals after copy fallback failure for ${filePath}: ${String(
-          copyErr,
-        )}`,
-        { cause: restoreErr },
-      );
-    }
-    throw copyErr;
-  } finally {
-    fs.closeSync(destination.fd);
-  }
-}
-
-function renameExecApprovalsWithFallback(tempPath: string, filePath: string): void {
-  try {
-    fs.renameSync(tempPath, filePath);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    // Windows can reject rename-overwrite when another process has a transient
-    // handle on the target approvals file.
-    if (code !== "EPERM" && code !== "EEXIST") {
-      throw err;
-    }
-    assertSafeExecApprovalsOverwriteFallback(filePath);
-    copyExecApprovalsFallback(tempPath, filePath);
-    fs.rmSync(tempPath, { force: true });
-  }
 }
 
 // Coerce legacy/corrupted allowlists into `ExecAllowlistEntry[]` before we spread
@@ -724,94 +510,176 @@ function generateToken(): string {
   return crypto.randomBytes(24).toString("base64url");
 }
 
-export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
-  const filePath = resolveExecApprovalsPath();
-  if (!fs.existsSync(filePath)) {
-    const file = normalizeExecApprovals({ version: 1, agents: {} });
-    return {
-      path: filePath,
-      exists: false,
-      raw: null,
-      file,
-      hash: hashExecApprovalsRaw(null),
-    };
-  }
-  const raw = fs.readFileSync(filePath, "utf8");
-  let parsed: ExecApprovalsFile | null = null;
-  try {
-    parsed = JSON.parse(raw) as ExecApprovalsFile;
-  } catch {
-    parsed = null;
-  }
-  const file =
-    parsed?.version === 1
-      ? normalizeExecApprovals(parsed)
-      : normalizeExecApprovals({ version: 1, agents: {} });
+function sqliteOptionsForEnv(env: NodeJS.ProcessEnv): OpenClawStateDatabaseOptions {
+  return { env };
+}
+
+function execApprovalsRawToRow(raw: string, updatedAtMs: number): ExecApprovalsConfigInsert {
+  const file = parseExecApprovalsRaw(raw);
+  const agents = Object.values(file.agents ?? {});
+  const allowlistCount = agents.reduce((count, agent) => count + (agent.allowlist?.length ?? 0), 0);
   return {
-    path: filePath,
-    exists: true,
-    raw,
-    file,
-    hash: hashExecApprovalsRaw(raw),
+    config_key: EXEC_APPROVALS_CONFIG_KEY,
+    raw_json: raw,
+    socket_path: file.socket?.path ?? null,
+    has_socket_token: file.socket?.token ? 1 : 0,
+    default_security: file.defaults?.security ?? null,
+    default_ask: file.defaults?.ask ?? null,
+    default_ask_fallback: file.defaults?.askFallback ?? null,
+    auto_allow_skills: sqliteBooleanInteger(file.defaults?.autoAllowSkills),
+    agent_count: agents.length,
+    allowlist_count: allowlistCount,
+    updated_at_ms: updatedAtMs,
   };
 }
 
-export function loadExecApprovals(): ExecApprovalsFile {
-  const filePath = resolveExecApprovalsPath();
+function readExecApprovalsRawFromSqlite(env: NodeJS.ProcessEnv = process.env): string | null {
+  const database = openOpenClawStateDatabase(sqliteOptionsForEnv(env));
+  const db = getNodeSqliteKysely<ExecApprovalsDatabase>(database.db);
+  const row =
+    executeSqliteQueryTakeFirstSync(
+      database.db,
+      db
+        .selectFrom("exec_approvals_config")
+        .select(["raw_json"])
+        .where("config_key", "=", EXEC_APPROVALS_CONFIG_KEY),
+    ) ?? null;
+  return row?.raw_json ?? null;
+}
+
+function readLegacyExecApprovalsRaw(env: NodeJS.ProcessEnv = process.env): {
+  raw: string | null;
+  exists: boolean;
+  path: string;
+} {
+  const filePath = resolveLegacyExecApprovalsPath(env);
+  if (!fs.existsSync(filePath)) {
+    return { raw: null, exists: false, path: filePath };
+  }
+  return { raw: fs.readFileSync(filePath, "utf8"), exists: true, path: filePath };
+}
+
+function resolveLegacyExecApprovalsPath(env: NodeJS.ProcessEnv = process.env): string {
+  return expandHomePrefix(LEGACY_EXEC_APPROVALS_FILE, { env });
+}
+
+function assertNoExecApprovalsSymlinkParents(targetPath: string, trustedRoot: string): void {
+  assertNoSymlinkParentsSync({
+    rootDir: trustedRoot,
+    targetPath,
+    allowOutsideRoot: true,
+    messagePrefix: "Refusing to traverse symlink in exec approvals path",
+  });
+}
+
+function assertSafeExecApprovalsDestination(filePath: string): void {
   try {
-    if (!fs.existsSync(filePath)) {
-      return normalizeExecApprovals({ version: 1, agents: {} });
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to write exec approvals via symlink: ${filePath}`);
     }
-    const raw = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+}
+
+function readExecApprovalsRaw(env: NodeJS.ProcessEnv = process.env): string | null {
+  const sqliteRaw = readExecApprovalsRawFromSqlite(env);
+  if (sqliteRaw !== null) {
+    return sqliteRaw;
+  }
+  const legacy = readLegacyExecApprovalsRaw(env);
+  if (!legacy.exists || legacy.raw === null) {
+    return null;
+  }
+  writeExecApprovalsRawToSqlite(legacy.raw, env);
+  fs.rmSync(legacy.path, { force: true });
+  return legacy.raw;
+}
+
+export function writeExecApprovalsRawToSqlite(
+  raw: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const updatedAtMs = Date.now();
+  const row = execApprovalsRawToRow(raw, updatedAtMs);
+  runOpenClawStateWriteTransaction((database) => {
+    const db = getNodeSqliteKysely<ExecApprovalsDatabase>(database.db);
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .insertInto("exec_approvals_config")
+        .values(row)
+        .onConflict((conflict) =>
+          conflict.column("config_key").doUpdateSet({
+            raw_json: row.raw_json,
+            socket_path: row.socket_path,
+            has_socket_token: row.has_socket_token,
+            default_security: row.default_security,
+            default_ask: row.default_ask,
+            default_ask_fallback: row.default_ask_fallback,
+            auto_allow_skills: row.auto_allow_skills,
+            agent_count: row.agent_count,
+            allowlist_count: row.allowlist_count,
+            updated_at_ms: row.updated_at_ms,
+          }),
+        ),
+    );
+  }, sqliteOptionsForEnv(env));
+}
+
+function deleteExecApprovalsSqliteState(env: NodeJS.ProcessEnv = process.env): void {
+  runOpenClawStateWriteTransaction((database) => {
+    const db = getNodeSqliteKysely<ExecApprovalsDatabase>(database.db);
+    executeSqliteQuerySync(
+      database.db,
+      db.deleteFrom("exec_approvals_config").where("config_key", "=", EXEC_APPROVALS_CONFIG_KEY),
+    );
+  }, sqliteOptionsForEnv(env));
+}
+
+function parseExecApprovalsRaw(raw: string | null): ExecApprovalsFile {
+  if (raw === null) {
+    return normalizeExecApprovals({ version: 1, agents: {} });
+  }
+  try {
     const parsed = JSON.parse(raw) as ExecApprovalsFile;
-    if (parsed?.version !== 1) {
-      return normalizeExecApprovals({ version: 1, agents: {} });
-    }
-    return normalizeExecApprovals(parsed);
+    return parsed?.version === 1
+      ? normalizeExecApprovals(parsed)
+      : normalizeExecApprovals({ version: 1, agents: {} });
   } catch {
     return normalizeExecApprovals({ version: 1, agents: {} });
   }
 }
 
-export function saveExecApprovals(file: ExecApprovalsFile) {
-  const filePath = resolveExecApprovalsPath();
-  const raw = `${JSON.stringify(file, null, 2)}\n`;
-  writeExecApprovalsRaw(filePath, raw);
+export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
+  const sqliteRaw = readExecApprovalsRaw();
+  return {
+    path: resolveExecApprovalsStoreLocationForDisplay(),
+    exists: sqliteRaw !== null,
+    raw: sqliteRaw,
+    file: parseExecApprovalsRaw(sqliteRaw),
+    hash: hashExecApprovalsRaw(sqliteRaw),
+  };
 }
 
-function writeExecApprovalsRaw(filePath: string, raw: string) {
-  const dir = ensureDir(filePath);
-  assertSafeExecApprovalsDestination(filePath);
-  const tempPath = path.join(dir, `.exec-approvals.${process.pid}.${crypto.randomUUID()}.tmp`);
-  let tempWritten = false;
-  try {
-    fs.writeFileSync(tempPath, raw, { mode: 0o600, flag: "wx" });
-    try {
-      fs.chmodSync(tempPath, 0o600);
-    } catch {
-      // best-effort on platforms without chmod
-    }
-    tempWritten = true;
-    renameExecApprovalsWithFallback(tempPath, filePath);
-  } finally {
-    if (tempWritten && fs.existsSync(tempPath)) {
-      fs.rmSync(tempPath, { force: true });
-    }
-  }
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    // best-effort on platforms without chmod
-  }
+export function loadExecApprovals(): ExecApprovalsFile {
+  return parseExecApprovalsRaw(readExecApprovalsRaw());
+}
+
+export function saveExecApprovals(file: ExecApprovalsFile) {
+  writeExecApprovalsRawToSqlite(`${JSON.stringify(file, null, 2)}\n`);
 }
 
 export function restoreExecApprovalsSnapshot(snapshot: ExecApprovalsSnapshot): void {
   if (!snapshot.exists) {
-    fs.rmSync(snapshot.path, { force: true });
+    deleteExecApprovalsSqliteState();
     return;
   }
   if (snapshot.raw !== null) {
-    writeExecApprovalsRaw(snapshot.path, snapshot.raw);
+    writeExecApprovalsRawToSqlite(snapshot.raw);
     return;
   }
   saveExecApprovals(snapshot.file);
@@ -997,11 +865,23 @@ export function resolveExecApprovals(
   agentId?: string,
   overrides?: ExecApprovalsDefaultOverrides,
 ): ExecApprovalsResolved {
-  const filePath = resolveExecApprovalsPath();
+  const filePath = resolveLegacyExecApprovalsPath();
   if (!overrides?.requireSocket) {
-    const file = readExecApprovalsForNoPersistence(filePath);
-    const resolved = resolveExecApprovalsFromFile({
-      file,
+    const sqliteRaw = readExecApprovalsRawFromSqlite();
+    if (sqliteRaw !== null) {
+      const file = parseExecApprovalsRaw(sqliteRaw);
+      return resolveExecApprovalsDocument({
+        document: file,
+        agentId,
+        overrides,
+        path: resolveExecApprovalsStoreLocationForDisplay(),
+        socketPath: expandHomePrefix(file.socket?.path ?? resolveExecApprovalsSocketPath()),
+        token: file.socket?.token ?? "",
+      });
+    }
+    const legacyFile = readExecApprovalsForNoPersistence(filePath);
+    const resolved = resolveExecApprovalsDocument({
+      document: legacyFile,
       agentId,
       overrides,
       path: filePath,
@@ -1011,38 +891,56 @@ export function resolveExecApprovals(
     if (
       resolved.agent.security === "full" &&
       resolved.agent.ask === "off" &&
-      !file.socket?.token?.trim()
+      !legacyFile.socket?.token?.trim()
     ) {
       return resolved;
     }
   }
   const file = ensureExecApprovals();
-  return resolveExecApprovalsFromFile({
-    file,
+  return resolveExecApprovalsDocument({
+    document: file,
     agentId,
     overrides,
-    path: resolveExecApprovalsPath(),
+    path: resolveExecApprovalsStoreLocationForDisplay(),
     socketPath: expandHomePrefix(file.socket?.path ?? resolveExecApprovalsSocketPath()),
     token: file.socket?.token ?? "",
   });
 }
 
-export function resolveExecApprovalsFromFile(params: {
-  file: ExecApprovalsFile;
+export function resolveExecApprovalsFromFile(params?: {
+  file?: ExecApprovalsFile;
+  agentId?: string;
+  overrides?: ExecApprovalsDefaultOverrides;
+}): ExecApprovalsResolved {
+  if (params?.file) {
+    return resolveExecApprovalsDocument({
+      document: params.file,
+      agentId: params.agentId,
+      overrides: params.overrides,
+      path: resolveExecApprovalsStoreLocationForDisplay(),
+      socketPath: expandHomePrefix(params.file.socket?.path ?? resolveExecApprovalsSocketPath()),
+      token: params.file.socket?.token ?? "",
+    });
+  }
+  return resolveExecApprovals(params?.agentId, params?.overrides);
+}
+
+export function resolveExecApprovalsDocument(params: {
+  document: ExecApprovalsFile;
   agentId?: string;
   overrides?: ExecApprovalsDefaultOverrides;
   path?: string;
   socketPath?: string;
   token?: string;
 }): ExecApprovalsResolved {
-  const rawFile = params.file;
-  const file = normalizeExecApprovals(params.file);
-  const defaults = file.defaults ?? {};
+  const rawDocument = params.document;
+  const document = normalizeExecApprovals(params.document);
+  const defaults = document.defaults ?? {};
   const agentKey = params.agentId ?? DEFAULT_AGENT_ID;
-  const agent = file.agents?.[agentKey] ?? {};
-  const wildcard = file.agents?.["*"] ?? {};
-  const rawAgent = rawFile.agents?.[agentKey] ?? {};
-  const rawWildcard = rawFile.agents?.["*"] ?? {};
+  const agent = document.agents?.[agentKey] ?? {};
+  const wildcard = document.agents?.["*"] ?? {};
+  const rawAgent = rawDocument.agents?.[agentKey] ?? {};
+  const rawWildcard = rawDocument.agents?.["*"] ?? {};
   const fallbackSecurity = params.overrides?.security ?? DEFAULT_SECURITY;
   const fallbackAsk = params.overrides?.ask ?? DEFAULT_ASK;
   const fallbackAskFallback = params.overrides?.askFallback ?? DEFAULT_EXEC_APPROVAL_ASK_FALLBACK;
@@ -1097,11 +995,11 @@ export function resolveExecApprovalsFromFile(params: {
     ...(Array.isArray(agent.allowlist) ? agent.allowlist : []),
   ];
   return {
-    path: params.path ?? resolveExecApprovalsPath(),
+    path: params.path ?? resolveExecApprovalsStoreLocationForDisplay(),
     socketPath: expandHomePrefix(
-      params.socketPath ?? file.socket?.path ?? resolveExecApprovalsSocketPath(),
+      params.socketPath ?? document.socket?.path ?? resolveExecApprovalsSocketPath(),
     ),
-    token: params.token ?? file.socket?.token ?? "",
+    token: params.token ?? document.socket?.token ?? "",
     defaults: resolvedDefaults,
     agent: resolvedAgent,
     agentSources: {
@@ -1110,7 +1008,7 @@ export function resolveExecApprovalsFromFile(params: {
       askFallback: resolvedAgentAskFallback.source,
     },
     allowlist,
-    file,
+    file: document,
   };
 }
 

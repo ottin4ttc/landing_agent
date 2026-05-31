@@ -1,5 +1,11 @@
 import type { cleanupBrowserSessionsForLifecycleEnd } from "../browser-lifecycle-cleanup.js";
 import { getRuntimeConfig } from "../config/config.js";
+import {
+  getSessionEntry,
+  listSessionEntries,
+  resolveAgentIdFromSessionKey,
+  type SessionEntry,
+} from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ResolveContextEngineOptions } from "../context-engine/registry.js";
 import type { ContextEngine, SubagentEndReason } from "../context-engine/types.js";
@@ -64,18 +70,15 @@ import {
 } from "./subagent-registry-run-manager.js";
 import {
   getSubagentRunsSnapshotForRead,
-  persistSubagentRunsToDisk,
-  persistSubagentRunsToDiskOrThrow,
-  restoreSubagentRunsFromDisk,
+  persistSubagentRunsToState,
+  persistSubagentRunsToStateOrThrow,
+  restoreSubagentRunsFromState,
 } from "./subagent-registry-state.js";
 import { configureSubagentRegistrySteerRuntime } from "./subagent-registry-steer-runtime.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import {
-  loadSubagentSessionEntry,
-  resolveCompletionFromSessionEntry,
   resolveSubagentSessionCompletion,
   resolveSubagentSessionStartedAt,
-  type SubagentSessionStoreCache,
 } from "./subagent-session-reconciliation.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
 
@@ -103,10 +106,10 @@ type SubagentRegistryDeps = {
   getSubagentRunsSnapshotForRead: typeof getSubagentRunsSnapshotForRead;
   getRuntimeConfig: typeof getRuntimeConfig;
   onAgentEvent: typeof onAgentEvent;
-  persistSubagentRunsToDisk: typeof persistSubagentRunsToDisk;
-  persistSubagentRunsToDiskOrThrow: typeof persistSubagentRunsToDiskOrThrow;
+  persistSubagentRunsToState: typeof persistSubagentRunsToState;
+  persistSubagentRunsToStateOrThrow: typeof persistSubagentRunsToStateOrThrow;
   resolveAgentTimeoutMs: typeof resolveAgentTimeoutMs;
-  restoreSubagentRunsFromDisk: typeof restoreSubagentRunsFromDisk;
+  restoreSubagentRunsFromState: typeof restoreSubagentRunsFromState;
   runSubagentAnnounceFlow: SubagentAnnounceModule["runSubagentAnnounceFlow"];
   ensureContextEnginesInitialized?: () => void;
   ensureRuntimePluginsLoaded?: typeof ensureRuntimePluginsLoadedFn;
@@ -142,10 +145,10 @@ const defaultSubagentRegistryDeps: SubagentRegistryDeps = {
   getSubagentRunsSnapshotForRead,
   getRuntimeConfig,
   onAgentEvent,
-  persistSubagentRunsToDisk,
-  persistSubagentRunsToDiskOrThrow,
+  persistSubagentRunsToState,
+  persistSubagentRunsToStateOrThrow,
   resolveAgentTimeoutMs,
-  restoreSubagentRunsFromDisk,
+  restoreSubagentRunsFromState,
   runSubagentAnnounceFlow: async (params) =>
     (await loadSubagentAnnounceModule()).runSubagentAnnounceFlow(params),
 };
@@ -221,6 +224,123 @@ const SUSPENDED_DELIVERY_SOFT_CAP = 25;
 const SUSPENDED_DELIVERY_HARD_CAP = 50;
 const SUSPENDED_DELIVERY_PRESSURE_TARGET = 10;
 
+type SessionEntryCache = Map<string, SessionEntry | undefined>;
+
+function findSessionEntryByKey(params: {
+  agentId: string;
+  sessionKey: string;
+  cache: SessionEntryCache;
+}) {
+  const normalized = params.sessionKey.trim().toLowerCase();
+  const cacheKey = `${params.agentId}\0${normalized}`;
+  if (params.cache.has(cacheKey)) {
+    return params.cache.get(cacheKey);
+  }
+  const direct = getSessionEntry({
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+  });
+  if (direct) {
+    params.cache.set(cacheKey, direct);
+    return direct;
+  }
+  for (const { sessionKey, entry } of listSessionEntries({ agentId: params.agentId })) {
+    const key = sessionKey;
+    if (key.trim().toLowerCase() === normalized) {
+      params.cache.set(cacheKey, entry);
+      return entry;
+    }
+  }
+  params.cache.set(cacheKey, undefined);
+  return undefined;
+}
+
+function loadSubagentSessionEntry(
+  childSessionKey: string,
+  storeCache: SessionEntryCache,
+): SessionEntry | undefined {
+  const key = childSessionKey.trim();
+  if (!key) {
+    return undefined;
+  }
+  const agentId = resolveAgentIdFromSessionKey(key);
+  return findSessionEntryByKey({ agentId, sessionKey: key, cache: storeCache });
+}
+
+function resolveCompletionFromSessionEntry(
+  sessionEntry: SessionEntry | undefined,
+  fallbackEndedAt: number,
+  opts?: { notBeforeMs?: number },
+): {
+  startedAt?: number;
+  endedAt: number;
+  outcome: SubagentRunOutcome;
+  reason: SubagentLifecycleEndedReason;
+} | null {
+  const status = sessionEntry?.status;
+  const terminalAt =
+    typeof sessionEntry?.endedAt === "number" && Number.isFinite(sessionEntry.endedAt)
+      ? sessionEntry.endedAt
+      : typeof sessionEntry?.updatedAt === "number" && Number.isFinite(sessionEntry.updatedAt)
+        ? sessionEntry.updatedAt
+        : undefined;
+  if (
+    opts?.notBeforeMs !== undefined &&
+    (terminalAt === undefined || terminalAt < opts.notBeforeMs)
+  ) {
+    return null;
+  }
+  const startedAt =
+    typeof sessionEntry?.startedAt === "number" &&
+    Number.isFinite(sessionEntry.startedAt) &&
+    (opts?.notBeforeMs === undefined || sessionEntry.startedAt >= opts.notBeforeMs)
+      ? sessionEntry.startedAt
+      : undefined;
+  const endedAt = terminalAt !== undefined ? terminalAt : fallbackEndedAt;
+
+  if (status === "done") {
+    return {
+      startedAt,
+      endedAt,
+      outcome: { status: "ok" },
+      reason: SUBAGENT_ENDED_REASON_COMPLETE,
+    };
+  }
+  if (status === "timeout") {
+    return {
+      startedAt,
+      endedAt,
+      outcome: { status: "timeout" },
+      reason: SUBAGENT_ENDED_REASON_COMPLETE,
+    };
+  }
+  if (status === "failed") {
+    return {
+      startedAt,
+      endedAt,
+      outcome: { status: "error", error: "session completed before registry settled" },
+      reason: SUBAGENT_ENDED_REASON_ERROR,
+    };
+  }
+  if (status === "killed") {
+    return {
+      startedAt,
+      endedAt,
+      outcome: { status: "error", error: "subagent run terminated" },
+      reason: SUBAGENT_ENDED_REASON_KILLED,
+    };
+  }
+  if (status !== "running" && typeof sessionEntry?.endedAt === "number") {
+    return {
+      startedAt,
+      endedAt,
+      outcome: { status: "ok" },
+      reason: SUBAGENT_ENDED_REASON_COMPLETE,
+    };
+  }
+  return null;
+}
+
 function loadContextEngineInitModule(): Promise<ContextEngineInitModule> {
   return contextEngineInitLoader.load();
 }
@@ -262,11 +382,11 @@ async function resolveSubagentRegistryContextEngine(
 }
 
 function persistSubagentRuns() {
-  subagentRegistryDeps.persistSubagentRunsToDisk(subagentRuns);
+  subagentRegistryDeps.persistSubagentRunsToState(subagentRuns);
 }
 
 function persistSubagentRunsOrThrow() {
-  subagentRegistryDeps.persistSubagentRunsToDiskOrThrow(subagentRuns);
+  subagentRegistryDeps.persistSubagentRunsToStateOrThrow(subagentRuns);
 }
 
 export function scheduleSubagentOrphanRecovery(params?: { delayMs?: number; maxRetries?: number }) {
@@ -701,7 +821,7 @@ function restoreSubagentRunsOnce() {
   }
   restoreAttempted = true;
   try {
-    const restoredCount = subagentRegistryDeps.restoreSubagentRunsFromDisk({
+    const restoredCount = subagentRegistryDeps.restoreSubagentRunsFromState({
       runs: subagentRuns,
       mergeOnly: true,
     });
@@ -825,7 +945,10 @@ async function discardSuspendedPendingFinalDelivery(
   if (shouldDeleteAttachments) {
     await safeRemoveAttachmentsDir(entry);
   }
-  await removeInternalSessionEffectsTranscript(entry.execution?.transcriptFile);
+  await removeInternalSessionEffectsTranscript({
+    agentId: resolveAgentIdFromSessionKey(entry.childSessionKey),
+    sessionId: entry.execution?.transcriptSessionId,
+  });
   const completionReason = entry.endedReason ?? SUBAGENT_ENDED_REASON_COMPLETE;
   completeCleanupBookkeeping({
     runId,
@@ -855,7 +978,7 @@ async function sweepSubagentRuns() {
   sweepInProgress = true;
   try {
     const now = Date.now();
-    const storeCache: SubagentSessionStoreCache = new Map();
+    const storeCache: SessionEntryCache = new Map();
     let mutated = false;
     const suspendedEntries = [...subagentRuns.entries()].filter(([, entry]) =>
       isSuspendedPendingFinalDelivery(entry),
@@ -918,10 +1041,7 @@ async function sweepSubagentRuns() {
             continue;
           }
 
-          const sessionEntry = loadSubagentSessionEntry({
-            childSessionKey: entry.childSessionKey,
-            storeCache,
-          });
+          const sessionEntry = loadSubagentSessionEntry(entry.childSessionKey, storeCache);
           const completion = resolveCompletionFromSessionEntry(sessionEntry, now, {
             notBeforeMs: entry.startedAt ?? entry.createdAt,
           });
@@ -983,9 +1103,6 @@ async function sweepSubagentRuns() {
           });
           subagentRuns.delete(runId);
           mutated = true;
-          if (!entry.retainAttachmentsOnKeep) {
-            await safeRemoveAttachmentsDir(entry);
-          }
         }
         continue;
       }
@@ -998,7 +1115,6 @@ async function sweepSubagentRuns() {
           method: "sessions.delete",
           params: {
             key: entry.childSessionKey,
-            deleteTranscript: true,
             emitLifecycleHooks: false,
           },
           timeoutMs: 10_000,
@@ -1013,8 +1129,6 @@ async function sweepSubagentRuns() {
       }
       subagentRuns.delete(runId);
       mutated = true;
-      // Archive/purge is terminal for the run record; remove any retained attachments too.
-      await safeRemoveAttachmentsDir(entry);
       void notifyContextEngineSubagentEnded({
         childSessionKey: entry.childSessionKey,
         reason: "swept",
@@ -1219,7 +1333,7 @@ export function replaceSubagentRunAfterSteer(params: {
   fallback?: SubagentRunRecord;
   runTimeoutSeconds?: number;
   preserveFrozenResultFallback?: boolean;
-  transcriptFile?: string;
+  transcriptSessionId?: string;
 }) {
   return subagentRunManager.replaceSubagentRunAfterSteer(params);
 }

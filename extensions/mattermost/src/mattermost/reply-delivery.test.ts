@@ -191,7 +191,7 @@ describe("deliverMattermostReplyPayload", () => {
         mediaUrl,
         replyToId: "root-post",
         mediaLocalRoots: expect.arrayContaining([
-          path.join(stateDir, "media"),
+          expect.stringMatching(/[\\/]openclaw$/),
           path.join(stateDir, "canvas"),
           path.join(stateDir, "workspace"),
           path.join(stateDir, "sandboxes"),

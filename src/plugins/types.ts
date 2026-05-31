@@ -5,6 +5,7 @@ import type {
   UnifiedModelCatalogKind,
 } from "@openclaw/model-catalog-core/model-catalog-types";
 import type { Command } from "commander";
+import type { AgentMessage, StreamFn } from "../agents/agent-core-contract.js";
 import type {
   ApiKeyCredential,
   AuthProfileCredential,
@@ -14,8 +15,7 @@ import type {
 import type { FailoverReason } from "../agents/embedded-agent-helpers/types.js";
 import type { AgentHarness } from "../agents/harness/types.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
-import type { AgentMessage } from "../agents/runtime/index.js";
-import type { StreamFn } from "../agents/runtime/index.js";
+import type { ModelRegistry } from "../agents/model-registry-contract.js";
 import type { ProviderSystemPromptContribution } from "../agents/system-prompt-contribution.js";
 import type { PromptMode } from "../agents/system-prompt.types.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
@@ -36,7 +36,6 @@ import type {
   DiagnosticEventPayload,
 } from "../infra/diagnostic-events.js";
 import type { ProviderUsageSnapshot } from "../infra/provider-usage.types.js";
-import type { ModelRegistry } from "../llm/model-registry.js";
 import type { MediaUnderstandingProvider } from "../media-understanding/types.js";
 import type { MusicGenerationProvider } from "../music-generation/types.js";
 import type {
@@ -1790,7 +1789,7 @@ export type ProviderPlugin = {
    * Provider-owned external auth profile discovery.
    *
    * Use this when credentials are managed by an external tool and should be visible
-   * to runtime auth resolution without being written back into `auth-profiles.json`
+   * to runtime auth resolution without being written back into the persisted auth store
    * by core.
    */
   resolveExternalAuthProfiles?: (
@@ -1927,8 +1926,6 @@ export type PluginCommandDiagnosticsSession = {
   sessionKey?: string;
   /** Ephemeral OpenClaw session id when available. */
   sessionId?: string;
-  /** Transcript file for this OpenClaw session when available. */
-  sessionFile?: string;
   /** Embedded agent harness selected for this session. */
   agentHarnessId?: string;
   /** Channel/provider for this session when available. */
@@ -1963,8 +1960,6 @@ export type PluginCommandContext = {
   sessionKey?: string;
   /** Ephemeral host session id for the active conversation when available. */
   sessionId?: string;
-  /** Transcript file for the active OpenClaw session when available. */
-  sessionFile?: string;
   /** Raw command arguments after the command name */
   args?: string;
   /** The full normalized command body */

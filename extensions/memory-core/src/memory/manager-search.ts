@@ -3,6 +3,7 @@ import { truncateUtf16Safe } from "openclaw/plugin-sdk/memory-core-host-engine-f
 import {
   cosineSimilarity,
   parseEmbedding,
+  serializeEmbedding,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
   normalizeStringEntries,
@@ -10,23 +11,10 @@ import {
   uniqueStrings,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 
-const vectorToBlob = (embedding: number[]): Buffer =>
-  Buffer.from(new Float32Array(embedding).buffer);
+const vectorToBlob = (embedding: number[]): Uint8Array => serializeEmbedding(embedding);
 const FTS_QUERY_TOKEN_RE = /[\p{L}\p{N}_]+/gu;
 const SHORT_CJK_TRIGRAM_RE = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u3131-\u3163]/u;
 const VECTOR_KNN_OVERSAMPLE_FACTOR = 8;
-
-// Scan fallback vector rows in bounded batches so large chunk tables (no usable
-// vec0 index) cannot pin the main thread for multi-second windows and starve
-// channel I/O / liveness signals. Matches the session-indexing yield pattern
-// introduced in #76978 for the same class of bug. Issue #81172.
-const FALLBACK_VECTOR_BATCH_SIZE = 256;
-
-function yieldToEventLoop(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    setImmediate(resolve);
-  });
-}
 
 type SearchSource = string;
 
@@ -129,6 +117,7 @@ function planKeywordSearch(params: {
 export async function searchVector(params: {
   db: DatabaseSync;
   vectorTable: string;
+  chunksTable: string;
   providerModel: string;
   queryVec: number[];
   limit: number;
@@ -145,7 +134,7 @@ export async function searchVector(params: {
     // which runs in ~O(log N + k) via the vec0 index, instead of the previous
     // full-table scan over vec_distance_cosine(). Keep vec_distance_cosine() in
     // the SELECT so `score = 1 - dist` stays in the cosine [0, 1] range the
-    // downstream merge/minScore pipeline expects. (chunks_vec is created with
+    // downstream merge/minScore pipeline expects. (the vector table is created with
     // sqlite-vec's default L2 distance, so v.distance cannot be used directly
     // for scoring.)
     const qBlob = vectorToBlob(params.queryVec);
@@ -153,10 +142,10 @@ export async function searchVector(params: {
       params.db
         .prepare(
           `SELECT c.id, c.path, c.start_line, c.end_line, c.text,\n` +
-            `       c.source,\n` +
+            `       c.source_kind AS source,\n` +
             `       vec_distance_cosine(v.embedding, ?) AS dist\n` +
             `  FROM ${params.vectorTable} v\n` +
-            `  JOIN chunks c ON c.id = v.id\n` +
+            `  JOIN ${params.chunksTable} c ON c.id = v.id\n` +
             ` WHERE v.embedding MATCH ? AND k = ? AND c.model = ?${params.sourceFilterVec.sql}\n` +
             ` ORDER BY dist ASC\n` +
             ` LIMIT ?`,
@@ -184,7 +173,7 @@ export async function searchVector(params: {
       const matchingChunkCount = readCount(
         params.db
           .prepare(
-            `SELECT COUNT(*) AS count FROM chunks c WHERE c.model = ?${params.sourceFilterVec.sql}`,
+            `SELECT COUNT(*) AS count FROM ${params.chunksTable} c WHERE c.model = ?${params.sourceFilterVec.sql}`,
           )
           .get(params.providerModel, ...params.sourceFilterVec.params) as
           | { count?: number | bigint }
@@ -213,8 +202,9 @@ export async function searchVector(params: {
     }));
   }
 
-  return await searchChunksByEmbedding({
+  return searchChunksByEmbedding({
     db: params.db,
+    chunksTable: params.chunksTable,
     providerModel: params.providerModel,
     sourceFilter: params.sourceFilterChunks,
     queryVec: params.queryVec,
@@ -223,82 +213,61 @@ export async function searchVector(params: {
   });
 }
 
-async function searchChunksByEmbedding(params: {
+function searchChunksByEmbedding(params: {
   db: DatabaseSync;
+  chunksTable: string;
   providerModel: string;
   sourceFilter: { sql: string; params: SearchSource[] };
   queryVec: number[];
   limit: number;
   snippetMaxChars: number;
-}): Promise<SearchRowResult[]> {
+}): SearchRowResult[] {
   if (params.limit <= 0) {
     return [];
   }
-  // Keep batches bounded instead of calling `.all()` across the entire chunks
-  // table, and do not hold a sqlite iterator open across the setImmediate yield
-  // below. The rowid cursor keeps memory bounded without OFFSET rescans.
-  const stmt = params.db.prepare(
-    `SELECT rowid, id, path, start_line, end_line, text, embedding, source\n` +
-      `  FROM chunks\n` +
-      ` WHERE model = ? AND rowid > ?${params.sourceFilter.sql}\n` +
-      ` ORDER BY rowid ASC\n` +
-      ` LIMIT ?`,
-  );
-  type ChunkEmbeddingRow = {
-    rowid: number | bigint;
+  const rows = params.db
+    .prepare(
+      `SELECT id, path, start_line, end_line, text, embedding, source_kind AS source\n` +
+        `  FROM ${params.chunksTable}\n` +
+        ` WHERE model = ?${params.sourceFilter.sql}`,
+    )
+    .iterate(params.providerModel, ...params.sourceFilter.params) as IterableIterator<{
     id: string;
     path: string;
     start_line: number;
     end_line: number;
     text: string;
-    embedding: string;
+    embedding: unknown;
     source: SearchSource;
-  };
+  }>;
 
   const topResults: SearchRowResult[] = [];
-  let lastRowid = 0;
-  while (true) {
-    const batch = stmt.all(
-      params.providerModel,
-      lastRowid,
-      ...params.sourceFilter.params,
-      FALLBACK_VECTOR_BATCH_SIZE,
-    ) as ChunkEmbeddingRow[];
-    if (batch.length === 0) {
-      break;
+  for (const row of rows) {
+    const score = cosineSimilarity(params.queryVec, parseEmbedding(row.embedding));
+    if (!Number.isFinite(score)) {
+      continue;
     }
-    for (const row of batch) {
-      const score = cosineSimilarity(params.queryVec, parseEmbedding(row.embedding));
-      if (Number.isFinite(score)) {
-        const result: SearchRowResult = {
-          id: row.id,
-          path: row.path,
-          startLine: row.start_line,
-          endLine: row.end_line,
-          score,
-          snippet: truncateUtf16Safe(row.text, params.snippetMaxChars),
-          source: row.source,
-        };
-        if (topResults.length < params.limit) {
-          topResults.push(result);
-          if (topResults.length === params.limit) {
-            topResults.sort((a, b) => b.score - a.score);
-          }
-        } else {
-          const lowest = topResults.at(-1);
-          if (lowest && result.score > lowest.score) {
-            topResults[topResults.length - 1] = result;
-            topResults.sort((a, b) => b.score - a.score);
-          }
-        }
+    const result: SearchRowResult = {
+      id: row.id,
+      path: row.path,
+      startLine: row.start_line,
+      endLine: row.end_line,
+      score,
+      snippet: truncateUtf16Safe(row.text, params.snippetMaxChars),
+      source: row.source,
+    };
+    if (topResults.length < params.limit) {
+      topResults.push(result);
+      if (topResults.length === params.limit) {
+        topResults.sort((a, b) => b.score - a.score);
       }
+      continue;
     }
-    const nextRowid = batch.at(-1)?.rowid;
-    lastRowid = typeof nextRowid === "bigint" ? Number(nextRowid) : (nextRowid ?? lastRowid);
-    if (batch.length < FALLBACK_VECTOR_BATCH_SIZE) {
-      break;
+    const lowest = topResults.at(-1);
+    if (lowest && result.score > lowest.score) {
+      topResults[topResults.length - 1] = result;
+      topResults.sort((a, b) => b.score - a.score);
     }
-    await yieldToEventLoop();
   }
   topResults.sort((a, b) => b.score - a.score);
   return topResults;
@@ -307,6 +276,8 @@ async function searchChunksByEmbedding(params: {
 export async function searchKeyword(params: {
   db: DatabaseSync;
   ftsTable: string;
+  chunksTable: string;
+  requireChunkBacklink?: boolean;
   providerModel: string | undefined;
   query: string;
   ftsTokenizer?: "unicode61" | "trigram";
@@ -330,10 +301,15 @@ export async function searchKeyword(params: {
   }
 
   // When providerModel is undefined (FTS-only mode), search all models
-  const modelClause = params.providerModel ? " AND model = ?" : "";
+  const modelClause = params.providerModel ? ` AND ${params.ftsTable}.model = ?` : "";
   const modelParams = params.providerModel ? [params.providerModel] : [];
-  const substringClause = plan.substringTerms.map(() => " AND text LIKE ? ESCAPE '\\'").join("");
+  const substringClause = plan.substringTerms
+    .map(() => ` AND ${params.ftsTable}.text LIKE ? ESCAPE '\\'`)
+    .join("");
   const substringParams = plan.substringTerms.map((term) => `%${escapeLikePattern(term)}%`);
+  const chunkJoin = params.requireChunkBacklink
+    ? `  JOIN ${params.chunksTable} c ON c.id = ${params.ftsTable}.id\n`
+    : "";
 
   let rows: Array<{
     id: string;
@@ -350,9 +326,10 @@ export async function searchKeyword(params: {
     try {
       rows = params.db
         .prepare(
-          `SELECT id, path, source, start_line, end_line, text,\n` +
+          `SELECT ${params.ftsTable}.id AS id, ${params.ftsTable}.path AS path, ${params.ftsTable}.source AS source, ${params.ftsTable}.start_line AS start_line, ${params.ftsTable}.end_line AS end_line, ${params.ftsTable}.text AS text,\n` +
             `       bm25(${params.ftsTable}) AS rank\n` +
             `  FROM ${params.ftsTable}\n` +
+            chunkJoin +
             ` WHERE ${params.ftsTable} MATCH ?${substringClause}${modelClause}${params.sourceFilter.sql}\n` +
             ` ORDER BY rank ASC\n` +
             ` LIMIT ?`,
@@ -371,15 +348,22 @@ export async function searchKeyword(params: {
       // Log the root cause, then fall back to per-token LIKE-based substring
       // search so results are still returned instead of being silently dropped.
       console.warn(`memory search: FTS5 MATCH failed, falling back to LIKE: ${String(matchErr)}`);
-      const queryTokens = normalizeStringEntries(params.query.match(FTS_QUERY_TOKEN_RE) ?? []);
-      const allTerms = uniqueStrings([...queryTokens, ...plan.substringTerms]);
-      const fallbackLikeClause = allTerms.map(() => " AND text LIKE ? ESCAPE '\\'").join("");
+      const queryTokens =
+        params.query
+          .match(FTS_QUERY_TOKEN_RE)
+          ?.map((t) => t.trim())
+          .filter(Boolean) ?? [];
+      const allTerms = [...new Set([...queryTokens, ...plan.substringTerms])];
+      const fallbackLikeClause = allTerms
+        .map(() => ` AND ${params.ftsTable}.text LIKE ? ESCAPE '\\'`)
+        .join("");
       const fallbackLikeParams = allTerms.map((term) => `%${escapeLikePattern(term)}%`);
       rows = params.db
         .prepare(
-          `SELECT id, path, source, start_line, end_line, text,\n` +
+          `SELECT ${params.ftsTable}.id AS id, ${params.ftsTable}.path AS path, ${params.ftsTable}.source AS source, ${params.ftsTable}.start_line AS start_line, ${params.ftsTable}.end_line AS end_line, ${params.ftsTable}.text AS text,\n` +
             `       0 AS rank\n` +
             `  FROM ${params.ftsTable}\n` +
+            chunkJoin +
             ` WHERE 1=1${fallbackLikeClause}${modelClause}${params.sourceFilter.sql}\n` +
             ` LIMIT ?`,
         )
@@ -393,9 +377,10 @@ export async function searchKeyword(params: {
   } else {
     rows = params.db
       .prepare(
-        `SELECT id, path, source, start_line, end_line, text,\n` +
+        `SELECT ${params.ftsTable}.id AS id, ${params.ftsTable}.path AS path, ${params.ftsTable}.source AS source, ${params.ftsTable}.start_line AS start_line, ${params.ftsTable}.end_line AS end_line, ${params.ftsTable}.text AS text,\n` +
           `       0 AS rank\n` +
           `  FROM ${params.ftsTable}\n` +
+          chunkJoin +
           ` WHERE 1=1${substringClause}${modelClause}${params.sourceFilter.sql}\n` +
           ` LIMIT ?`,
       )

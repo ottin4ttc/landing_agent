@@ -7,7 +7,11 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { resolveCodexAppServerHomeDir } from "./auth-bridge.js";
 import { isJsonObject, type JsonValue } from "./protocol.js";
-import { clearCodexAppServerBinding, type CodexAppServerThreadBinding } from "./session-binding.js";
+import {
+  clearCodexAppServerBinding,
+  type CodexAppServerBindingIdentity,
+  type CodexAppServerThreadBinding,
+} from "./session-binding.js";
 
 // Codex owns proactive auto-compaction, but OpenClaw must not resume a native
 // thread that is already too close to the server-side window for the next turn.
@@ -30,14 +34,6 @@ const CODEX_APP_SERVER_BYTE_UNITS: Record<string, number> = {
   tb: 1024 * 1024 * 1024 * 1024,
   tib: 1024 * 1024 * 1024 * 1024,
 };
-type CodexSessionRecordCacheEntry = {
-  sessionsFile: string;
-  mtimeMs: number;
-  size: number;
-  record: (Record<string, unknown> & { sessionKey: string }) | undefined;
-};
-
-const codexSessionRecordCache = new Map<string, CodexSessionRecordCacheEntry>();
 
 function parseCodexAppServerByteLimit(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
@@ -114,57 +110,6 @@ async function listCodexAppServerRolloutFilesForThread(
     }
   }
   return files;
-}
-
-async function readCodexSessionRecordForSessionFile(
-  sessionFile: string,
-): Promise<(Record<string, unknown> & { sessionKey: string }) | undefined> {
-  const sessionsFile = path.join(path.dirname(sessionFile), "sessions.json");
-  const resolvedSessionFile = path.resolve(sessionFile);
-  let stat: Awaited<ReturnType<typeof fs.stat>>;
-  try {
-    stat = await fs.stat(sessionsFile);
-  } catch {
-    codexSessionRecordCache.delete(resolvedSessionFile);
-    return undefined;
-  }
-  const cached = codexSessionRecordCache.get(resolvedSessionFile);
-  if (
-    cached?.sessionsFile === sessionsFile &&
-    cached.mtimeMs === stat.mtimeMs &&
-    cached.size === stat.size
-  ) {
-    return cached.record;
-  }
-  let store: JsonValue | undefined;
-  try {
-    store = JSON.parse(await fs.readFile(sessionsFile, "utf8")) as JsonValue;
-  } catch {
-    codexSessionRecordCache.delete(resolvedSessionFile);
-    return undefined;
-  }
-  if (!isJsonObject(store)) {
-    codexSessionRecordCache.delete(resolvedSessionFile);
-    return undefined;
-  }
-  let found: (Record<string, unknown> & { sessionKey: string }) | undefined;
-  for (const [sessionKey, record] of Object.entries(store)) {
-    if (!isJsonObject(record) || typeof record.sessionFile !== "string") {
-      continue;
-    }
-    if (path.resolve(record.sessionFile) !== resolvedSessionFile) {
-      continue;
-    }
-    found = { sessionKey, ...record };
-    break;
-  }
-  codexSessionRecordCache.set(resolvedSessionFile, {
-    sessionsFile,
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
-    record: found,
-  });
-  return found;
 }
 
 type CodexAppServerRolloutTokenSnapshot = {
@@ -306,23 +251,13 @@ function maxFiniteNumber(values: Array<number | undefined>): number | undefined 
   return Math.max(...nums);
 }
 
-function minFiniteNumber(values: Array<number | undefined>): number | undefined {
-  const nums = values.filter(
-    (value): value is number => typeof value === "number" && Number.isFinite(value),
-  );
-  if (nums.length === 0) {
-    return undefined;
-  }
-  return Math.min(...nums);
-}
-
 function hasContextEngineThreadBootstrapProjection(binding: CodexAppServerThreadBinding): boolean {
   return binding.contextEngine?.projection?.mode === "thread_bootstrap";
 }
 
 export async function rotateOversizedCodexAppServerStartupBinding(params: {
   binding: CodexAppServerThreadBinding | undefined;
-  sessionFile: string;
+  bindingIdentity?: CodexAppServerBindingIdentity;
   agentDir: string;
   codexHome?: string;
   config: EmbeddedRunAttemptParams["config"] | undefined;
@@ -333,7 +268,7 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
   if (!binding?.threadId) {
     return binding;
   }
-  const sessionRecord = await readCodexSessionRecordForSessionFile(params.sessionFile);
+  const clearIdentity = params.bindingIdentity ?? binding.sessionId;
   const rolloutFiles = await listCodexAppServerRolloutFilesForThread(
     params.agentDir,
     binding.threadId,
@@ -357,7 +292,7 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
             files: oversizedFiles.map((file) => ({ path: file.path, bytes: file.bytes })),
           },
         );
-        await clearCodexAppServerBinding(params.sessionFile);
+        await clearCodexAppServerBinding(clearIdentity);
         return undefined;
       }
     }
@@ -371,41 +306,26 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
   const nativeModelContextWindow = maxFiniteNumber(
     nativeTokenSnapshots.map((snapshot) => snapshot?.modelContextWindow),
   );
-  const sessionModelContextWindow =
-    typeof sessionRecord?.contextTokens === "number" &&
-    Number.isFinite(sessionRecord.contextTokens) &&
-    sessionRecord.contextTokens > 0
-      ? Math.floor(sessionRecord.contextTokens)
-      : undefined;
   const reserveTokens = resolveCodexAppServerNativeThreadReserveTokens(params.config);
   const maxTokens = resolveCodexAppServerNativeThreadTokenFuse({
-    modelContextWindow: minFiniteNumber([nativeModelContextWindow, sessionModelContextWindow]),
+    modelContextWindow: nativeModelContextWindow,
     reserveTokens,
     projectedTurnTokens: params.projectedTurnTokens,
   });
-  const sessionTokens =
-    sessionRecord?.totalTokensFresh !== false &&
-    typeof sessionRecord?.totalTokens === "number" &&
-    Number.isFinite(sessionRecord.totalTokens)
-      ? sessionRecord.totalTokens
-      : undefined;
-  const tokenCount = maxFiniteNumber([sessionTokens, nativeTokens]);
+  const tokenCount = maxFiniteNumber([nativeTokens]);
   if (tokenCount !== undefined && tokenCount >= maxTokens) {
     embeddedAgentLog.warn(
       "codex app-server native transcript exceeded active token limit; starting a fresh thread",
       {
         threadId: binding.threadId,
         maxTokens,
-        sessionKey: sessionRecord?.sessionKey,
-        sessionTokens,
         nativeTokens,
         nativeModelContextWindow,
-        sessionModelContextWindow,
         reserveTokens,
         projectedTurnTokens: params.projectedTurnTokens,
       },
     );
-    await clearCodexAppServerBinding(params.sessionFile);
+    await clearCodexAppServerBinding(clearIdentity);
     return undefined;
   }
   if (compaction?.truncateAfterCompaction !== true) {

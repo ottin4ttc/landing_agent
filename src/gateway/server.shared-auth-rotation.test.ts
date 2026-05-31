@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
@@ -47,7 +46,7 @@ async function openDeviceTokenWsWithDetails(
     auth?: { deviceToken?: unknown };
   };
 }> {
-  const identityPath = path.join(os.tmpdir(), `openclaw-shared-auth-${process.pid}-${port}.json`);
+  const identityKey = `test:shared-auth:${process.pid}:${port}`;
   const { loadOrCreateDeviceIdentity, publicKeyRawBase64UrlFromPem } =
     await import("../infra/device-identity.js");
   const { approveDevicePairing, ensureDeviceToken, requestDevicePairing, rotateDeviceToken } =
@@ -66,7 +65,7 @@ async function openDeviceTokenWsWithDetails(
         mode: "test",
       };
 
-  const identity = loadOrCreateDeviceIdentity(identityPath);
+  const identity = loadOrCreateDeviceIdentity({ key: identityKey });
   const pending = await requestDevicePairing({
     deviceId: identity.deviceId,
     publicKey: publicKeyRawBase64UrlFromPem(identity.publicKeyPem),
@@ -110,7 +109,7 @@ async function openDeviceTokenWsWithDetails(
   const hello = (await connectOk(ws, {
     skipDefaultAuth: true,
     client,
-    deviceIdentityPath: identityPath,
+    deviceIdentityKey: identityKey,
     deviceToken: issuedDeviceToken,
     scopes: ["operator.admin"],
   })) as Awaited<ReturnType<typeof connectOk>> & {

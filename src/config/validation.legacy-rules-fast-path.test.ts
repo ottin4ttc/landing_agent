@@ -17,7 +17,7 @@ const loadPluginMetadataSnapshotMock = vi.hoisted(() =>
   })),
 );
 
-vi.mock("../channels/plugins/legacy-config.js", () => ({
+vi.mock("../commands/doctor/shared/channel-legacy-config-rules.js", () => ({
   collectChannelLegacyConfigRules: collectChannelLegacyConfigRulesMock,
 }));
 
@@ -27,6 +27,7 @@ vi.mock("../plugins/doctor-contract-registry.js", () => ({
 
 vi.mock("../plugins/plugin-metadata-snapshot.js", () => ({
   loadPluginMetadataSnapshot: loadPluginMetadataSnapshotMock,
+  resolvePluginMetadataSnapshot: loadPluginMetadataSnapshotMock,
 }));
 
 import { validateConfigObjectRaw } from "./validation.js";
@@ -119,6 +120,56 @@ describe("config validation legacy rule loading", () => {
     );
 
     expect(result.ok).toBe(true);
+    expect(collectChannelLegacyConfigRulesMock).not.toHaveBeenCalled();
+    expect(listPluginDoctorLegacyConfigRulesMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts legacy session config keys before doctor repair runs", () => {
+    const result = validateConfigObjectRaw({
+      session: {
+        store: { path: "sessions.json" },
+        idleMinutes: 120.9,
+        resetByType: {
+          dm: { mode: "idle", idleMinutes: 45 },
+          group: { mode: "daily", atHour: 8 },
+        },
+        maintenance: { enabled: true },
+        writeLock: { staleMs: 1000 },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.config.session).toEqual({
+        reset: { mode: "idle", idleMinutes: 120 },
+        resetByType: {
+          direct: { mode: "idle", idleMinutes: 45 },
+          group: { mode: "daily", atHour: 8 },
+        },
+      });
+    }
+    expect(collectChannelLegacyConfigRulesMock).not.toHaveBeenCalled();
+    expect(listPluginDoctorLegacyConfigRulesMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts legacy diagnostics cache trace file paths before doctor repair runs", () => {
+    const result = validateConfigObjectRaw({
+      diagnostics: {
+        cacheTrace: {
+          enabled: true,
+          includePrompt: false,
+          filePath: "/tmp/openclaw-cache-trace.jsonl",
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.config.diagnostics?.cacheTrace).toEqual({
+        enabled: true,
+        includePrompt: false,
+      });
+    }
     expect(collectChannelLegacyConfigRulesMock).not.toHaveBeenCalled();
     expect(listPluginDoctorLegacyConfigRulesMock).not.toHaveBeenCalled();
   });

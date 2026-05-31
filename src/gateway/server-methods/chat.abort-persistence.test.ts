@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { CURRENT_SESSION_VERSION } from "openclaw/plugin-sdk/agent-sessions";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { loadSqliteSessionTranscriptEvents } from "../../config/sessions/transcript-store.sqlite.js";
 import { onAgentEvent, resetAgentEventsForTest } from "../../infra/agent-events.js";
 import {
   createActiveRun,
@@ -15,6 +15,7 @@ type TranscriptLine = {
 };
 
 const sessionEntryState = vi.hoisted(() => ({
+  databasePath: "",
   transcriptPath: "",
   sessionId: "",
   hasEntry: true,
@@ -32,6 +33,7 @@ vi.mock("../session-utils.js", async () => {
       sessionEntryState.loadCalls.push({ sessionKey, opts });
       return {
         cfg: sessionEntryState.cfg,
+        databasePath: sessionEntryState.databasePath,
         storePath: path.join(path.dirname(sessionEntryState.transcriptPath), "sessions.json"),
         entry: sessionEntryState.hasEntry
           ? {
@@ -47,31 +49,13 @@ vi.mock("../session-utils.js", async () => {
 
 const { chatHandlers } = await import("./chat.js");
 
-async function writeTranscriptHeader(transcriptPath: string, sessionId: string) {
-  const header = {
-    type: "session",
-    version: CURRENT_SESSION_VERSION,
-    id: sessionId,
-    timestamp: new Date(0).toISOString(),
-    cwd: "/tmp",
-  };
-  await fs.writeFile(transcriptPath, `${JSON.stringify(header)}\n`, "utf-8");
-}
-
 async function readTranscriptLines(transcriptPath: string): Promise<TranscriptLine[]> {
-  const raw = await fs.readFile(transcriptPath, "utf-8");
-  const lines: TranscriptLine[] = [];
-  for (const line of raw.split(/\r?\n/)) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    try {
-      lines.push(JSON.parse(line) as TranscriptLine);
-    } catch {
-      lines.push({});
-    }
-  }
-  return lines;
+  const events = loadSqliteSessionTranscriptEvents({
+    agentId: "main",
+    path: sessionEntryState.databasePath,
+    sessionId: path.basename(transcriptPath, ".jsonl"),
+  });
+  return events.map((event) => event.event as TranscriptLine);
 }
 
 function collectMessagesWithIdempotencyKey(
@@ -152,10 +136,16 @@ function expectPersistedAbortMessage(
   expect(abort.runId).toBe(expected.runId);
 }
 
-function setMockSessionEntry(transcriptPath: string, sessionId: string, hasEntry = true) {
-  sessionEntryState.transcriptPath = transcriptPath;
-  sessionEntryState.sessionId = sessionId;
-  sessionEntryState.hasEntry = hasEntry;
+function setMockSessionEntry(params: {
+  databasePath: string;
+  transcriptPath: string;
+  sessionId: string;
+  hasEntry?: boolean;
+}) {
+  sessionEntryState.databasePath = params.databasePath;
+  sessionEntryState.transcriptPath = params.transcriptPath;
+  sessionEntryState.sessionId = params.sessionId;
+  sessionEntryState.hasEntry = params.hasEntry ?? true;
   sessionEntryState.canonicalKey = "main";
   sessionEntryState.cfg = {};
   sessionEntryState.loadCalls = [];
@@ -165,21 +155,31 @@ async function createTranscriptFixture(prefix: string) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const sessionId = "sess-main";
   const transcriptPath = path.join(dir, `${sessionId}.jsonl`);
-  await writeTranscriptHeader(transcriptPath, sessionId);
-  setMockSessionEntry(transcriptPath, sessionId);
+  const databasePath = path.join(dir, "agent.sqlite");
+  setMockSessionEntry({ databasePath, transcriptPath, sessionId });
   return { transcriptPath, sessionId };
 }
 
 async function createMissingEntryFixture(prefix: string) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const transcriptPath = path.join(dir, "missing.jsonl");
+  const databasePath = path.join(dir, "agent.sqlite");
   const sessionId = "client-supplied-session";
-  setMockSessionEntry(transcriptPath, sessionId, false);
+  setMockSessionEntry({
+    databasePath,
+    transcriptPath,
+    sessionId,
+    hasEntry: false,
+  });
   return { sessionId };
 }
 
 afterEach(() => {
   vi.restoreAllMocks();
+  sessionEntryState.databasePath = "";
+  sessionEntryState.transcriptPath = "";
+  sessionEntryState.sessionId = "";
+  sessionEntryState.hasEntry = true;
   resetAgentEventsForTest();
 });
 

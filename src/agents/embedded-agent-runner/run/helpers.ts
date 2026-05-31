@@ -175,7 +175,6 @@ export function buildUsageAgentMetaFields(params: {
  */
 export function buildErrorAgentMeta(params: {
   sessionId: string;
-  sessionFile?: string;
   provider: string;
   model: string;
   contextTokens?: number;
@@ -192,7 +191,6 @@ export function buildErrorAgentMeta(params: {
   });
   return {
     sessionId: params.sessionId,
-    ...(params.sessionFile ? { sessionFile: params.sessionFile } : {}),
     provider: params.provider,
     model: params.model,
     ...(params.contextTokens ? { contextTokens: params.contextTokens } : {}),

@@ -1,8 +1,12 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import webPush from "web-push";
+import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "./kysely-sync.js";
 import {
   broadcastWebPush,
   clearWebPushSubscription,
@@ -12,9 +16,11 @@ import {
   registerWebPushSubscription,
   resolveVapidKeys,
   sendWebPushNotification,
+  writeWebPushRegistrationStateSnapshot,
 } from "./push-web.js";
 
 type WebPushSubscription = NonNullable<Awaited<ReturnType<typeof loadWebPushSubscription>>>;
+type WebPushTestDatabase = Pick<OpenClawStateKyselyDatabase, "web_push_vapid_keys">;
 
 // Stub resolveStateDir so tests use a temp directory.
 let tmpDir: string;
@@ -44,6 +50,24 @@ function expectLoadedSubscription(
   return loaded;
 }
 
+function hashEndpointForTest(endpoint: string): string {
+  return createHash("sha256").update(endpoint).digest("hex").slice(0, 32);
+}
+
+function readPersistedVapidKeysForTest(baseDir: string) {
+  const database = openOpenClawStateDatabase({
+    env: { ...process.env, OPENCLAW_STATE_DIR: baseDir },
+  });
+  const db = getNodeSqliteKysely<WebPushTestDatabase>(database.db);
+  return executeSqliteQueryTakeFirstSync(
+    database.db,
+    db
+      .selectFrom("web_push_vapid_keys")
+      .select(["public_key", "private_key", "subject"])
+      .where("key_id", "=", "default"),
+  );
+}
+
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "push-web-test-"));
   vi.clearAllMocks();
@@ -59,10 +83,11 @@ describe("resolveVapidKeys", () => {
     expect(keys.publicKey).toBe("test-public-key-base64url");
     expect(keys.privateKey).toBe("test-private-key-base64url");
     expect(keys.subject).toBe("https://openclaw.ai");
-    const persistedKeys = JSON.parse(
-      await fs.readFile(path.join(tmpDir, "push", "vapid-keys.json"), "utf8"),
-    ) as { subject?: string };
-    expect(persistedKeys.subject).toBe("https://openclaw.ai");
+    expect(readPersistedVapidKeysForTest(tmpDir)).toMatchObject({
+      public_key: "test-public-key-base64url",
+      private_key: "test-private-key-base64url",
+      subject: "https://openclaw.ai",
+    });
 
     // Second call returns same keys.
     const keys2 = await resolveVapidKeys(tmpDir);
@@ -155,6 +180,37 @@ describe("subscription CRUD", () => {
     });
     const list = await listWebPushSubscriptions(tmpDir);
     expect(list).toHaveLength(2);
+  });
+
+  it("prunes stale subscription snapshot rows while retaining current rows", async () => {
+    const retained = await registerWebPushSubscription({
+      endpoint: "https://push.example.com/retained",
+      keys,
+      baseDir: tmpDir,
+    });
+    await registerWebPushSubscription({
+      endpoint: "https://push.example.com/stale",
+      keys,
+      baseDir: tmpDir,
+    });
+
+    await writeWebPushRegistrationStateSnapshot(
+      {
+        subscriptionsByEndpointHash: {
+          [hashEndpointForTest(retained.endpoint)]: {
+            ...retained,
+            keys: { p256dh: "updated-p256dh", auth: retained.keys.auth },
+          },
+        },
+      },
+      tmpDir,
+    );
+
+    await expect(listWebPushSubscriptions(tmpDir)).resolves.toHaveLength(1);
+    const loaded = expectLoadedSubscription(
+      await loadWebPushSubscription(retained.subscriptionId, tmpDir),
+    );
+    expect(loaded.keys.p256dh).toBe("updated-p256dh");
   });
 
   it("clears a subscription by ID", async () => {

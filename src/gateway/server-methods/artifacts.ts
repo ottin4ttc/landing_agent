@@ -21,10 +21,10 @@ import {
 import { getTaskSessionLookupByIdForStatus } from "../../tasks/task-status-access.js";
 import { resolveSessionKeyForRun } from "../server-session-key.js";
 import {
-  resolveSessionStoreAgentId,
-  resolveSessionStoreKey,
-  resolveStoredSessionKeyForAgentStore,
-} from "../session-store-key.js";
+  resolveSessionRowAgentId,
+  resolveSessionRowKey,
+  resolveStoredSessionRowKeyForAgent,
+} from "../session-row-key.js";
 import { loadSessionEntry, visitSessionMessagesAsync } from "../session-utils.js";
 import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -75,13 +75,10 @@ function resolveRequesterSessionAgentId(
     return undefined;
   }
   if (cfg) {
-    const canonicalKey = resolveSessionStoreKey({ cfg, sessionKey: key });
-    return resolveSessionStoreAgentId(cfg, canonicalKey);
+    const canonicalKey = resolveSessionRowKey({ cfg, sessionKey: key });
+    return resolveSessionRowAgentId(cfg, canonicalKey);
   }
-  if (parsed) {
-    return parsed.agentId;
-  }
-  return resolveAgentIdFromSessionKey(key);
+  return parsed?.agentId ?? resolveAgentIdFromSessionKey(key);
 }
 
 function resolveScopedArtifactSessionKey(
@@ -102,7 +99,7 @@ function resolveScopedArtifactSessionKey(
     return undefined;
   }
   if (cfg) {
-    const scopedKey = resolveStoredSessionKeyForAgentStore({
+    const scopedKey = resolveStoredSessionRowKeyForAgent({
       cfg,
       agentId: scopedAgentId,
       sessionKey: key,
@@ -110,7 +107,7 @@ function resolveScopedArtifactSessionKey(
     if (
       scopedKey !== "global" &&
       scopedKey !== "unknown" &&
-      resolveSessionStoreAgentId(cfg, scopedKey) !== normalizeAgentId(scopedAgentId)
+      resolveSessionRowAgentId(cfg, scopedKey) !== normalizeAgentId(scopedAgentId)
     ) {
       return undefined;
     }
@@ -407,35 +404,56 @@ function resolveQuerySession(
     if (!sessionKey) {
       return undefined;
     }
-    return { sessionKey, ...(query.agentId ? { agentId: query.agentId } : {}) };
+    return {
+      sessionKey,
+      agentId: asNonEmptyString(query.agentId) ?? resolveRequesterSessionAgentId(sessionKey, cfg),
+    };
   }
   if (query.runId) {
-    const agentId = query.agentId ?? resolveDefaultAgentId(cfg ?? {});
-    const sessionKey = resolveSessionKeyForRun(query.runId, { agentId });
+    const requestedAgentId = asNonEmptyString(query.agentId);
+    const sessionKey = resolveSessionKeyForRun(
+      query.runId,
+      requestedAgentId ? { agentId: requestedAgentId } : undefined,
+    );
+    const agentId = requestedAgentId ?? resolveRequesterSessionAgentId(sessionKey, cfg);
     const scopedSessionKey = resolveScopedArtifactSessionKey(sessionKey, agentId, cfg);
     return scopedSessionKey ? { sessionKey: scopedSessionKey, agentId } : undefined;
   }
   if (query.taskId) {
     const task = getTaskSessionLookupByIdForStatus(query.taskId);
     const requesterSessionKey = asNonEmptyString(task?.requesterSessionKey);
-    const taskAgentId =
-      asNonEmptyString(task?.agentId) ?? resolveRequesterSessionAgentId(requesterSessionKey, cfg);
-    if (
-      query.agentId &&
-      taskAgentId &&
-      normalizeAgentId(query.agentId) !== normalizeAgentId(taskAgentId)
-    ) {
-      return undefined;
-    }
-    const agentId = query.agentId ?? taskAgentId ?? resolveDefaultAgentId(cfg ?? {});
+    const requestedAgentId = asNonEmptyString(query.agentId);
+    const taskRecordAgentId = asNonEmptyString(task?.agentId);
     if (requesterSessionKey) {
-      const scopedSessionKey = resolveScopedArtifactSessionKey(requesterSessionKey, agentId, cfg);
-      return scopedSessionKey ? { sessionKey: scopedSessionKey, agentId } : undefined;
+      const requesterSessionAgentId = resolveRequesterSessionAgentId(requesterSessionKey, cfg);
+      const requesterAgentId =
+        (requesterSessionKey === "global" ? taskRecordAgentId : requesterSessionAgentId) ??
+        requesterSessionAgentId ??
+        taskRecordAgentId ??
+        (cfg ? normalizeAgentId(resolveDefaultAgentId(cfg)) : "main");
+      if (
+        requestedAgentId &&
+        requesterAgentId &&
+        normalizeAgentId(requestedAgentId) !== normalizeAgentId(requesterAgentId)
+      ) {
+        return undefined;
+      }
+      const taskAgentId = requestedAgentId ?? requesterAgentId;
+      const scopedSessionKey = resolveScopedArtifactSessionKey(
+        requesterSessionKey,
+        taskAgentId,
+        cfg,
+      );
+      return scopedSessionKey ? { sessionKey: scopedSessionKey, agentId: taskAgentId } : undefined;
     }
     const runId = asNonEmptyString(task?.runId);
-    const sessionKey = runId ? resolveSessionKeyForRun(runId, { agentId }) : undefined;
-    const scopedSessionKey = resolveScopedArtifactSessionKey(sessionKey, agentId, cfg);
-    return scopedSessionKey ? { sessionKey: scopedSessionKey, agentId } : undefined;
+    const taskAgentId =
+      requestedAgentId ??
+      taskRecordAgentId ??
+      (cfg ? normalizeAgentId(resolveDefaultAgentId(cfg)) : "main");
+    const sessionKey = runId ? resolveSessionKeyForRun(runId, { agentId: taskAgentId }) : undefined;
+    const scopedSessionKey = resolveScopedArtifactSessionKey(sessionKey, taskAgentId, cfg);
+    return scopedSessionKey ? { sessionKey: scopedSessionKey, agentId: taskAgentId } : undefined;
   }
   return undefined;
 }
@@ -450,20 +468,20 @@ async function loadArtifacts(
     return { artifacts: [] };
   }
   const { sessionKey } = resolved;
-  const scopedGlobalAgentId =
-    cfg?.session?.scope === "global" && sessionKey === "global" ? resolved.agentId : undefined;
-  const { storePath, entry } = scopedGlobalAgentId
-    ? loadSessionEntry(sessionKey, { agentId: scopedGlobalAgentId })
-    : loadSessionEntry(sessionKey);
+  const { entry } = loadSessionEntry(
+    sessionKey,
+    resolved.agentId ? { agentId: resolved.agentId } : undefined,
+  );
   const sessionId = entry?.sessionId;
-  if (!sessionId || !storePath) {
+  if (!sessionId) {
     return { sessionKey, artifacts: [] };
   }
   const artifacts: ArtifactRecord[] = [];
   await visitSessionMessagesAsync(
-    sessionId,
-    storePath,
-    entry?.sessionFile,
+    {
+      agentId: resolved.agentId ?? resolveAgentIdFromSessionKey(sessionKey),
+      sessionId,
+    },
     (message, seq) => {
       collectArtifactsFromMessage({
         message,
@@ -479,7 +497,6 @@ async function loadArtifacts(
     {
       mode: "full",
       reason: "artifact query transcript scan",
-      cache: "skip",
     },
   );
   return {
@@ -531,9 +548,7 @@ export const artifactsHandlers: GatewayRequestHandlers = {
     if (!requireQueryable(params, respond)) {
       return;
     }
-    const { artifacts, sessionKey } = await loadArtifacts(params, context.getRuntimeConfig?.(), {
-      includeDownloadData: false,
-    });
+    const { artifacts, sessionKey } = await loadArtifacts(params, context.getRuntimeConfig?.());
     if (!sessionKey && (params.runId || params.taskId)) {
       respond(
         false,
@@ -551,9 +566,7 @@ export const artifactsHandlers: GatewayRequestHandlers = {
     if (!requireQueryable(params, respond)) {
       return;
     }
-    const { artifact } = await findArtifact(params, context.getRuntimeConfig?.(), {
-      includeDownloadData: false,
-    });
+    const { artifact } = await findArtifact(params, context.getRuntimeConfig?.());
     if (!artifact) {
       respond(
         false,
@@ -575,9 +588,7 @@ export const artifactsHandlers: GatewayRequestHandlers = {
     if (!requireQueryable(params, respond)) {
       return;
     }
-    const { artifact } = await findArtifact(params, context.getRuntimeConfig?.(), {
-      downloadArtifactId: params.artifactId,
-    });
+    const { artifact } = await findArtifact(params, context.getRuntimeConfig?.());
     if (!artifact) {
       respond(
         false,

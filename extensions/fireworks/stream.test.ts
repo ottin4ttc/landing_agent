@@ -1,5 +1,5 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
-import type { Context, Model } from "openclaw/plugin-sdk/llm";
+import type { Context, Model } from "openclaw/plugin-sdk/provider-ai";
 import { describe, expect, it } from "vitest";
 import {
   createFireworksKimiThinkingDisabledWrapper,

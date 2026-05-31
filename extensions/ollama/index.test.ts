@@ -418,7 +418,7 @@ describe("ollama plugin", () => {
     });
   });
 
-  it("resolves dynamic local models from Ollama without generating static models.json", async () => {
+  it("resolves dynamic local models from Ollama without writing a model catalog file", async () => {
     const provider = registerProvider();
     const previous = process.env.OLLAMA_API_KEY;
     process.env.OLLAMA_API_KEY = "ollama-local";

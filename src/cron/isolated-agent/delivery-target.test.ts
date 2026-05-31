@@ -23,13 +23,8 @@ vi.mock("../../config/sessions/delivery-info.js", () => ({
   extractDeliveryInfo: extractDeliveryInfoMock,
 }));
 
-vi.mock("../../config/sessions/paths.js", () => ({
-  resolveStorePath: vi.fn().mockReturnValue("/tmp/test-store.json"),
-}));
-
-vi.mock("../../config/sessions/store-load.js", () => ({
-  loadSessionStore: vi.fn().mockReturnValue({}),
-  readSessionEntry: vi.fn(),
+vi.mock("../../config/sessions/store.js", () => ({
+  getSessionEntry: vi.fn().mockReturnValue(undefined),
 }));
 
 vi.mock("../../infra/outbound/channel-selection.runtime.js", () => ({
@@ -48,14 +43,14 @@ vi.mock("../../infra/outbound/targets.runtime.js", () => ({
 const mockedModuleIds = [
   "../../config/sessions/main-session.js",
   "../../config/sessions/delivery-info.js",
-  "../../config/sessions/paths.js",
-  "../../config/sessions/store-load.js",
+  "../../config/sessions/store.js",
   "../../infra/outbound/channel-selection.runtime.js",
   "../../infra/outbound/targets.runtime.js",
   "../../infra/outbound/target-id-resolution.js",
 ];
 
-import { loadSessionStore, readSessionEntry } from "../../config/sessions/store-load.js";
+import { getSessionEntry } from "../../config/sessions/store.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
 import { resolveMessageChannelSelection } from "../../infra/outbound/channel-selection.runtime.js";
 import { maybeResolveIdLikeTarget } from "../../infra/outbound/target-id-resolution.js";
 import { resolveOutboundTarget } from "../../infra/outbound/targets.runtime.js";
@@ -112,9 +107,9 @@ beforeEach(() => {
   extractDeliveryInfoMock.mockReset();
   extractDeliveryInfoMock.mockReturnValue({ deliveryContext: undefined, threadId: undefined });
   normalizeTelegramTargetForDeliveryTest.mockClear();
+  vi.mocked(getSessionEntry).mockReset();
+  vi.mocked(getSessionEntry).mockReturnValue(undefined);
   vi.mocked(resolveOutboundTarget).mockReset();
-  vi.mocked(loadSessionStore).mockReset().mockReturnValue({});
-  vi.mocked(readSessionEntry).mockReset().mockReturnValue(undefined);
   setActivePluginRegistry(
     createTestRegistry([
       {
@@ -221,11 +216,12 @@ const DEFAULT_TARGET = {
   to: "room:default",
 };
 
-type SessionStore = ReturnType<typeof loadSessionStore>;
+type SessionStore = Record<string, SessionEntry>;
 
 function setSessionStore(store: SessionStore) {
-  vi.mocked(loadSessionStore).mockReturnValue(store);
-  vi.mocked(readSessionEntry).mockImplementation((_storePath, sessionKey) => store[sessionKey]);
+  vi.mocked(getSessionEntry).mockImplementation(
+    ({ sessionKey }: { sessionKey: string }) => store[sessionKey],
+  );
 }
 
 function setMainSessionEntry(entry?: SessionStore[string]) {
@@ -270,21 +266,6 @@ async function resolveLastTarget(cfg: OpenClawConfig) {
 }
 
 describe("resolveDeliveryTarget", () => {
-  it("uses session-entry snapshot reads for implicit last delivery lookup", async () => {
-    setLastSessionEntry({
-      sessionId: "sess-w1",
-      lastChannel: "alpha",
-      lastTo: "room-allowed",
-    });
-
-    const result = await resolveLastTarget(makeCfg({ channels: { alpha: { allowFrom: [] } } }));
-
-    expect(result.channel).toBe("alpha");
-    expect(result.to).toBe("room-allowed");
-    expect(readSessionEntry).toHaveBeenCalledWith("/tmp/test-store.json", "agent:test:main");
-    expect(loadSessionStore).not.toHaveBeenCalled();
-  });
-
   it("reroutes implicit delivery to an authorized allowFrom recipient", async () => {
     setLastSessionEntry({
       sessionId: "sess-w1",
@@ -1308,7 +1289,7 @@ describe("resolveDeliveryTarget", () => {
     });
 
     expect(extractDeliveryInfoMock).toHaveBeenCalledWith("agent:agent-b:main", {
-      cfg: expect.any(Object),
+      cfg: { bindings: [], channels: {} },
     });
     expect(result).toMatchObject({
       ok: true,

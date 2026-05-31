@@ -1,10 +1,10 @@
 import path from "node:path";
 import {
   abortAgentHarnessRun,
+  openTranscriptSessionManagerForSession,
   onAgentEvent,
   type AgentEventPayload,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import {
   onInternalDiagnosticEvent,
   waitForDiagnosticEventsDrained,
@@ -37,6 +37,15 @@ function flushDiagnosticEvents() {
   return waitForDiagnosticEventsDrained();
 }
 
+function openTestTranscriptSession(params: { sessionFile: string; workspaceDir: string }) {
+  return openTranscriptSessionManagerForSession({
+    agentId: "main",
+    path: params.sessionFile,
+    sessionId: "session-1",
+    cwd: params.workspaceDir,
+  });
+}
+
 setupRunAttemptTestHooks();
 
 describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
@@ -56,7 +65,7 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
     );
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
-    const sessionManager = SessionManager.open(sessionFile);
+    const sessionManager = openTestTranscriptSession({ sessionFile, workspaceDir });
     sessionManager.appendMessage(assistantMessage("existing context", Date.now()));
     const harness = createStartedThreadHarness();
 
@@ -204,7 +213,8 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
     const diagnosticEvents: DiagnosticEventPayload[] = [];
     const diagnosticContentByType = new Map<string, DiagnosticEventPrivateData>();
     let diagnosticTypesAtLlmOutput: string[] = [];
-    const llmOutput = vi.fn(() => {
+    const llmOutput = vi.fn(async () => {
+      await waitForDiagnosticEventsDrained();
       diagnosticTypesAtLlmOutput = diagnosticEvents.map((event) => event.type);
     });
     initializeGlobalHookRunner(
@@ -296,7 +306,10 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
       ).toContain("hello back");
       expect(completedEvent?.requestPayloadBytes).toBeGreaterThan(0);
       expect(llmOutput).toHaveBeenCalledTimes(1);
-      expect(diagnosticTypesAtLlmOutput).toContain("model.call.completed");
+      await vi.waitFor(
+        () => expect(diagnosticTypesAtLlmOutput).toContain("model.call.completed"),
+        fastWait,
+      );
       expect(diagnosticTypesAtLlmOutput).not.toContain("model.call.error");
     } finally {
       stopDiagnostics();
@@ -489,7 +502,7 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
     );
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
-    SessionManager.open(sessionFile).appendMessage(
+    openTestTranscriptSession({ sessionFile, workspaceDir }).appendMessage(
       assistantMessage("existing context", Date.now()),
     );
     createStartedThreadHarness(async (method) => {

@@ -6,9 +6,9 @@ const agentSessionMocks = vi.hoisted(() => ({
   generateSummary: vi.fn(async () => "summary"),
 }));
 
-vi.mock("openclaw/plugin-sdk/agent-sessions", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/agent-sessions")>(
-    "openclaw/plugin-sdk/agent-sessions",
+vi.mock("./pi-coding-agent-contract.js", async () => {
+  const actual = await vi.importActual<typeof import("./pi-coding-agent-contract.js")>(
+    "./pi-coding-agent-contract.js",
   );
   return {
     ...actual,

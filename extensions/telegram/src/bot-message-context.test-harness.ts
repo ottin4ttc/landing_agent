@@ -38,67 +38,26 @@ type BuildTelegramMessageContextForTestParams = {
   resolveTelegramGroupConfig?: BuildTelegramMessageContextParams["resolveTelegramGroupConfig"];
 };
 
-const telegramTopicNameStoresForTest = new Map<string, Map<string, TopicNameEntryForTest>>();
-
-function resolveSessionStorePathForTest(testName: string | undefined): string {
-  const hash = createHash("sha256")
-    .update(`${process.pid}:${testName ?? "unknown"}`)
-    .digest("hex")
-    .slice(0, 16);
-  return `/tmp/openclaw/session-store-${hash}.json`;
-}
-
-function createTelegramMessageContextSessionRuntimeForTest(
-  storePath: string,
-): TelegramTestSessionRuntime {
-  return {
-    buildChannelInboundEventContext,
-    readSessionUpdatedAt: () => undefined,
-    recordInboundSession: async () => undefined,
-    resolveInboundLastRouteSessionKey: ({ route, sessionKey }) =>
-      route.lastRoutePolicy === "main" ? route.mainSessionKey : sessionKey,
-    resolvePinnedMainDmOwnerFromAllowlist: () => null,
-    resolveStorePath: () => storePath,
-  };
-}
-
-function installTelegramTopicNameStoreForTest() {
-  setTelegramTopicNameStoreFactoryForTest((namespace) => {
-    const entries = telegramTopicNameStoresForTest.get(namespace) ?? new Map();
-    telegramTopicNameStoresForTest.set(namespace, entries);
-    return {
-      async register(key, value) {
-        entries.set(key, value);
-      },
-      async entries() {
-        return Array.from(entries, ([key, value]) => ({ key, value }));
-      },
-      async delete(key) {
-        return entries.delete(key);
-      },
-      async clear() {
-        entries.clear();
-      },
-    };
-  });
-}
+const telegramMessageContextSessionRuntimeForTest = {
+  buildChannelInboundEventContext,
+  readSessionUpdatedAt: () => undefined,
+  recordInboundSession: async () => undefined,
+  resolveInboundLastRouteSessionKey: ({ route, sessionKey }) =>
+    route.lastRoutePolicy === "main" ? route.mainSessionKey : sessionKey,
+  resolvePinnedMainDmOwnerFromAllowlist: () => null,
+} satisfies NonNullable<BuildTelegramMessageContextParams["sessionRuntime"]>;
 
 export async function buildTelegramMessageContextForTest(
   params: BuildTelegramMessageContextForTestParams,
 ): Promise<
   Awaited<ReturnType<typeof import("./bot-message-context.js").buildTelegramMessageContext>>
 > {
-  const { expect, vi } = await loadVitestModule();
+  const { vi } = await loadVitestModule();
   const buildTelegramMessageContext = await loadBuildTelegramMessageContext();
   const sessionRuntime =
     params.sessionRuntime === null
       ? undefined
-      : {
-          ...createTelegramMessageContextSessionRuntimeForTest(
-            resolveSessionStorePathForTest(expect.getState().currentTestName),
-          ),
-          ...params.sessionRuntime,
-        };
+      : { ...telegramMessageContextSessionRuntimeForTest, ...params.sessionRuntime };
   return await buildTelegramMessageContext({
     primaryCtx: {
       message: {
@@ -168,7 +127,7 @@ async function loadVitestModule() {
 }
 
 async function installMessageContextTestMocks() {
-  installTelegramTopicNameStoreForTest();
+  setTelegramTopicNameStoreFactoryForTest(undefined);
   if (messageContextMocksInstalled) {
     return;
   }

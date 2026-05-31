@@ -24,9 +24,9 @@ const agentSessionTokenMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("openclaw/plugin-sdk/agent-sessions", async () => {
-  const actual = await vi.importActual<typeof import("../sessions/index.js")>(
-    "openclaw/plugin-sdk/agent-sessions",
+vi.mock("../pi-coding-agent-contract.js", async () => {
+  const actual = await vi.importActual<typeof import("../pi-coding-agent-contract.js")>(
+    "../pi-coding-agent-contract.js",
   );
   return {
     ...actual,

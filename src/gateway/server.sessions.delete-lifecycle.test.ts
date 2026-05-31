@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 import { expect, test } from "vitest";
-import { embeddedRunMock, rpcReq, testState, writeSessionStore } from "./test-helpers.js";
+import { getSessionEntry } from "../config/sessions.js";
+import { replaceSqliteSessionTranscriptEvents } from "../config/sessions/transcript-store.sqlite.js";
+import {
+  embeddedRunMock,
+  rpcReq,
+  seedGatewaySessionEntries,
+  testState,
+} from "./test-helpers.js";
 import {
   setupGatewaySessionsTestHarness,
   sessionLifecycleHookMocks,
@@ -11,13 +17,14 @@ import {
   acpManagerMocks,
   browserSessionTabMocks,
   bundleMcpRuntimeMocks,
-  writeSingleLineSession,
+  seedSqliteSessionTranscript,
   sessionStoreEntry,
   expectActiveRunCleanup,
   directSessionReq,
 } from "./test/server-sessions.test-helpers.js";
 
-const { createSessionStoreDir, openClient } = setupGatewaySessionsTestHarness();
+const { openClient } = setupGatewaySessionsTestHarness();
+const legacySessionFileProperty = ["session", "File"].join("");
 
 function expectObject(value: unknown) {
   if (!value || typeof value !== "object") {
@@ -26,11 +33,10 @@ function expectObject(value: unknown) {
 }
 
 test("sessions.delete rejects main and aborts active runs", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
-  await writeSingleLineSession(dir, "sess-active", "active");
+  await seedSqliteSessionTranscript("sess-main", "hello");
+  await seedSqliteSessionTranscript("sess-active", "active");
 
-  await writeSessionStore({
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main"),
       "discord:group:dev": sessionStoreEntry("sess-active"),
@@ -50,7 +56,7 @@ test("sessions.delete rejects main and aborts active runs", async () => {
   expect(deleted.payload?.deleted).toBe(true);
   expectActiveRunCleanup(
     "agent:main:discord:group:dev",
-    ["discord:group:dev", "agent:main:discord:group:dev", "sess-active"],
+    ["agent:main:discord:group:dev", "sess-active"],
     "sess-active",
   );
   expect(bundleMcpRuntimeMocks.disposeSessionMcpRuntime).toHaveBeenCalledWith("sess-active");
@@ -86,11 +92,10 @@ test("sessions.delete rejects main and aborts active runs", async () => {
 });
 
 test("sessions.delete limits plugin-runtime cleanup to sessions owned by that plugin", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-owned", "owned");
-  await writeSingleLineSession(dir, "sess-foreign", "foreign");
+  await seedSqliteSessionTranscript("sess-owned", "owned");
+  await seedSqliteSessionTranscript("sess-foreign", "foreign");
 
-  await writeSessionStore({
+  await seedGatewaySessionEntries({
     entries: {
       "agent:main:dreaming-narrative-owned": sessionStoreEntry("sess-owned", {
         pluginOwnerId: "memory-core",
@@ -136,28 +141,19 @@ test("sessions.delete limits plugin-runtime cleanup to sessions owned by that pl
 });
 
 test("sessions.delete scopes selected global deletes to the requested agent", async () => {
-  const { dir } = await createSessionStoreDir();
-  const storeTemplate = path.join(dir, "{agentId}", "sessions.json");
-  testState.sessionStorePath = storeTemplate;
   testState.sessionConfig = { scope: "global" };
-  await writeSessionStore({
-    entries: {},
-    storePath: path.join(dir, "prime-sessions.json"),
+  // Global scope spans agents, so the requested agentId picks which agent's
+  // global SQLite row is deleted; the sibling agent's row must survive.
+  await seedSqliteSessionTranscript("sess-main-global", "main", { agentId: "main" });
+  await seedSqliteSessionTranscript("sess-work-global", "work", { agentId: "work" });
+  await seedGatewaySessionEntries({
+    agentId: "main",
+    entries: { global: sessionStoreEntry("sess-main-global") },
   });
-  const mainStorePath = storeTemplate.replace("{agentId}", "main");
-  const workStorePath = storeTemplate.replace("{agentId}", "work");
-  await fs.mkdir(path.dirname(mainStorePath), { recursive: true });
-  await fs.mkdir(path.dirname(workStorePath), { recursive: true });
-  await fs.writeFile(
-    mainStorePath,
-    JSON.stringify({ global: sessionStoreEntry("sess-main-global") }, null, 2),
-    "utf-8",
-  );
-  await fs.writeFile(
-    workStorePath,
-    JSON.stringify({ global: sessionStoreEntry("sess-work-global") }, null, 2),
-    "utf-8",
-  );
+  await seedGatewaySessionEntries({
+    agentId: "work",
+    entries: { global: sessionStoreEntry("sess-work-global") },
+  });
   const configPath = process.env.OPENCLAW_CONFIG_PATH;
   if (!configPath) {
     throw new Error("OPENCLAW_CONFIG_PATH is required");
@@ -167,7 +163,7 @@ test("sessions.delete scopes selected global deletes to the requested agent", as
     `${JSON.stringify(
       {
         agents: { list: [{ id: "main", default: true }, { id: "work" }] },
-        session: { scope: "global", store: storeTemplate },
+        session: { scope: "global" },
       },
       null,
       2,
@@ -186,15 +182,10 @@ test("sessions.delete scopes selected global deletes to the requested agent", as
 
   expect(deleted.ok).toBe(true);
   expect(deleted.payload?.deleted).toBe(true);
-  const mainStore = JSON.parse(await fs.readFile(mainStorePath, "utf-8")) as {
-    global?: { sessionId?: string };
-  };
-  const workStore = JSON.parse(await fs.readFile(workStorePath, "utf-8")) as {
-    global?: { sessionId?: string };
-  };
-  expect(mainStore.global?.sessionId).toBe("sess-main-global");
-  expect(workStore.global).toBeUndefined();
-  testState.sessionStorePath = undefined;
+  expect(getSessionEntry({ agentId: "main", sessionKey: "global" })?.sessionId).toBe(
+    "sess-main-global",
+  );
+  expect(getSessionEntry({ agentId: "work", sessionKey: "global" })).toBeUndefined();
   testState.sessionConfig = undefined;
   await fs.writeFile(configPath, "{}\n", "utf-8");
   clearRuntimeConfigSnapshot();
@@ -202,11 +193,10 @@ test("sessions.delete scopes selected global deletes to the requested agent", as
 });
 
 test("sessions.delete closes ACP runtime handles before removing ACP sessions", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
-  await writeSingleLineSession(dir, "sess-acp", "acp");
+  await seedSqliteSessionTranscript("sess-main", "hello");
+  await seedSqliteSessionTranscript("sess-acp", "acp");
 
-  await writeSessionStore({
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main"),
       "discord:group:dev": sessionStoreEntry("sess-acp", {
@@ -242,7 +232,7 @@ test("sessions.delete closes ACP runtime handles before removing ACP sessions", 
     >
   )[0]?.[0];
   expect(closeSessionCall?.allowBackendUnavailable).toBe(true);
-  expectObject(closeSessionCall?.cfg);
+  expect(closeSessionCall?.cfg).toEqual(expect.any(Object));
   expect(closeSessionCall?.discardPersistentState).toBe(true);
   expect(closeSessionCall?.requireAcpSession).toBe(false);
   expect(closeSessionCall?.reason).toBe("session-delete");
@@ -254,16 +244,15 @@ test("sessions.delete closes ACP runtime handles before removing ACP sessions", 
       [{ cfg?: unknown; reason?: string; sessionKey?: string }]
     >
   )[0]?.[0];
-  expectObject(cancelSessionCall?.cfg);
+  expect(cancelSessionCall?.cfg).toEqual(expect.any(Object));
   expect(cancelSessionCall?.reason).toBe("session-delete");
   expect(cancelSessionCall?.sessionKey).toBe("agent:main:discord:group:dev");
 });
 
 test("sessions.delete closes child ACP runtimes spawned from the deleted parent", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
-  await writeSingleLineSession(dir, "sess-parent", "parent");
-  await writeSingleLineSession(dir, "sess-child", "child");
+  await seedSqliteSessionTranscript("sess-main", "hello");
+  await seedSqliteSessionTranscript("sess-parent", "parent");
+  await seedSqliteSessionTranscript("sess-child", "child");
 
   const acpMeta = (recordId: string) => ({
     backend: "acpx",
@@ -274,7 +263,7 @@ test("sessions.delete closes child ACP runtimes spawned from the deleted parent"
     lastActivityAt: Date.now(),
   });
 
-  await writeSessionStore({
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main"),
       "acp-parent": sessionStoreEntry("sess-parent", { acp: acpMeta("agent:main:acp-parent") }),
@@ -301,25 +290,23 @@ test("sessions.delete closes child ACP runtimes spawned from the deleted parent"
 });
 
 test("sessions.delete emits session_end with deleted reason and no replacement", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
-  const transcriptPath = path.join(dir, "sess-delete.jsonl");
-  await fs.writeFile(
-    transcriptPath,
-    `${JSON.stringify({
-      type: "message",
-      id: "m-delete",
-      message: { role: "user", content: "delete me" },
-    })}\n`,
-    "utf-8",
-  );
+  await seedSqliteSessionTranscript("sess-main", "hello");
+  replaceSqliteSessionTranscriptEvents({
+    agentId: "main",
+    sessionId: "sess-delete",
+    events: [
+      {
+        type: "message",
+        id: "m-delete",
+        message: { role: "user", content: "delete me" },
+      },
+    ],
+  });
 
-  await writeSessionStore({
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main"),
-      "discord:group:delete": sessionStoreEntry("sess-delete", {
-        sessionFile: transcriptPath,
-      }),
+      "discord:group:delete": sessionStoreEntry("sess-delete", {}),
     },
   });
 
@@ -339,8 +326,8 @@ test("sessions.delete emits session_end with deleted reason and no replacement",
     "agent:main:discord:group:delete",
   );
   expect((event as { reason?: string } | undefined)?.reason).toBe("deleted");
-  expect((event as { transcriptArchived?: boolean } | undefined)?.transcriptArchived).toBe(true);
-  expect((event as { sessionFile?: string } | undefined)?.sessionFile).toContain(".jsonl.deleted.");
+  expect(event).not.toHaveProperty(legacySessionFileProperty);
+  expect(event).not.toHaveProperty("transcriptArchived");
   expect((event as { nextSessionId?: string } | undefined)?.nextSessionId).toBeUndefined();
   expect((context as { sessionId?: string } | undefined)?.sessionId).toBe("sess-delete");
   expect((context as { sessionKey?: string } | undefined)?.sessionKey).toBe(
@@ -350,9 +337,8 @@ test("sessions.delete emits session_end with deleted reason and no replacement",
 });
 
 test("sessions.delete does not emit lifecycle events when nothing was deleted", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-main", "hello");
-  await writeSessionStore({
+  await seedSqliteSessionTranscript("sess-main", "hello");
+  await seedGatewaySessionEntries({
     entries: {
       main: sessionStoreEntry("sess-main"),
     },
@@ -369,9 +355,8 @@ test("sessions.delete does not emit lifecycle events when nothing was deleted", 
 });
 
 test("sessions.delete emits subagent targetKind for subagent sessions", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-subagent", "hello");
-  await writeSessionStore({
+  await seedSqliteSessionTranscript("sess-subagent", "hello");
+  await seedGatewaySessionEntries({
     entries: {
       "agent:main:subagent:worker": sessionStoreEntry("sess-subagent"),
     },
@@ -398,9 +383,8 @@ test("sessions.delete emits subagent targetKind for subagent sessions", async ()
 });
 
 test("sessions.delete can skip lifecycle hooks while still unbinding thread bindings", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-subagent", "hello");
-  await writeSessionStore({
+  await seedSqliteSessionTranscript("sess-subagent", "hello");
+  await seedGatewaySessionEntries({
     entries: {
       "agent:main:subagent:worker": sessionStoreEntry("sess-subagent"),
     },
@@ -421,9 +405,8 @@ test("sessions.delete can skip lifecycle hooks while still unbinding thread bind
 });
 
 test("sessions.delete directly unbinds thread bindings when hooks are unavailable", async () => {
-  const { dir } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-subagent", "hello");
-  await writeSessionStore({
+  await seedSqliteSessionTranscript("sess-subagent", "hello");
+  await seedGatewaySessionEntries({
     entries: {
       "agent:main:subagent:worker": sessionStoreEntry("sess-subagent"),
     },
@@ -443,10 +426,9 @@ test("sessions.delete directly unbinds thread bindings when hooks are unavailabl
 });
 
 test("sessions.delete returns unavailable when active run does not stop", async () => {
-  const { dir, storePath } = await createSessionStoreDir();
-  await writeSingleLineSession(dir, "sess-active", "active");
+  await seedSqliteSessionTranscript("sess-active", "active");
 
-  await writeSessionStore({
+  await seedGatewaySessionEntries({
     entries: {
       "discord:group:dev": sessionStoreEntry("sess-active"),
     },
@@ -465,20 +447,14 @@ test("sessions.delete returns unavailable when active run does not stop", async 
   expect(deleted.error?.message ?? "").toMatch(/still active/i);
   expectActiveRunCleanup(
     "agent:main:discord:group:dev",
-    ["discord:group:dev", "agent:main:discord:group:dev", "sess-active"],
+    ["agent:main:discord:group:dev", "sess-active"],
     "sess-active",
   );
   expect(browserSessionTabMocks.closeTrackedBrowserTabsForSessions).not.toHaveBeenCalled();
 
-  const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
-    string,
-    { sessionId?: string }
-  >;
-  expect(store["agent:main:discord:group:dev"]?.sessionId).toBe("sess-active");
-  const filesAfterDeleteAttempt = await fs.readdir(dir);
   expect(
-    filesAfterDeleteAttempt.filter((fileName) => fileName.startsWith("sess-active.jsonl.deleted.")),
-  ).toEqual([]);
+    getSessionEntry({ agentId: "main", sessionKey: "agent:main:discord:group:dev" })?.sessionId,
+  ).toBe("sess-active");
 
   ws.close();
 });

@@ -1,4 +1,4 @@
-import type { AssistantMessage, Context, Model } from "../llm/types.js";
+import type { AssistantMessage, Context, Model } from "./pi-ai-contract.js";
 
 export const LIVE_MODEL_FILE_PROBE_TOKEN = "opal";
 

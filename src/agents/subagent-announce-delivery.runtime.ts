@@ -1,9 +1,5 @@
 export { getRuntimeConfig } from "../config/config.js";
-export {
-  loadSessionStore,
-  resolveAgentIdFromSessionKey,
-  resolveStorePath,
-} from "../config/sessions.js";
+export { getSessionEntry, resolveAgentIdFromSessionKey } from "../config/sessions.js";
 export { callGateway } from "../gateway/call.js";
 export { dispatchGatewayMethodInProcess } from "../gateway/server-plugins.js";
 export { resolveQueueSettings } from "../auto-reply/reply/queue.js";
@@ -14,8 +10,11 @@ export { resolveConversationIdFromTargets } from "../infra/outbound/conversation
 export { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 export {
   formatEmbeddedAgentQueueFailureSummary,
+  formatEmbeddedAgentQueueFailureSummary as formatEmbeddedPiQueueFailureSummary,
   isEmbeddedAgentRunActive,
+  isEmbeddedAgentRunActive as isEmbeddedPiRunActive,
   isEmbeddedRunAbandoned,
   queueEmbeddedAgentMessageWithOutcomeAsync,
+  queueEmbeddedAgentMessageWithOutcomeAsync as queueEmbeddedPiMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunSessionId,
 } from "./embedded-agent-runner/runs.js";

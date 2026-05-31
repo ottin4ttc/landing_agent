@@ -2,10 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { normalizeCompatibilityConfigValues } from "../commands/doctor-legacy-config.js";
+import { normalizeCompatibilityConfigValues } from "../commands/doctor/legacy-config.js";
 import { VERSION } from "../version.js";
 import { createConfigIO } from "./io.js";
 import { normalizeExecSafeBinProfilesInConfig } from "./normalize-exec-safe-bin.js";
+import { sourceBundledPluginTestEnv } from "./test-helpers.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 async function withTempHome(run: (home: string) => Promise<void>): Promise<void> {
@@ -32,7 +33,10 @@ async function writeConfig(
 
 function createIoForHome(home: string, env: NodeJS.ProcessEnv = {} as NodeJS.ProcessEnv) {
   return createConfigIO({
-    env,
+    env: {
+      ...sourceBundledPluginTestEnv(),
+      ...env,
+    },
     homedir: () => home,
   });
 }
@@ -122,7 +126,7 @@ describe("config io paths", () => {
 
       const io = createConfigIO({
         configPath,
-        env: {} as NodeJS.ProcessEnv,
+        env: sourceBundledPluginTestEnv(),
         homedir: () => home,
         logger,
       });

@@ -10,7 +10,7 @@ import { executeJobCore } from "./service/timer.js";
 import type { CronJob } from "./types.js";
 
 const noopLogger = createNoopLogger();
-const { makeStorePath } = createCronStoreHarness();
+const { makeStoreKey } = createCronStoreHarness();
 
 async function waitForFirstJob(
   cron: CronService,
@@ -38,7 +38,7 @@ async function withCronService(
 ) {
   await withCronServiceForTest(
     {
-      makeStorePath,
+      makeStoreKey,
       logger: noopLogger,
       cronEnabled,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
@@ -66,7 +66,7 @@ describe("CronService", () => {
     const requestHeartbeat = vi.fn();
     const state = createCronServiceState({
       cronEnabled: true,
-      storePath: "cron-empty-systemevent-test.json",
+      storeKey: "cron-empty-systemevent-test",
       log: noopLogger,
       nowMs: () => Date.now(),
       enqueueSystemEvent,
@@ -112,11 +112,19 @@ describe("CronService", () => {
       expect(enqueueSystemEvent).not.toHaveBeenCalled();
       expect(requestHeartbeat).not.toHaveBeenCalled();
 
-      const job = await waitForFirstJob(cron, (current) => current?.state.lastStatus === "skipped");
-      expect(job?.enabled).toBe(false);
-      expect(job?.state.lastStatus).toBe("skipped");
-      expect(job?.state.lastError).toMatch(/non-empty/i);
-      expect(job?.state.nextRunAtMs).toBeUndefined();
+      const job = await waitForFirstJob(cron, (current) => current?.enabled === false);
+      expect(job).toEqual(
+        expect.objectContaining({
+          enabled: false,
+          deleteAfterRun: true,
+          state: expect.objectContaining({
+            lastRunStatus: "skipped",
+            lastStatus: "skipped",
+            lastError: "main job requires non-empty systemEvent text",
+            nextRunAtMs: undefined,
+          }),
+        }),
+      );
     });
   });
 

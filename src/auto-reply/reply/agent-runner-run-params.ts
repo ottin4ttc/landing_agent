@@ -69,7 +69,6 @@ export function buildEmbeddedRunBaseParams(params: {
     hasAutoFallbackProvenance: params.run.hasAutoFallbackProvenance === true,
   });
   return {
-    sessionFile: params.run.sessionFile,
     workspaceDir: params.run.workspaceDir,
     cwd: params.run.cwd,
     agentDir: params.run.agentDir,

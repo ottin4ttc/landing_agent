@@ -154,34 +154,63 @@ export type ChannelHeartbeatDeps = {
   hasActiveWebListener?: (accountId?: string) => boolean;
 };
 
+export type ChannelLegacyStateMigrationApplyResult = {
+  changes: string[];
+  warnings: string[];
+};
+
+export type ChannelLegacyStateMigrationApplyContext = {
+  cfg: OpenClawConfig;
+  env: NodeJS.ProcessEnv;
+  stateDir: string;
+  oauthDir: string;
+};
+
+export type ChannelLegacyStateMigrationFilePlan = {
+  kind: "copy" | "move";
+  label: string;
+  sourcePath: string;
+  targetPath: string;
+};
+
+export type ChannelLegacyPluginStateImportPlan = {
+  kind: "plugin-state-import";
+  label: string;
+  sourcePath: string;
+  targetPath: string;
+  pluginId: string;
+  namespace: string;
+  maxEntries: number;
+  scopeKey: string;
+  stateDir?: string;
+  cleanupSource?: "rename";
+  preview?: string;
+  shouldReplaceExistingEntry?: (params: {
+    key: string;
+    existingValue: unknown;
+    incomingValue: unknown;
+  }) => boolean | Promise<boolean>;
+  readEntries: () =>
+    | Array<{ key: string; value: unknown; ttlMs?: number }>
+    | Promise<Array<{ key: string; value: unknown; ttlMs?: number }>>;
+};
+
+export type ChannelLegacyStateMigrationCustomPlan = {
+  kind: "custom";
+  label: string;
+  sourcePath: string;
+  targetPath?: string;
+  targetTable?: string;
+  recordCount?: number;
+  apply: (
+    context: ChannelLegacyStateMigrationApplyContext,
+  ) => ChannelLegacyStateMigrationApplyResult | Promise<ChannelLegacyStateMigrationApplyResult>;
+};
+
 export type ChannelLegacyStateMigrationPlan =
-  | {
-      kind: "copy" | "move";
-      label: string;
-      sourcePath: string;
-      targetPath: string;
-    }
-  | {
-      kind: "plugin-state-import";
-      label: string;
-      sourcePath: string;
-      targetPath: string;
-      pluginId: string;
-      namespace: string;
-      maxEntries: number;
-      scopeKey: string;
-      stateDir?: string;
-      cleanupSource?: "rename";
-      preview?: string;
-      shouldReplaceExistingEntry?: (params: {
-        key: string;
-        existingValue: unknown;
-        incomingValue: unknown;
-      }) => boolean | Promise<boolean>;
-      readEntries: () =>
-        | Array<{ key: string; value: unknown; ttlMs?: number }>
-        | Promise<Array<{ key: string; value: unknown; ttlMs?: number }>>;
-    };
+  | ChannelLegacyStateMigrationFilePlan
+  | ChannelLegacyPluginStateImportPlan
+  | ChannelLegacyStateMigrationCustomPlan;
 
 /** User-facing metadata used in docs, pickers, and setup surfaces. */
 export type ChannelMeta = {
@@ -710,7 +739,6 @@ export type ChannelMessageActionContext = {
    * never be sourced from tool/model-controlled params.
    */
   requesterSenderId?: string | null;
-  /** Trusted owner identity bit from command/channel-action auth. */
   senderIsOwner?: boolean;
   sessionKey?: string | null;
   sessionId?: string | null;
@@ -788,7 +816,7 @@ export type ChannelMessageActionAdapter = {
    * Prefer this for channel-specific poll semantics or extra poll parameters.
    * Core only parses the shared poll model when falling back to `outbound.sendPoll`.
    */
-  handleAction?: (ctx: ChannelMessageActionContext) => Promise<AgentToolResult<unknown>>;
+  handleAction?: (ctx: ChannelMessageActionContext) => Promise<AgentToolResult>;
 };
 
 export type ChannelPollResult = {

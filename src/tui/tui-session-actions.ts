@@ -1,4 +1,3 @@
-import type { TUI } from "@earendil-works/pi-tui";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { SessionsPatchResult } from "../../packages/gateway-protocol/src/index.js";
 import { resolveSessionInfoModelSelection } from "../agents/model-selection-display.js";
@@ -8,6 +7,7 @@ import {
   parseAgentSessionKey,
 } from "../routing/session-key.js";
 import type { ChatLog } from "./components/chat-log.js";
+import type { TUI } from "./pi-tui-contract.js";
 import type { TuiAgentsList, TuiBackend } from "./tui-backend.js";
 import { asString, extractTextFromMessage, isCommandMessage } from "./tui-formatters.js";
 import { TUI_SESSION_LOOKUP_LIMIT } from "./tui-session-list-policy.js";

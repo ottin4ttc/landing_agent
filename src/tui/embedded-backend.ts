@@ -16,9 +16,12 @@ import {
   clearSessionGoal,
   createSessionGoal,
   formatSessionGoalStatus,
+  getSessionEntry,
   getSessionGoal,
+  listSessionEntries,
+  type SessionEntry,
   updateSessionGoalStatus,
-  updateSessionStore,
+  upsertSessionEntry,
 } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isChatStopCommandText } from "../gateway/chat-abort.js";
@@ -46,21 +49,20 @@ import {
 } from "../gateway/server-methods/chat.js";
 import { loadGatewayModelCatalog } from "../gateway/server-model-catalog.js";
 import { performGatewaySessionReset } from "../gateway/session-reset-service.js";
-import { capArrayByJsonBytes } from "../gateway/session-utils.fs.js";
+import { capArrayByJsonBytes } from "../gateway/session-transcript-readers.js";
 import {
   listAgentsForGateway,
   listSessionsFromStoreAsync,
-  loadCombinedSessionStoreForGateway,
+  loadCombinedSessionEntriesForGateway,
   loadSessionEntry,
-  migrateAndPruneGatewaySessionStoreKey,
-  resolveGatewaySessionStoreTarget,
+  resolveGatewaySessionDatabaseTarget,
   resolveSessionModelRef,
   readSessionMessagesAsync,
 } from "../gateway/session-utils.js";
 import { applySessionsPatchToStore } from "../gateway/sessions-patch.js";
 import { type AgentEventPayload, onAgentEvent } from "../infra/agent-events.js";
 import { setEmbeddedMode } from "../infra/embedded-mode.js";
-import { normalizeAgentId } from "../routing/session-key.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { resolveLocalRunShutdownGraceMs } from "./local-run-shutdown.js";
@@ -405,7 +407,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
   async loadHistory(opts: { sessionKey: string; agentId?: string; limit?: number }) {
     const loadOptions = opts.agentId ? { agentId: opts.agentId } : undefined;
-    const { cfg, storePath, entry } = loadSessionEntry(opts.sessionKey, loadOptions);
+    const { cfg, databasePath, entry } = loadSessionEntry(opts.sessionKey, loadOptions);
     const sessionId = entry?.sessionId;
     const sessionAgentId = resolveSessionAgentId({
       sessionKey: opts.sessionKey,
@@ -415,14 +417,20 @@ export class EmbeddedTuiBackend implements TuiBackend {
     const resolvedSessionModel = resolveSessionModelRef(cfg, entry, sessionAgentId);
     const max = Math.min(1000, typeof opts.limit === "number" ? opts.limit : 200);
     const maxHistoryBytes = getMaxChatHistoryMessagesBytes();
-    const localMessages =
-      sessionId && storePath
-        ? await readSessionMessagesAsync(sessionId, storePath, entry?.sessionFile, {
+    const localMessages = sessionId
+      ? await readSessionMessagesAsync(
+          {
+            agentId: sessionAgentId,
+            path: databasePath,
+            sessionId,
+          },
+          {
             mode: "recent",
             maxMessages: max,
             maxBytes: Math.max(maxHistoryBytes * 2, 1024 * 1024),
-          })
-        : [];
+          },
+        )
+      : [];
     const rawMessages = augmentChatHistoryWithCliSessionImports({
       entry,
       provider: resolvedSessionModel.provider,
@@ -467,12 +475,12 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
   async listSessions(opts?: Parameters<TuiBackend["listSessions"]>[0]): Promise<TuiSessionList> {
     const cfg = getRuntimeConfig();
-    const { storePath, store } = loadCombinedSessionStoreForGateway(cfg, {
+    const { databasePath, entries: store } = loadCombinedSessionEntriesForGateway(cfg, {
       agentId: opts?.agentId,
     });
     return (await listSessionsFromStoreAsync({
       cfg,
-      storePath,
+      databasePath,
       store,
       opts: opts ?? {},
     })) as TuiSessionList;
@@ -486,30 +494,41 @@ export class EmbeddedTuiBackend implements TuiBackend {
     opts: Parameters<TuiBackend["patchSession"]>[0],
   ): Promise<SessionsPatchResult> {
     const cfg = getRuntimeConfig();
-    const target = resolveGatewaySessionStoreTarget({
+    const target = resolveGatewaySessionDatabaseTarget({
       cfg,
       key: opts.key,
-      agentId: opts.agentId,
+      ...(opts.agentId ? { agentId: opts.agentId } : {}),
     });
-    const applied = await updateSessionStore(target.storePath, async (store) => {
-      const { primaryKey } = migrateAndPruneGatewaySessionStoreKey({
-        cfg,
-        key: opts.key,
-        store,
-        agentId: opts.agentId,
-      });
-      return await applySessionsPatchToStore({
-        cfg,
-        store,
-        storeKey: primaryKey,
-        agentId: opts.agentId,
-        patch: opts,
-        loadGatewayModelCatalog: () => loadEmbeddedTuiModelCatalog(cfg),
-      });
+    const store = Object.fromEntries(
+      listSessionEntries({ agentId: target.agentId, path: target.databasePath }).map(
+        ({ sessionKey, entry }) => [sessionKey, entry],
+      ),
+    ) as Record<string, SessionEntry>;
+    const current = getSessionEntry({
+      agentId: target.agentId,
+      path: target.databasePath,
+      sessionKey: target.canonicalKey,
+    });
+    if (current) {
+      store[target.canonicalKey] = current;
+    }
+    const applied = await applySessionsPatchToStore({
+      cfg,
+      store,
+      storeKey: target.canonicalKey,
+      ...(opts.agentId ? { agentId: opts.agentId } : {}),
+      patch: opts,
+      loadGatewayModelCatalog: () => loadEmbeddedTuiModelCatalog(cfg),
     });
     if (!applied.ok) {
       throw new Error(applied.error.message);
     }
+    upsertSessionEntry({
+      agentId: target.agentId,
+      path: target.databasePath,
+      sessionKey: target.canonicalKey,
+      entry: applied.entry,
+    });
 
     const agentId = resolveSessionAgentId({
       sessionKey: target.canonicalKey ?? opts.key,
@@ -519,7 +538,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
     const resolved = resolveSessionModelRef(cfg, applied.entry, agentId);
     return {
       ok: true as const,
-      path: target.storePath,
+      databasePath: target.databasePath,
       key: target.canonicalKey ?? opts.key,
       entry: applied.entry,
       resolved: {
@@ -566,8 +585,10 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
   async runGoalCommand(opts: Parameters<NonNullable<TuiBackend["runGoalCommand"]>>[0]) {
     const loadOptions = opts.agentId ? { agentId: opts.agentId } : undefined;
-    const { canonicalKey, storePath, entry } = loadSessionEntry(opts.sessionKey, loadOptions);
+    const { canonicalKey, entry } = loadSessionEntry(opts.sessionKey, loadOptions);
     const sessionKey = canonicalKey ?? opts.sessionKey;
+    // Session goal helpers resolve the SQLite session database from `agentId`.
+    const agentId = normalizeAgentId(parseAgentSessionKey(sessionKey)?.agentId ?? opts.agentId);
     const parsed = parseGoalCommand(opts.command.trim());
     if (!parsed) {
       throw new Error("invalid goal command");
@@ -575,7 +596,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
     switch (parsed.action) {
       case "status": {
-        const snapshot = await getSessionGoal({ sessionKey, storePath });
+        const snapshot = await getSessionGoal({ sessionKey, agentId });
         return { text: formatSessionGoalStatus(snapshot.goal) };
       }
       case "start":
@@ -588,7 +609,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
         const fallbackEntry = entry ?? { sessionId: randomUUID(), updatedAt: Date.now() };
         const goal = await createSessionGoal({
           sessionKey,
-          storePath,
+          agentId,
           objective,
           fallbackEntry,
         });
@@ -597,7 +618,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       case "pause": {
         const goal = await updateSessionGoalStatus({
           sessionKey,
-          storePath,
+          agentId,
           status: "paused",
           ...(parsed.text ? { note: parsed.text } : {}),
         });
@@ -606,7 +627,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       case "resume": {
         const goal = await updateSessionGoalStatus({
           sessionKey,
-          storePath,
+          agentId,
           status: "active",
           ...(parsed.text ? { note: parsed.text } : {}),
         });
@@ -616,7 +637,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       case "done": {
         const goal = await updateSessionGoalStatus({
           sessionKey,
-          storePath,
+          agentId,
           status: "complete",
           ...(parsed.text ? { note: parsed.text } : {}),
         });
@@ -626,14 +647,14 @@ export class EmbeddedTuiBackend implements TuiBackend {
       case "blocked": {
         const goal = await updateSessionGoalStatus({
           sessionKey,
-          storePath,
+          agentId,
           status: "blocked",
           ...(parsed.text ? { note: parsed.text } : {}),
         });
         return { text: `Goal blocked: ${goal.objective}` };
       }
       case "clear": {
-        const removed = await clearSessionGoal({ sessionKey, storePath });
+        const removed = await clearSessionGoal({ sessionKey, agentId });
         return { text: removed ? "Goal cleared." : "No goal to clear." };
       }
       default:

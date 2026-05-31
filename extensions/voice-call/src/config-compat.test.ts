@@ -133,6 +133,7 @@ describe("voice-call config compatibility", () => {
         sttProvider: "openai",
         openaiApiKey: "sk-test", // pragma: allowlist secret
       },
+      store: "~/.openclaw/voice-calls",
       realtime: {
         agentContext: {
           includeSystemPrompt: true,
@@ -167,6 +168,11 @@ describe("voice-call config compatibility", () => {
         message:
           "Remove realtime.agentContext.includeSystemPrompt; realtime context now uses the generated agent prompt.",
       },
+      {
+        path: "store",
+        replacement: "SQLite plugin state",
+        message: "Remove store; call records are stored in SQLite plugin state.",
+      },
     ]);
     expect(
       formatVoiceCallLegacyConfigWarnings({
@@ -181,6 +187,7 @@ describe("voice-call config compatibility", () => {
       "[voice-call] plugins.entries.voice-call.config.streaming.sttProvider: Move streaming.sttProvider to streaming.provider.",
       "[voice-call] plugins.entries.voice-call.config.streaming.openaiApiKey: Move streaming.openaiApiKey to streaming.providers.openai.apiKey.",
       "[voice-call] plugins.entries.voice-call.config.realtime.agentContext.includeSystemPrompt: Remove realtime.agentContext.includeSystemPrompt; realtime context now uses the generated agent prompt.",
+      "[voice-call] plugins.entries.voice-call.config.store: Remove store; call records are stored in SQLite plugin state.",
     ]);
   });
 
@@ -196,6 +203,7 @@ describe("voice-call config compatibility", () => {
             includeSystemPrompt: true,
           },
         },
+        store: "~/.openclaw/voice-calls",
       },
       configPathPrefix: "plugins.entries.voice-call.config",
     });
@@ -204,6 +212,8 @@ describe("voice-call config compatibility", () => {
       'Moved plugins.entries.voice-call.config.provider "log" → "mock".',
       "Moved plugins.entries.voice-call.config.streaming.sttProvider → plugins.entries.voice-call.config.streaming.provider.",
       "Removed plugins.entries.voice-call.config.realtime.agentContext.includeSystemPrompt.",
+      "Removed plugins.entries.voice-call.config.store; call records use SQLite plugin state.",
     ]);
+    expect(migration.config.store).toBeUndefined();
   });
 });

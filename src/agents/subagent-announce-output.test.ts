@@ -173,13 +173,14 @@ describe("readSubagentOutput", () => {
 
     await expect(
       readSubagentOutput("agent:main:subagent:child", undefined, {
-        sessionFile: "/tmp/openclaw-internal-run.jsonl",
+        transcriptSessionId: "internal-agent-runs:run",
       }),
     ).resolves.toBe("fresh recovered output");
     expect(deps.readSessionMessagesAsync).toHaveBeenCalledWith(
-      "agent:main:subagent:child",
-      undefined,
-      "/tmp/openclaw-internal-run.jsonl",
+      {
+        agentId: "main",
+        sessionId: "internal-agent-runs:run",
+      },
       { mode: "recent", maxMessages: 100, maxBytes: 1024 * 1024 },
     );
     expect(deps.callGateway).not.toHaveBeenCalled();
@@ -198,7 +199,7 @@ describe("readSubagentOutput", () => {
 
     await expect(
       readSubagentOutput("agent:main:subagent:child", undefined, {
-        sessionFile: "/tmp/openclaw-empty-internal-run.jsonl",
+        transcriptSessionId: "internal-agent-runs:empty",
       }),
     ).resolves.toBeUndefined();
     expect(deps.callGateway).not.toHaveBeenCalled();

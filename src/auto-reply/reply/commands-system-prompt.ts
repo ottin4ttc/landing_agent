@@ -1,4 +1,5 @@
 import { isAcpRuntimeSpawnAvailable } from "../../acp/runtime/availability.js";
+import type { AgentTool } from "../../agents/agent-core-contract.js";
 import { resolveSessionAgentIds } from "../../agents/agent-scope.js";
 import { createOpenClawCodingTools } from "../../agents/agent-tools.js";
 import { resolveBootstrapContextForRun } from "../../agents/bootstrap-files.js";
@@ -7,7 +8,6 @@ import { resolveEmbeddedFullAccessState } from "../../agents/embedded-agent-runn
 import { canExecRequestNode } from "../../agents/exec-defaults.js";
 import { resolveDefaultModelForAgent } from "../../agents/model-selection.js";
 import { resolveAgentPromptSurfaceForSessionKey } from "../../agents/prompt-surface.js";
-import type { AgentTool } from "../../agents/runtime/index.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import { buildConfiguredAgentSystemPrompt } from "../../agents/system-prompt-config.js";
 import { buildSystemPromptParams } from "../../agents/system-prompt-params.js";

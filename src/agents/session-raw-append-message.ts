@@ -1,4 +1,4 @@
-import type { SessionManager } from "./sessions/index.js";
+import type { SessionManager } from "./transcript/session-transcript-contract.js";
 
 const RAW_APPEND_MESSAGE = Symbol("openclaw.session.rawAppendMessage");
 

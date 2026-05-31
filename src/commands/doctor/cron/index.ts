@@ -8,7 +8,7 @@ import {
   loadCronQuarantineFile,
   loadCronStore,
   resolveCronQuarantinePath,
-  resolveCronStorePath,
+  resolveCronStoreKey,
   saveCronStore,
 } from "../../../cron/store.js";
 import type { CronJob } from "../../../cron/types.js";
@@ -384,7 +384,7 @@ export async function maybeRepairLegacyCronStore(params: {
   options: DoctorOptions;
   prompter: Pick<DoctorPrompter, "confirm">;
 }) {
-  const storePath = resolveCronStorePath(params.cfg.cron?.store);
+  const storePath = resolveCronStoreKey();
   const quarantinePath = resolveCronQuarantinePath(storePath);
   let store: Awaited<ReturnType<typeof loadCronStore>>;
   let legacyStoreDetected = false;

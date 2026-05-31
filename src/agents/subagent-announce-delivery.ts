@@ -51,16 +51,15 @@ import {
   getGlobalHookRunner,
   isEmbeddedAgentRunActive,
   isEmbeddedRunAbandoned,
+  getSessionEntry,
   getRuntimeConfig,
   formatEmbeddedAgentQueueFailureSummary,
-  loadSessionStore,
   queueEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunSessionId,
   resolveAgentIdFromSessionKey,
   resolveConversationIdFromTargets,
   resolveExternalBestEffortDeliveryTarget,
   resolveQueueSettings,
-  resolveStorePath,
   sendMessage,
 } from "./subagent-announce-delivery.runtime.js";
 import {
@@ -68,12 +67,13 @@ import {
   type SubagentAnnounceDeliveryResult,
 } from "./subagent-announce-dispatch.js";
 import type { DeliveryContext } from "./subagent-announce-origin.js";
-import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
+import { getSubagentDepthFromSessionEntries } from "./subagent-depth.js";
 import { resolveRequesterStoreKey } from "./subagent-requester-store-key.js";
 import type { SpawnSubagentMode } from "./subagent-spawn.types.js";
 
 const DEFAULT_SUBAGENT_ANNOUNCE_TIMEOUT_MS = 120_000;
 type SubagentAnnounceDeliveryDeps = {
+  callGateway: typeof callGateway;
   dispatchGatewayMethodInProcess: typeof dispatchGatewayMethodInProcess;
   getRuntimeConfig: typeof getRuntimeConfig;
   getRequesterSessionActivity: (requesterSessionKey: string) => {
@@ -90,6 +90,7 @@ type SubagentAnnounceDeliveryDeps = {
 };
 
 const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
+  callGateway,
   dispatchGatewayMethodInProcess,
   getRuntimeConfig,
   getRequesterSessionActivity: (requesterSessionKey: string) => {
@@ -328,7 +329,7 @@ export function resolveSubagentAnnounceTimeoutMs(cfg: OpenClawConfig): number {
 }
 
 export function isInternalAnnounceRequesterSession(sessionKey: string | undefined): boolean {
-  return getSubagentDepthFromSessionStore(sessionKey) >= 1 || isCronSessionKey(sessionKey);
+  return getSubagentDepthFromSessionEntries(sessionKey) >= 1 || isCronSessionKey(sessionKey);
 }
 
 function summarizeDeliveryError(error: unknown): string {
@@ -571,18 +572,13 @@ export function loadRequesterSessionEntry(requesterSessionKey: string) {
   const cfg = subagentAnnounceDeliveryDeps.getRuntimeConfig();
   const canonicalKey = resolveRequesterStoreKey(cfg, requesterSessionKey);
   const agentId = resolveAgentIdFromSessionKey(canonicalKey);
-  const storePath = resolveStorePath(cfg.session?.store, { agentId });
-  const store = loadSessionStore(storePath);
-  const entry = store[canonicalKey];
+  const entry = getSessionEntry({ agentId, sessionKey: canonicalKey });
   return { cfg, entry, canonicalKey };
 }
 
 export function loadSessionEntryByKey(sessionKey: string) {
-  const cfg = subagentAnnounceDeliveryDeps.getRuntimeConfig();
   const agentId = resolveAgentIdFromSessionKey(sessionKey);
-  const storePath = resolveStorePath(cfg.session?.store, { agentId });
-  const store = loadSessionStore(storePath);
-  return store[sessionKey];
+  return getSessionEntry({ agentId, sessionKey });
 }
 
 async function maybeSteerSubagentAnnounce(params: {

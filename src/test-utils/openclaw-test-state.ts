@@ -1,9 +1,12 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resolveAuthProfileStoreLocationForDisplay } from "../agents/auth-profiles/paths.js";
+import { savePersistedAuthProfileSecretsStore } from "../agents/auth-profiles/persisted.js";
+import type { AuthProfileSecretsStore } from "../agents/auth-profiles/types.js";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { captureEnv } from "./env.js";
-import { cleanupSessionStateForTest } from "./session-state-cleanup.js";
+import { cleanupOpenClawStateForTest } from "./openclaw-state-cleanup.js";
 
 type OpenClawTestStateLayout = "home" | "state-only" | "split";
 
@@ -277,8 +280,7 @@ export async function createOpenClawTestState(
   let envApplied = false;
   let cleaned = false;
   const agentDir = (agentId = "main") => path.join(paths.stateDir, "agents", agentId, "agent");
-  const sessionsDir = (agentId = "main") =>
-    path.join(paths.stateDir, "agents", agentId, "sessions");
+  const sessionsDir = (agentId = "main") => path.join(agentDir(agentId), "sessions");
 
   const state: OpenClawTestState = {
     root,
@@ -298,9 +300,12 @@ export async function createOpenClawTestState(
       await fs.writeFile(filePath, value, "utf8");
       return filePath;
     },
-    writeAuthProfiles: (store, agentId = "main") => {
-      const filePath = path.join(agentDir(agentId), "auth-profiles.json");
-      return writeJsonFile(filePath, store);
+    writeAuthProfiles: async (store, agentId = "main") => {
+      const targetAgentDir = agentDir(agentId);
+      savePersistedAuthProfileSecretsStore(store as AuthProfileSecretsStore, targetAgentDir, {
+        env,
+      });
+      return resolveAuthProfileStoreLocationForDisplay(targetAgentDir, env);
     },
     applyEnv: () => {
       for (const [key, value] of Object.entries(envVars)) {
@@ -324,7 +329,7 @@ export async function createOpenClawTestState(
         return;
       }
       cleaned = true;
-      await cleanupSessionStateForTest().catch(() => undefined);
+      await cleanupOpenClawStateForTest().catch(() => undefined);
       state.restoreEnv();
       await fs.rm(root, { recursive: true, force: true });
     },

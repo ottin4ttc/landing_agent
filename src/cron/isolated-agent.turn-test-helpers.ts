@@ -1,14 +1,15 @@
 import "./isolated-agent.mocks.js";
-import fs from "node:fs/promises";
 import { expect, vi } from "vitest";
 import { runEmbeddedAgent } from "../agents/embedded-agent.js";
 import type { CliDeps } from "../cli/deps.js";
+import { getSessionEntry } from "../config/sessions/store.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runCronIsolatedAgentTurn } from "./isolated-agent.js";
 import {
   makeCfg,
   makeJob,
+  seedCronSessionRows,
   withTempCronHome as withTempHome,
-  writeSessionStoreEntries,
 } from "./isolated-agent.test-harness.js";
 import type { CronJob } from "./types.js";
 
@@ -58,13 +59,8 @@ export function expectEmbeddedProviderModel(expected: { provider: string; model:
   };
 }
 
-export async function readSessionEntry(storePath: string, key: string) {
-  const raw = await fs.readFile(storePath, "utf-8");
-  const store = JSON.parse(raw) as Record<
-    string,
-    { sessionId?: string; label?: string; sessionFile?: string }
-  >;
-  return store[key];
+export async function readSessionEntry(agentId: string, key: string) {
+  return getSessionEntry({ agentId, sessionKey: key });
 }
 
 export const DEFAULT_MESSAGE = "do it";
@@ -76,7 +72,7 @@ export const DEFAULT_AGENT_TURN_PAYLOAD: CronJob["payload"] = {
 export const GMAIL_MODEL = "openrouter/meta-llama/llama-3.3-70b:free";
 
 type RunCronTurnOptions = {
-  cfgOverrides?: Parameters<typeof makeCfg>[2];
+  cfgOverrides?: Parameters<typeof makeCfg>[1];
   deps?: CliDeps;
   delivery?: CronJob["delivery"];
   jobPayload?: CronJob["payload"];
@@ -84,21 +80,18 @@ type RunCronTurnOptions = {
   mockTexts?: string[] | null;
   sessionKey?: string;
   storeEntries?: Record<string, Record<string, unknown>>;
-  storePath?: string;
 };
 
 export async function runCronTurn(home: string, options: RunCronTurnOptions = {}) {
-  const storePath =
-    options.storePath ??
-    (await writeSessionStoreEntries(home, {
-      "agent:main:main": {
-        sessionId: "main-session",
-        updatedAt: Date.now(),
-        lastProvider: "webchat",
-        lastTo: "",
-      },
-      ...options.storeEntries,
-    }));
+  await seedCronSessionRows(home, {
+    "agent:main:main": {
+      sessionId: "main-session",
+      updatedAt: Date.now(),
+      lastChannel: "webchat",
+      lastTo: "",
+    },
+    ...options.storeEntries,
+  });
   const deps = options.deps ?? makeDeps();
   if (options.mockTexts === null) {
     vi.mocked(runEmbeddedAgent).mockClear();
@@ -108,7 +101,7 @@ export async function runCronTurn(home: string, options: RunCronTurnOptions = {}
 
   const jobPayload = options.jobPayload ?? DEFAULT_AGENT_TURN_PAYLOAD;
   const res = await runCronIsolatedAgentTurn({
-    cfg: makeCfg(home, storePath, options.cfgOverrides),
+    cfg: makeCfg(home, options.cfgOverrides),
     deps,
     job: {
       ...makeJob(jobPayload),
@@ -120,7 +113,7 @@ export async function runCronTurn(home: string, options: RunCronTurnOptions = {}
     lane: "cron",
   });
 
-  return { deps, res, storePath };
+  return { deps, res, agentId: "main" };
 }
 
 export async function runGmailHookTurn(
@@ -146,7 +139,7 @@ export async function runTurnWithStoredModelOverride(
   jobPayload: CronJob["payload"],
   modelOverride = "gpt-4.1-mini",
   providerOverride = "openai",
-  cfgOverrides?: Parameters<typeof makeCfg>[2],
+  cfgOverrides?: Partial<OpenClawConfig>,
 ) {
   return runCronTurn(home, {
     cfgOverrides,

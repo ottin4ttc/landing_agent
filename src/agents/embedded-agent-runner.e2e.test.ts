@@ -1,7 +1,8 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import "./test-helpers/fast-coding-tools.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { appendSessionTranscriptMessage } from "../config/sessions/transcript-append.js";
+import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
   buildEmbeddedRunnerAssistant,
   cleanupEmbeddedAgentRunnerTestWorkspace,
@@ -17,6 +18,7 @@ import {
   installEmbeddedRunnerBaseE2eMocks,
   installEmbeddedRunnerFastRunE2eMocks,
 } from "./test-helpers/embedded-agent-runner-e2e-mocks.js";
+import { readTranscriptStateForSession } from "./transcript/transcript-persistence.js";
 
 type EmbeddedRunnerModelResolution =
   | ReturnType<typeof createResolvedEmbeddedRunnerModel>
@@ -37,13 +39,12 @@ const resolveModelAsyncMock = vi.fn(
   async (provider: string, modelId: string): Promise<EmbeddedRunnerModelResolution> =>
     createResolvedEmbeddedRunnerModel(provider, modelId),
 );
-const ensureOpenClawModelsJsonMock = vi.fn(async () => ({ wrote: false }));
+const ensureOpenClawModelCatalogMock = vi.fn(async () => ({ wrote: false }));
 const loggerWarnMock = vi.fn();
 let refreshRuntimeAuthOnFirstPromptError = false;
 
-vi.mock("openclaw/plugin-sdk/llm", async () => {
-  const actual =
-    await vi.importActual<typeof import("openclaw/plugin-sdk/llm")>("openclaw/plugin-sdk/llm");
+vi.mock("./pi-ai-contract.js", async () => {
+  const actual = await vi.importActual<typeof import("./pi-ai-contract.js")>("./pi-ai-contract.js");
 
   const buildAssistantMessage = (model: { api: string; provider: string; id: string }) => ({
     role: "assistant" as const,
@@ -157,31 +158,39 @@ const installRunEmbeddedMocks = () => {
     const mod = await vi.importActual<typeof import("./models-config.js")>("./models-config.js");
     return {
       ...mod,
-      ensureOpenClawModelsJson: (...args: Parameters<typeof ensureOpenClawModelsJsonMock>) =>
-        ensureOpenClawModelsJsonMock(...args),
+      ensureOpenClawModelCatalog: (...args: Parameters<typeof ensureOpenClawModelCatalogMock>) =>
+        ensureOpenClawModelCatalogMock(...args),
     };
   });
 };
 
 let runEmbeddedAgent: typeof import("./embedded-agent-runner/run.js").runEmbeddedAgent;
-let SessionManager: typeof import("openclaw/plugin-sdk/agent-sessions").SessionManager;
 let e2eWorkspace: EmbeddedAgentRunnerTestWorkspace | undefined;
 let agentDir: string;
 let workspaceDir: string;
 let sessionCounter = 0;
 let runCounter = 0;
+let previousStateDir: string | undefined;
 
 beforeAll(async () => {
   vi.useRealTimers();
   vi.resetModules();
   installRunEmbeddedMocks();
-  ({ runEmbeddedAgent } = await import("./embedded-agent-runner/run.js"));
-  ({ SessionManager } = await import("openclaw/plugin-sdk/agent-sessions"));
   e2eWorkspace = await createEmbeddedAgentRunnerTestWorkspace("openclaw-embedded-agent-");
   ({ agentDir, workspaceDir } = e2eWorkspace);
+  previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = e2eWorkspace.stateDir;
+  ({ runEmbeddedAgent } = await import("./embedded-agent-runner/run.js"));
 }, 180_000);
 
 afterAll(async () => {
+  closeOpenClawAgentDatabasesForTest();
+  closeOpenClawStateDatabaseForTest();
+  if (previousStateDir === undefined) {
+    delete process.env.OPENCLAW_STATE_DIR;
+  } else {
+    process.env.OPENCLAW_STATE_DIR = previousStateDir;
+  }
   await cleanupEmbeddedAgentRunnerTestWorkspace(e2eWorkspace);
   e2eWorkspace = undefined;
 });
@@ -196,8 +205,8 @@ beforeEach(() => {
   resolveModelAsyncMock.mockImplementation(async (provider: string, modelId: string) =>
     createResolvedEmbeddedRunnerModel(provider, modelId),
   );
-  ensureOpenClawModelsJsonMock.mockReset();
-  ensureOpenClawModelsJsonMock.mockResolvedValue({ wrote: false });
+  ensureOpenClawModelCatalogMock.mockReset();
+  ensureOpenClawModelCatalogMock.mockResolvedValue({ wrote: false });
   loggerWarnMock.mockReset();
   refreshRuntimeAuthOnFirstPromptError = false;
   runEmbeddedAttemptMock.mockImplementation(async () => {
@@ -205,17 +214,23 @@ beforeEach(() => {
   });
 });
 
-const nextSessionFile = () => {
+const nextSessionId = () => {
   sessionCounter += 1;
-  return path.join(workspaceDir, `session-${sessionCounter}.jsonl`);
+  return `session-${sessionCounter}`;
 };
+const appendTestSessionMessage = async (sessionId: string, message: unknown) =>
+  await appendSessionTranscriptMessage({
+    agentId: "test",
+    sessionId,
+    cwd: workspaceDir,
+    message,
+  });
 const nextRunId = (prefix = "run-embedded-test") => `${prefix}-${++runCounter}`;
 const nextSessionKey = () => `agent:test:embedded:${nextRunId("session-key")}`;
 
 const runWithOrphanedSingleUserMessage = async (text: string, sessionKey: string) => {
-  const sessionFile = nextSessionFile();
-  const sessionManager = SessionManager.open(sessionFile);
-  sessionManager.appendMessage({
+  const sessionId = nextSessionId();
+  await appendTestSessionMessage(sessionId, {
     role: "user",
     content: [{ type: "text", text }],
     timestamp: Date.now(),
@@ -232,9 +247,8 @@ const runWithOrphanedSingleUserMessage = async (text: string, sessionKey: string
 
   const cfg = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
   return await runEmbeddedAgent({
-    sessionId: "session:test",
+    sessionId: sessionId,
     sessionKey,
-    sessionFile,
     workspaceDir,
     config: cfg,
     prompt: "hello",
@@ -257,19 +271,37 @@ const textFromContent = (content: unknown) => {
   return undefined;
 };
 
-const readSessionEntries = async (sessionFile: string) => {
-  const raw = await fs.readFile(sessionFile, "utf-8");
-  const entries: Array<{ type?: string; customType?: string; data?: unknown }> = [];
-  for (const line of raw.split(/\r?\n/)) {
-    if (line.length > 0) {
-      entries.push(JSON.parse(line) as { type?: string; customType?: string; data?: unknown });
+const readSessionEntries = async (
+  sessionId: string,
+): Promise<
+  Array<{
+    type?: string;
+    customType?: string;
+    data?: unknown;
+  }>
+> => {
+  try {
+    return (
+      await readTranscriptStateForSession({ agentId: "test", sessionId })
+    ).getEntries() as Array<{
+      type?: string;
+      customType?: string;
+      data?: unknown;
+    }>;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.startsWith("Transcript is not in SQLite:") ||
+        error.message.startsWith("Transcript is not in the SQLite state database"))
+    ) {
+      return [];
     }
+    throw error;
   }
-  return entries;
 };
 
-const readSessionMessages = async (sessionFile: string) => {
-  const entries = await readSessionEntries(sessionFile);
+const readSessionMessages = async (sessionId: string) => {
+  const entries = await readSessionEntries(sessionId);
   return entries
     .filter((entry) => entry.type === "message")
     .map(
@@ -277,7 +309,7 @@ const readSessionMessages = async (sessionFile: string) => {
     ) as Array<{ role?: string; content?: unknown }>;
 };
 
-const runDefaultEmbeddedTurn = async (sessionFile: string, prompt: string, sessionKey: string) => {
+const runDefaultEmbeddedTurn = async (sessionId: string, prompt: string, sessionKey: string) => {
   const cfg = createEmbeddedAgentRunnerOpenAiConfig(["mock-error"]);
   runEmbeddedAttemptMock.mockResolvedValueOnce(
     makeEmbeddedRunnerAttempt({
@@ -288,9 +320,8 @@ const runDefaultEmbeddedTurn = async (sessionFile: string, prompt: string, sessi
     }),
   );
   await runEmbeddedAgent({
-    sessionId: "session:test",
+    sessionId,
     sessionKey,
-    sessionFile,
     workspaceDir,
     config: cfg,
     prompt,
@@ -316,8 +347,8 @@ function firstRunEmbeddedAttemptParams(): { sessionKey?: string } {
 }
 
 describe("runEmbeddedAgent", () => {
-  it("skips models.json generation when dynamic model resolution succeeds", async () => {
-    const sessionFile = nextSessionFile();
+  it("skips model catalog generation when dynamic model resolution succeeds", async () => {
+    const sessionId = nextSessionId();
     const cfg = createEmbeddedAgentRunnerOpenAiConfig([]);
     runEmbeddedAttemptMock.mockResolvedValueOnce(
       makeEmbeddedRunnerAttempt({
@@ -329,8 +360,7 @@ describe("runEmbeddedAgent", () => {
     );
 
     await runEmbeddedAgent({
-      sessionId: "dynamic-model",
-      sessionFile,
+      sessionId,
       workspaceDir,
       config: cfg,
       prompt: "hello",
@@ -350,11 +380,10 @@ describe("runEmbeddedAgent", () => {
     expect(
       (resolveModelCall?.[4] as { skipAgentDiscovery?: boolean } | undefined)?.skipAgentDiscovery,
     ).toBe(true);
-    expect(ensureOpenClawModelsJsonMock).not.toHaveBeenCalled();
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
   });
 
-  it("resolves explicit OpenAI OpenClaw runs through Codex when auth order starts with Codex OAuth", async () => {
-    const sessionFile = nextSessionFile();
+  it("resolves explicit OpenAI PI runs through Codex when auth order starts with Codex OAuth", async () => {
     const baseConfig = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
     const openAIProvider = baseConfig.models?.providers?.openai;
     if (!openAIProvider) {
@@ -395,8 +424,7 @@ describe("runEmbeddedAgent", () => {
     );
 
     await runEmbeddedAgent({
-      sessionId: "codex-first-openclaw",
-      sessionFile,
+      sessionId: "codex-first-pi",
       workspaceDir,
       config: cfg,
       prompt: "hello",
@@ -423,7 +451,7 @@ describe("runEmbeddedAgent", () => {
   });
 
   it("resolves transport-owned OpenAI Codex runs against the runtime provider first", async () => {
-    const sessionFile = nextSessionFile();
+    const sessionId = nextSessionId();
     const baseConfig = createEmbeddedAgentRunnerOpenAiConfig([]);
     const openAIProvider = baseConfig.models?.providers?.openai;
     if (!openAIProvider) {
@@ -472,8 +500,7 @@ describe("runEmbeddedAgent", () => {
     );
 
     await runEmbeddedAgent({
-      sessionId: "codex-runtime-model",
-      sessionFile,
+      sessionId,
       workspaceDir,
       config: cfg,
       prompt: "hello",
@@ -495,19 +522,18 @@ describe("runEmbeddedAgent", () => {
       expect.objectContaining({ skipAgentDiscovery: true }),
     );
     expect(resolveModelAsyncMock).toHaveBeenCalledTimes(1);
-    expect(ensureOpenClawModelsJsonMock).not.toHaveBeenCalled();
+    expect(ensureOpenClawModelCatalogMock).not.toHaveBeenCalled();
     expect(
       (firstRunEmbeddedAttemptParams() as { model?: { provider?: string } }).model?.provider,
     ).toBe("openai");
   });
 
   it("backfills a trimmed session key from sessionId when the embedded run omits it", async () => {
-    const sessionFile = nextSessionFile();
+    const sessionId = nextSessionId();
     const cfg = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
     resolveSessionKeyForRequestMock.mockReturnValue({
       sessionKey: "agent:test:resolved",
       sessionStore: {},
-      storePath: "/tmp/session-store.json",
     });
     runEmbeddedAttemptMock.mockResolvedValueOnce(
       makeEmbeddedRunnerAttempt({
@@ -519,9 +545,8 @@ describe("runEmbeddedAgent", () => {
     );
 
     await runEmbeddedAgent({
-      sessionId: "resume-123",
+      sessionId,
       sessionKey: "   ",
-      sessionFile,
       workspaceDir,
       config: cfg,
       prompt: "hello",
@@ -535,7 +560,7 @@ describe("runEmbeddedAgent", () => {
 
     expect(resolveSessionKeyForRequestMock).toHaveBeenCalledWith({
       cfg,
-      sessionId: "resume-123",
+      sessionId,
       agentId: undefined,
       clone: false,
     });
@@ -543,12 +568,11 @@ describe("runEmbeddedAgent", () => {
   });
 
   it("drops whitespace-only session keys when backfill cannot resolve a session key", async () => {
-    const sessionFile = nextSessionFile();
+    const sessionId = nextSessionId();
     const cfg = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
     resolveSessionKeyForRequestMock.mockReturnValue({
       sessionKey: undefined,
       sessionStore: {},
-      storePath: "/tmp/session-store.json",
     });
     runEmbeddedAttemptMock.mockResolvedValueOnce(
       makeEmbeddedRunnerAttempt({
@@ -560,9 +584,8 @@ describe("runEmbeddedAgent", () => {
     );
 
     await runEmbeddedAgent({
-      sessionId: "resume-124",
+      sessionId,
       sessionKey: "   ",
-      sessionFile,
       workspaceDir,
       config: cfg,
       prompt: "hello",
@@ -576,7 +599,7 @@ describe("runEmbeddedAgent", () => {
 
     expect(resolveSessionKeyForRequestMock).toHaveBeenCalledWith({
       cfg,
-      sessionId: "resume-124",
+      sessionId,
       agentId: undefined,
       clone: false,
     });
@@ -584,7 +607,7 @@ describe("runEmbeddedAgent", () => {
   });
 
   it("logs when embedded session-key backfill resolution fails", async () => {
-    const sessionFile = nextSessionFile();
+    const sessionId = nextSessionId();
     const cfg = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
     resolveSessionKeyForRequestMock.mockImplementation(() => {
       throw new Error("resolver exploded");
@@ -599,8 +622,7 @@ describe("runEmbeddedAgent", () => {
     );
 
     await runEmbeddedAgent({
-      sessionId: "resume-456",
-      sessionFile,
+      sessionId,
       workspaceDir,
       config: cfg,
       prompt: "hello",
@@ -620,12 +642,11 @@ describe("runEmbeddedAgent", () => {
   });
 
   it("passes the current agentId when backfilling a session key", async () => {
-    const sessionFile = nextSessionFile();
+    const sessionId = nextSessionId();
     const cfg = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
     resolveStoredSessionKeyForSessionIdMock.mockReturnValue({
       sessionKey: "agent:test:resolved",
       sessionStore: {},
-      storePath: "/tmp/session-store.json",
     });
     runEmbeddedAttemptMock.mockResolvedValueOnce(
       makeEmbeddedRunnerAttempt({
@@ -637,9 +658,8 @@ describe("runEmbeddedAgent", () => {
     );
 
     await runEmbeddedAgent({
-      sessionId: "resume-agent-1",
+      sessionId,
       sessionKey: undefined,
-      sessionFile,
       workspaceDir,
       config: cfg,
       prompt: "hello",
@@ -654,14 +674,14 @@ describe("runEmbeddedAgent", () => {
 
     expect(resolveStoredSessionKeyForSessionIdMock).toHaveBeenCalledWith({
       cfg,
-      sessionId: "resume-agent-1",
+      sessionId,
       agentId: "embedded-agent",
     });
     expect(resolveSessionKeyForRequestMock).not.toHaveBeenCalled();
   });
 
   it("disposes bundle MCP once when a one-shot local run completes", async () => {
-    const sessionFile = nextSessionFile();
+    const sessionId = nextSessionId();
     const cfg = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
     const sessionKey = nextSessionKey();
     runEmbeddedAttemptMock.mockResolvedValueOnce(
@@ -674,9 +694,8 @@ describe("runEmbeddedAgent", () => {
     );
 
     await runEmbeddedAgent({
-      sessionId: "session:test",
+      sessionId,
       sessionKey,
-      sessionFile,
       workspaceDir,
       config: cfg,
       prompt: "hello",
@@ -691,12 +710,12 @@ describe("runEmbeddedAgent", () => {
 
     expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
     expect(disposeSessionMcpRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(disposeSessionMcpRuntimeMock).toHaveBeenCalledWith("session:test");
+    expect(disposeSessionMcpRuntimeMock).toHaveBeenCalledWith(sessionId);
   });
 
   it("preserves bundle MCP state across retries within one local run", async () => {
     refreshRuntimeAuthOnFirstPromptError = true;
-    const sessionFile = nextSessionFile();
+    const sessionId = nextSessionId();
     const cfg = createEmbeddedAgentRunnerOpenAiConfig(["mock-1"]);
     const sessionKey = nextSessionKey();
     runEmbeddedAttemptMock
@@ -717,9 +736,8 @@ describe("runEmbeddedAgent", () => {
       });
 
     const result = await runEmbeddedAgent({
-      sessionId: "session:test",
+      sessionId,
       sessionKey,
-      sessionFile,
       workspaceDir,
       config: cfg,
       prompt: "hello",
@@ -735,11 +753,11 @@ describe("runEmbeddedAgent", () => {
     expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(2);
     expect(result.payloads?.[0]?.text).toBe("ok");
     expect(disposeSessionMcpRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(disposeSessionMcpRuntimeMock).toHaveBeenCalledWith("session:test");
+    expect(disposeSessionMcpRuntimeMock).toHaveBeenCalledWith(sessionId);
   });
 
   it("retries a planning-only GPT turn once with an act-now steer", async () => {
-    const sessionFile = nextSessionFile();
+    const sessionId = nextSessionId();
     const cfg = createEmbeddedAgentRunnerOpenAiConfig(["gpt-5.4"]);
     const sessionKey = nextSessionKey();
 
@@ -773,9 +791,8 @@ describe("runEmbeddedAgent", () => {
       });
 
     const result = await runEmbeddedAgent({
-      sessionId: "session:test",
+      sessionId: sessionId,
       sessionKey,
-      sessionFile,
       workspaceDir,
       config: cfg,
       prompt: "ship it",
@@ -792,7 +809,7 @@ describe("runEmbeddedAgent", () => {
   });
 
   it("handles prompt error paths without dropping user state", async () => {
-    const sessionFile = nextSessionFile();
+    const sessionId = nextSessionId();
     const cfg = createEmbeddedAgentRunnerOpenAiConfig(["mock-error"]);
     const sessionKey = nextSessionKey();
     runEmbeddedAttemptMock.mockResolvedValueOnce(
@@ -802,9 +819,8 @@ describe("runEmbeddedAgent", () => {
     );
     await expect(
       runEmbeddedAgent({
-        sessionId: "session:test",
+        sessionId: sessionId,
         sessionKey,
-        sessionFile,
         workspaceDir,
         config: cfg,
         prompt: "boom",
@@ -817,16 +833,12 @@ describe("runEmbeddedAgent", () => {
       }),
     ).rejects.toThrow("boom");
 
-    try {
-      const messages = await readSessionMessages(sessionFile);
+    const messages = await readSessionMessages(sessionId);
+    if (messages.length > 0) {
       const userIndex = messages.findIndex(
         (message) => message?.role === "user" && textFromContent(message.content) === "boom",
       );
       expect(userIndex).toBeGreaterThanOrEqual(0);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
-        throw err;
-      }
     }
   });
 
@@ -834,16 +846,15 @@ describe("runEmbeddedAgent", () => {
     "preserves existing transcript entries across an additional turn",
     { timeout: 7_000 },
     async () => {
-      const sessionFile = nextSessionFile();
+      const sessionId = nextSessionId();
       const sessionKey = nextSessionKey();
 
-      const sessionManager = SessionManager.open(sessionFile);
-      sessionManager.appendMessage({
+      await appendTestSessionMessage(sessionId, {
         role: "user",
         content: [{ type: "text", text: "seed user" }],
         timestamp: Date.now(),
       });
-      sessionManager.appendMessage({
+      await appendTestSessionMessage(sessionId, {
         role: "assistant",
         content: [{ type: "text", text: "seed assistant" }],
         stopReason: "stop",
@@ -853,10 +864,9 @@ describe("runEmbeddedAgent", () => {
         usage: createMockUsage(1, 1),
         timestamp: Date.now(),
       });
+      await runDefaultEmbeddedTurn(sessionId, "hello", sessionKey);
 
-      await runDefaultEmbeddedTurn(sessionFile, "hello", sessionKey);
-
-      const messages = await readSessionMessages(sessionFile);
+      const messages = await readSessionMessages(sessionId);
       const seedUserIndex = messages.findIndex(
         (message) => message?.role === "user" && textFromContent(message.content) === "seed user",
       );

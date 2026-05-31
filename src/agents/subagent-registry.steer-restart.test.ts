@@ -53,21 +53,22 @@ vi.mock("../config/sessions.js", () => {
   );
 
   return {
-    loadSessionStore: vi.fn(() => sessionStore),
+    getSessionEntry: vi.fn(({ sessionKey }: { sessionKey: string }) => sessionStore[sessionKey]),
+    listSessionEntries: vi.fn(() =>
+      Object.entries(sessionStore).map(([sessionKey, entry]) => ({ sessionKey, entry })),
+    ),
     resolveAgentIdFromSessionKey: (key: string) => {
       const match = key.match(/^agent:([^:]+)/);
       return match?.[1] ?? "main";
     },
     resolveMainSessionKey: () => "agent:main:main",
-    resolveStorePath: () => "/tmp/test-store",
-    updateSessionStore: vi.fn(),
   };
 });
 
 const announceSpy = vi.fn(async (_params: unknown) => true);
 const runSubagentEndedHookMock = vi.fn(async (eventValue?: unknown, _ctx?: unknown) => {});
 const emitSessionLifecycleEventMock = vi.fn();
-const removeInternalSessionEffectsTranscriptMock = vi.fn(async (_sessionFile?: string) => {});
+const removeInternalSessionEffectsTranscriptMock = vi.fn(async (_params?: unknown) => {});
 
 function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean) {
   let count = 0;
@@ -150,8 +151,8 @@ vi.mock("../sessions/session-lifecycle-events.js", () => ({
 }));
 
 vi.mock("./subagent-registry.store.js", () => ({
-  loadSubagentRegistryFromDisk: vi.fn(() => new Map()),
-  saveSubagentRegistryToDisk: vi.fn(() => {}),
+  loadSubagentRegistryFromState: vi.fn(() => new Map()),
+  saveSubagentRegistryToState: vi.fn(() => {}),
 }));
 
 vi.mock("./internal-session-effects.js", () => ({
@@ -277,13 +278,13 @@ describe("subagent registry steer restarts", () => {
     previousRunId: string;
     nextRunId: string;
     fallback?: ReturnType<typeof listMainRuns>[number];
-    transcriptFile?: string;
+    transcriptSessionId?: string;
   }) => {
     const replaced = mod.replaceSubagentRunAfterSteer({
       previousRunId: params.previousRunId,
       nextRunId: params.nextRunId,
       fallback: params.fallback,
-      transcriptFile: params.transcriptFile,
+      transcriptSessionId: params.transcriptSessionId,
     });
     expect(replaced).toBe(true);
 
@@ -370,7 +371,7 @@ describe("subagent registry steer restarts", () => {
       previous.execution = {
         status: "interrupted",
         startedAt: previous.startedAt,
-        transcriptFile: "/tmp/openclaw-state/internal-agent-runs/run-old.jsonl",
+        transcriptSessionId: "internal-agent-runs:run-old",
       };
 
       replaceRunAfterSteer({
@@ -379,9 +380,10 @@ describe("subagent registry steer restarts", () => {
         fallback: previous,
       });
 
-      expect(removeInternalSessionEffectsTranscriptMock).toHaveBeenCalledWith(
-        "/tmp/openclaw-state/internal-agent-runs/run-old.jsonl",
-      );
+      expect(removeInternalSessionEffectsTranscriptMock).toHaveBeenCalledWith({
+        agentId: "main",
+        sessionId: "internal-agent-runs:run-old",
+      });
     }
   });
 

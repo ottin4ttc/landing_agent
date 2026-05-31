@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import type { Insertable, Selectable } from "kysely";
 import { resolveDefaultAgentId } from "../agents/agent-scope-config.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
+import { getSessionEntry } from "../config/sessions.js";
+import { getSqliteSessionTranscriptStats } from "../config/sessions/transcript-store.sqlite.js";
 import { readLocalFileSafely } from "../infra/fs-safe.js";
-import { tryReadJson, writeJson } from "../infra/json-files.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "../infra/kysely-sync.js";
 import { safeFileURLToPath } from "../infra/local-file-access.js";
 import { assertLocalMediaAllowed } from "../media/local-media-access.js";
 import {
@@ -15,7 +21,20 @@ import {
   readImageProbeFromHeader,
 } from "../media/media-services.js";
 import { isPassThroughRemoteMediaSource } from "../media/media-source-url.js";
-import { MEDIA_MAX_BYTES, saveMediaBuffer, saveMediaSource } from "../media/store.js";
+import {
+  deleteMediaBuffer,
+  MEDIA_MAX_BYTES,
+  readMediaBuffer,
+  saveMediaBuffer,
+  saveMediaSource,
+} from "../media/store.js";
+import { DEFAULT_AGENT_ID, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
+import {
+  openOpenClawStateDatabase,
+  type OpenClawStateDatabaseOptions,
+} from "../state/openclaw-state-db.js";
 import { resolveUserPath } from "../utils.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
@@ -34,6 +53,11 @@ const MANAGED_OUTGOING_ATTACHMENT_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DATA_URL_RE = /^data:/i;
 const WINDOWS_DRIVE_RE = /^[A-Za-z]:[\\/]/;
+const MANAGED_OUTGOING_ORIGINALS_SUBDIR = "outgoing/originals";
+
+type ManagedImageDatabase = Pick<OpenClawStateKyselyDatabase, "managed_outgoing_image_records">;
+type ManagedImageRecordRow = Selectable<ManagedImageDatabase["managed_outgoing_image_records"]>;
+type ManagedImageRecordInsert = Insertable<ManagedImageDatabase["managed_outgoing_image_records"]>;
 
 export const DEFAULT_MANAGED_IMAGE_ATTACHMENT_LIMITS = {
   maxBytes: 12 * 1024 * 1024,
@@ -53,8 +77,9 @@ type ManagedImageAttachmentLimitsConfig = Partial<
   Pick<ManagedImageAttachmentLimits, "maxBytes" | "maxWidth" | "maxHeight" | "maxPixels">
 >;
 
-type ManagedImageRecordVariant = {
-  path: string;
+export type ManagedImageRecordVariant = {
+  mediaId: string;
+  mediaSubdir: string;
   contentType: string;
   width: number | null;
   height: number | null;
@@ -62,9 +87,9 @@ type ManagedImageRecordVariant = {
   filename: string | null;
 };
 
-type ManagedImageRetentionClass = "transient" | "history";
+export type ManagedImageRetentionClass = "transient" | "history";
 
-type ManagedImageRecord = {
+export type ManagedImageRecord = {
   attachmentId: string;
   sessionKey: string;
   agentId?: string;
@@ -92,9 +117,9 @@ type CleanupManagedOutgoingImageRecordsResult = {
 type SessionManagedOutgoingAttachmentIndex = Set<string>;
 
 type SessionManagedOutgoingAttachmentIndexCacheEntry = {
-  transcriptPath: string;
-  mtimeMs: number;
-  size: number;
+  sessionId: string;
+  updatedAt: number;
+  eventCount: number;
   index: SessionManagedOutgoingAttachmentIndex;
 };
 
@@ -236,16 +261,19 @@ async function resizeManagedImageBufferToLimits(params: {
   };
 }
 
-function resolveOutgoingRecordsDir(stateDir = resolveStateDir()) {
-  return path.join(stateDir, "media", "outgoing", "records");
+function managedImageRecordDbOptions(stateDir: string): OpenClawStateDatabaseOptions {
+  return { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
 }
 
-function resolveOutgoingOriginalsDir(stateDir = resolveStateDir()) {
-  return path.join(stateDir, "media", "outgoing", "originals");
+function managedImageAgentDbPath(agentId: string, stateDir: string): string {
+  return resolveOpenClawAgentSqlitePath({
+    agentId,
+    env: managedImageRecordDbOptions(stateDir).env,
+  });
 }
 
-function resolveOutgoingRecordPath(attachmentId: string, stateDir = resolveStateDir()) {
-  return path.join(resolveOutgoingRecordsDir(stateDir), `${attachmentId}.json`);
+function normalizeManagedOutgoingOriginalSubdir(value: string | undefined): string {
+  return value === MANAGED_OUTGOING_ORIGINALS_SUBDIR ? value : MANAGED_OUTGOING_ORIGINALS_SUBDIR;
 }
 
 function buildOutgoingVariantUrl(sessionKey: string, attachmentId: string, variant: "full") {
@@ -330,70 +358,151 @@ async function getVariantStats(filePath: string) {
   };
 }
 
-async function writeManagedImageRecord(record: ManagedImageRecord, stateDir = resolveStateDir()) {
-  const recordPath = resolveOutgoingRecordPath(record.attachmentId, stateDir);
-  await writeJson(recordPath, record, { trailingNewline: true });
+async function readManagedImageOriginalBuffer(
+  record: ManagedImageRecord,
+  stateDir = resolveStateDir(),
+): Promise<Buffer> {
+  const subdir = normalizeManagedOutgoingOriginalSubdir(record.original.mediaSubdir);
+  return (
+    await readMediaBuffer(
+      record.original.mediaId,
+      subdir,
+      Math.max(DEFAULT_MANAGED_IMAGE_ATTACHMENT_LIMITS.maxBytes, record.original.sizeBytes ?? 0),
+      managedImageRecordDbOptions(stateDir),
+    )
+  ).buffer;
+}
+
+async function deleteManagedImageOriginal(
+  original: ManagedImageRecordVariant,
+  stateDir = resolveStateDir(),
+): Promise<number> {
+  await deleteMediaBuffer(
+    original.mediaId,
+    normalizeManagedOutgoingOriginalSubdir(original.mediaSubdir),
+    managedImageRecordDbOptions(stateDir),
+  );
+  return 1;
+}
+
+function managedImageRecordToRow(record: ManagedImageRecord): ManagedImageRecordInsert {
+  return {
+    attachment_id: record.attachmentId,
+    session_key: record.sessionKey,
+    message_id: record.messageId,
+    created_at: record.createdAt,
+    updated_at: record.updatedAt ?? null,
+    retention_class: record.retentionClass ?? null,
+    alt: record.alt,
+    original_media_id: record.original.mediaId,
+    original_media_subdir: record.original.mediaSubdir,
+    original_content_type: record.original.contentType,
+    original_width: record.original.width,
+    original_height: record.original.height,
+    original_size_bytes: record.original.sizeBytes,
+    original_filename: record.original.filename,
+    record_json: JSON.stringify(record),
+  };
+}
+
+// `agentId` has no dedicated column; it only survives inside `record_json`.
+// Recover it here so agent-scoped cleanup of "global" records still works.
+function parseRecordJsonAgentId(recordJson: string): string | undefined {
+  try {
+    const parsed = JSON.parse(recordJson) as { agentId?: unknown };
+    const agentId = typeof parsed.agentId === "string" ? parsed.agentId.trim() : "";
+    return agentId || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rowToManagedImageRecord(row: ManagedImageRecordRow): ManagedImageRecord {
+  const agentId = parseRecordJsonAgentId(row.record_json);
+  return {
+    attachmentId: row.attachment_id,
+    sessionKey: row.session_key,
+    ...(agentId ? { agentId } : {}),
+    messageId: row.message_id,
+    createdAt: row.created_at,
+    ...(row.updated_at ? { updatedAt: row.updated_at } : {}),
+    ...(row.retention_class === "history" || row.retention_class === "transient"
+      ? { retentionClass: row.retention_class }
+      : {}),
+    alt: row.alt,
+    original: {
+      mediaId: row.original_media_id,
+      mediaSubdir: row.original_media_subdir,
+      contentType: row.original_content_type,
+      width: row.original_width,
+      height: row.original_height,
+      sizeBytes: row.original_size_bytes,
+      filename: row.original_filename,
+    },
+  };
+}
+
+function managedImageRecordDatabase(stateDir: string) {
+  const database = openOpenClawStateDatabase(managedImageRecordDbOptions(stateDir));
+  return {
+    database,
+    db: getNodeSqliteKysely<ManagedImageDatabase>(database.db),
+  };
+}
+
+export async function writeManagedImageRecord(
+  record: ManagedImageRecord,
+  stateDir = resolveStateDir(),
+) {
+  const { database, db } = managedImageRecordDatabase(stateDir);
+  const row = managedImageRecordToRow(record);
+  executeSqliteQuerySync(
+    database.db,
+    db
+      .insertInto("managed_outgoing_image_records")
+      .values(row)
+      .onConflict((conflict) =>
+        conflict.column("attachment_id").doUpdateSet({
+          session_key: row.session_key,
+          message_id: row.message_id,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          retention_class: row.retention_class,
+          alt: row.alt,
+          original_media_id: row.original_media_id,
+          original_media_subdir: row.original_media_subdir,
+          original_content_type: row.original_content_type,
+          original_width: row.original_width,
+          original_height: row.original_height,
+          original_size_bytes: row.original_size_bytes,
+          original_filename: row.original_filename,
+          record_json: row.record_json,
+        }),
+      ),
+  );
 }
 
 async function deleteManagedImageRecordArtifacts(
   record: ManagedImageRecord,
   stateDir = resolveStateDir(),
 ) {
-  const files = new Set<string>();
-  if (record.original?.path) {
-    files.add(record.original.path);
-  }
-  let deletedFileCount = 0;
-  for (const filePath of files) {
-    try {
-      await fs.rm(filePath, { force: true });
-      deletedFileCount += 1;
-    } catch {
-      // Ignore cleanup races or already-missing files.
-    }
-  }
-  try {
-    await fs.rm(resolveOutgoingRecordPath(record.attachmentId, stateDir), { force: true });
-  } catch {
-    // Ignore cleanup races or already-missing records.
-  }
+  const deletedFileCount = await deleteManagedImageOriginal(record.original, stateDir);
+  const { database, db } = managedImageRecordDatabase(stateDir);
+  executeSqliteQuerySync(
+    database.db,
+    db
+      .deleteFrom("managed_outgoing_image_records")
+      .where("attachment_id", "=", record.attachmentId),
+  );
   return deletedFileCount;
 }
 
-async function deleteOrphanManagedImageFiles(params: {
-  stateDir: string;
-  referencedPaths: ReadonlySet<string>;
-}) {
-  let deletedFileCount = 0;
-  for (const dir of [resolveOutgoingOriginalsDir(params.stateDir)]) {
-    let names: string[] = [];
-    try {
-      names = await fs.readdir(dir);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      const filePath = path.join(dir, name);
-      if (params.referencedPaths.has(filePath)) {
-        continue;
-      }
-      try {
-        const stats = await fs.stat(filePath);
-        if (!stats.isFile()) {
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      try {
-        await fs.rm(filePath, { force: true });
-        deletedFileCount += 1;
-      } catch {
-        // Ignore cleanup races or already-missing files.
-      }
-    }
-  }
-  return deletedFileCount;
+async function listManagedImageRecords(stateDir: string): Promise<ManagedImageRecord[]> {
+  const { database, db } = managedImageRecordDatabase(stateDir);
+  return executeSqliteQuerySync(
+    database.db,
+    db.selectFrom("managed_outgoing_image_records").selectAll().orderBy("created_at", "desc"),
+  ).rows.map(rowToManagedImageRecord);
 }
 
 export async function cleanupManagedOutgoingImageRecords(params?: {
@@ -412,41 +521,17 @@ export async function cleanupManagedOutgoingImageRecords(params?: {
   const defaultAgentId =
     sessionKeyFilter === "global" ? resolveDefaultAgentId(getRuntimeConfig()) : undefined;
   const forceDeleteSessionRecords = params?.forceDeleteSessionRecords === true;
-  const recordsDir = resolveOutgoingRecordsDir(stateDir);
-  let names: string[] = [];
-  try {
-    names = await fs.readdir(recordsDir);
-  } catch {
-    names = [];
-  }
+  const listedRecords = await listManagedImageRecords(stateDir);
 
   let deletedRecordCount = 0;
   let deletedFileCount = 0;
   let retainedCount = 0;
-  const retainedReferencedPaths = new Set<string>();
   const transcriptAttachmentIndexCache = new Map<
     string,
     SessionManagedOutgoingAttachmentIndex | null
   >();
-  for (const name of names) {
-    if (!name.endsWith(".json")) {
-      continue;
-    }
-    const recordPath = path.join(recordsDir, name);
-    const record = await tryReadJson<ManagedImageRecord>(recordPath);
-    if (!record) {
-      try {
-        await fs.rm(recordPath, { force: true });
-      } catch {
-        // Ignore cleanup races or already-missing records.
-      }
-      deletedRecordCount += 1;
-      continue;
-    }
+  for (const record of listedRecords) {
     if (sessionKeyFilter && record.sessionKey !== sessionKeyFilter) {
-      if (record.original?.path) {
-        retainedReferencedPaths.add(record.original.path);
-      }
       retainedCount += 1;
       continue;
     }
@@ -457,9 +542,6 @@ export async function cleanupManagedOutgoingImageRecords(params?: {
         resolveManagedImageRecordAgentId(record, defaultAgentId) !== agentIdFilter) ||
         (!agentIdFilter && typeof record.agentId === "string" && record.agentId.trim()))
     ) {
-      if (record.original?.path) {
-        retainedReferencedPaths.add(record.original.path);
-      }
       retainedCount += 1;
       continue;
     }
@@ -474,6 +556,7 @@ export async function cleanupManagedOutgoingImageRecords(params?: {
       shouldDelete = !(await recordMatchesTranscriptMessage(
         record,
         transcriptAttachmentIndexCache,
+        stateDir,
       ));
     } else {
       const createdAtMs = Date.parse(record.createdAt);
@@ -484,17 +567,9 @@ export async function cleanupManagedOutgoingImageRecords(params?: {
       deletedRecordCount += 1;
       deletedFileCount += await deleteManagedImageRecordArtifacts(record, stateDir);
     } else {
-      if (record.original?.path) {
-        retainedReferencedPaths.add(record.original.path);
-      }
       retainedCount += 1;
     }
   }
-
-  deletedFileCount += await deleteOrphanManagedImageFiles({
-    stateDir,
-    referencedPaths: retainedReferencedPaths,
-  });
 
   return { deletedRecordCount, deletedFileCount, retainedCount };
 }
@@ -511,12 +586,15 @@ async function readManagedImageRecord(
   attachmentId: string,
   stateDir = resolveStateDir(),
 ): Promise<ManagedImageRecord | null> {
-  try {
-    const raw = await fs.readFile(resolveOutgoingRecordPath(attachmentId, stateDir), "utf-8");
-    return JSON.parse(raw) as ManagedImageRecord;
-  } catch {
-    return null;
-  }
+  const { database, db } = managedImageRecordDatabase(stateDir);
+  const row = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db
+      .selectFrom("managed_outgoing_image_records")
+      .selectAll()
+      .where("attachment_id", "=", attachmentId),
+  );
+  return row ? rowToManagedImageRecord(row) : null;
 }
 
 function buildManagedImageBlock(record: ManagedImageRecord): ManagedImageBlock {
@@ -613,7 +691,7 @@ function collectManagedOutgoingAttachmentRefs(
 function getCachedSessionManagedOutgoingAttachmentIndex(
   sessionKey: string,
   agentId: string | undefined,
-  stat: { transcriptPath: string; mtimeMs: number; size: number },
+  stat: { sessionId: string; updatedAt: number; eventCount: number },
 ) {
   const cacheKey = buildSessionManagedOutgoingAttachmentIndexCacheKey(sessionKey, agentId);
   const cached = sessionManagedOutgoingAttachmentIndexCache.get(cacheKey);
@@ -621,9 +699,9 @@ function getCachedSessionManagedOutgoingAttachmentIndex(
     return null;
   }
   if (
-    cached.transcriptPath !== stat.transcriptPath ||
-    cached.mtimeMs !== stat.mtimeMs ||
-    cached.size !== stat.size
+    cached.sessionId !== stat.sessionId ||
+    cached.updatedAt !== stat.updatedAt ||
+    cached.eventCount !== stat.eventCount
   ) {
     sessionManagedOutgoingAttachmentIndexCache.delete(cacheKey);
     return null;
@@ -636,15 +714,15 @@ function getCachedSessionManagedOutgoingAttachmentIndex(
 function setCachedSessionManagedOutgoingAttachmentIndex(
   sessionKey: string,
   agentId: string | undefined,
-  stat: { transcriptPath: string; mtimeMs: number; size: number },
+  stat: { sessionId: string; updatedAt: number; eventCount: number },
   index: SessionManagedOutgoingAttachmentIndex,
 ) {
   sessionManagedOutgoingAttachmentIndexCache.set(
     buildSessionManagedOutgoingAttachmentIndexCacheKey(sessionKey, agentId),
     {
-      transcriptPath: stat.transcriptPath,
-      mtimeMs: stat.mtimeMs,
-      size: stat.size,
+      sessionId: stat.sessionId,
+      updatedAt: stat.updatedAt,
+      eventCount: stat.eventCount,
       index,
     },
   );
@@ -663,50 +741,72 @@ function setCachedSessionManagedOutgoingAttachmentIndex(
 async function getSessionManagedOutgoingAttachmentIndex(
   sessionKey: string,
   cache?: Map<string, SessionManagedOutgoingAttachmentIndex | null>,
+  stateDir?: string,
   agentId?: string,
 ) {
   const cacheKey = buildSessionManagedOutgoingAttachmentIndexCacheKey(sessionKey, agentId);
   if (cache?.has(cacheKey)) {
     return cache.get(cacheKey) ?? null;
   }
-  const { storePath, entry } = loadSessionEntry(
-    sessionKey,
-    sessionKey === "global" && agentId ? { agentId } : undefined,
-  );
+  // Caller-provided agentId disambiguates "global" sessions; otherwise derive
+  // the owning agent from the session key so we read the right SQLite store.
+  const resolvedAgentId =
+    (sessionKey === "global" && agentId?.trim()) ||
+    resolveAgentIdFromSessionKey(sessionKey) ||
+    DEFAULT_AGENT_ID;
+  const loaded = stateDir
+    ? undefined
+    : loadSessionEntry(sessionKey, sessionKey === "global" && agentId ? { agentId } : undefined);
+  const entry =
+    loaded?.entry ??
+    (stateDir
+      ? getSessionEntry({
+          agentId: resolvedAgentId,
+          env: managedImageRecordDbOptions(stateDir).env,
+          sessionKey,
+        })
+      : undefined);
   const sessionId = entry?.sessionId;
   if (!sessionId) {
     cache?.set(cacheKey, null);
     return null;
   }
 
-  let transcriptStat: { transcriptPath: string; mtimeMs: number; size: number } | null = null;
-  const transcriptPath = typeof entry?.sessionFile === "string" ? entry.sessionFile.trim() : "";
-  if (transcriptPath) {
-    try {
-      const stat = await fs.stat(transcriptPath);
-      transcriptStat = {
-        transcriptPath,
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-      };
-      const cachedIndex = getCachedSessionManagedOutgoingAttachmentIndex(
-        sessionKey,
-        agentId,
-        transcriptStat,
-      );
-      if (cachedIndex) {
-        cache?.set(cacheKey, cachedIndex);
-        return cachedIndex;
-      }
-    } catch {
-      sessionManagedOutgoingAttachmentIndexCache.delete(cacheKey);
+  const transcriptStat = getSqliteSessionTranscriptStats({
+    agentId: resolvedAgentId,
+    sessionId,
+    ...(loaded?.databasePath ? { path: loaded.databasePath } : {}),
+    ...(stateDir ? { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } } : {}),
+  });
+  if (transcriptStat) {
+    const cachedIndex = getCachedSessionManagedOutgoingAttachmentIndex(
+      sessionKey,
+      agentId,
+      transcriptStat,
+    );
+    if (cachedIndex) {
+      cache?.set(cacheKey, cachedIndex);
+      return cachedIndex;
     }
+  } else {
+    sessionManagedOutgoingAttachmentIndexCache.delete(cacheKey);
   }
 
-  const messages = await readSessionMessagesAsync(sessionId, storePath, entry.sessionFile, {
-    mode: "full",
-    reason: "managed outgoing attachment index",
-  });
+  const messages = await readSessionMessagesAsync(
+    {
+      agentId: resolvedAgentId,
+      sessionId,
+      ...(loaded?.databasePath
+        ? { path: loaded.databasePath }
+        : stateDir
+          ? { path: managedImageAgentDbPath(resolvedAgentId, stateDir) }
+          : {}),
+    },
+    {
+      mode: "full",
+      reason: "managed outgoing attachment index",
+    },
+  );
   const index: SessionManagedOutgoingAttachmentIndex = new Set();
   for (const message of messages) {
     const meta = (message as { __openclaw?: { id?: string } } | null)?.["__openclaw"];
@@ -734,6 +834,7 @@ async function getSessionManagedOutgoingAttachmentIndex(
 async function recordMatchesTranscriptMessage(
   record: ManagedImageRecord,
   cache?: Map<string, SessionManagedOutgoingAttachmentIndex | null>,
+  stateDir?: string,
 ) {
   if (!record.messageId) {
     return false;
@@ -741,6 +842,7 @@ async function recordMatchesTranscriptMessage(
   const index = await getSessionManagedOutgoingAttachmentIndex(
     record.sessionKey,
     cache,
+    stateDir,
     record.agentId,
   );
   return (
@@ -814,7 +916,7 @@ export async function createManagedOutgoingImageBlocks(params: {
       continue;
     }
 
-    let savedOriginalPath: string | null = null;
+    let savedOriginalForCleanup: ManagedImageRecordVariant | null = null;
     try {
       let resizeWarning: ManagedImageBlock | null = null;
       if (parsedDataUrl.kind === "image-data-url") {
@@ -828,6 +930,8 @@ export async function createManagedOutgoingImageBlocks(params: {
               "outgoing/originals",
               limits.maxBytes,
               `generated-image-${index + 1}`,
+              undefined,
+              managedImageRecordDbOptions(stateDir),
             )
           : await (async () => {
               const localMediaPath = resolveLocalMediaPath(mediaUrl);
@@ -839,13 +943,22 @@ export async function createManagedOutgoingImageBlocks(params: {
                 undefined,
                 "outgoing/originals",
                 Math.max(limits.maxBytes, MEDIA_MAX_BYTES),
+                managedImageRecordDbOptions(stateDir),
               );
             })();
-      savedOriginalPath = savedOriginal.path;
       let savedOriginalContentType = savedOriginal.contentType;
+      savedOriginalForCleanup = {
+        mediaId: savedOriginal.id,
+        mediaSubdir: MANAGED_OUTGOING_ORIGINALS_SUBDIR,
+        contentType: savedOriginalContentType ?? "application/octet-stream",
+        width: null,
+        height: null,
+        sizeBytes: savedOriginal.size,
+        filename: toRecordFilename(savedOriginal.path),
+      };
       if (!savedOriginalContentType?.startsWith("image/")) {
-        await fs.rm(savedOriginal.path, { force: true }).catch(() => {});
-        savedOriginalPath = null;
+        await deleteManagedImageOriginal(savedOriginalForCleanup, stateDir);
+        savedOriginalForCleanup = null;
         continue;
       }
       if (savedOriginal.size > limits.maxBytes) {
@@ -892,11 +1005,32 @@ export async function createManagedOutgoingImageBlocks(params: {
           "outgoing/originals",
           limits.maxBytes,
           toRecordFilename(savedOriginal.path) ?? `generated-image-${index + 1}`,
+          undefined,
+          managedImageRecordDbOptions(stateDir),
         );
-        await fs.rm(savedOriginal.path, { force: true }).catch(() => {});
+        await deleteManagedImageOriginal(
+          {
+            mediaId: savedOriginal.id,
+            mediaSubdir: MANAGED_OUTGOING_ORIGINALS_SUBDIR,
+            contentType: savedOriginalContentType,
+            width: originalStats.width,
+            height: originalStats.height,
+            sizeBytes: originalStats.sizeBytes,
+            filename: toRecordFilename(savedOriginal.path),
+          },
+          stateDir,
+        );
         savedOriginal = replacement;
         savedOriginalContentType = replacement.contentType ?? resized.contentType;
-        savedOriginalPath = savedOriginal.path;
+        savedOriginalForCleanup = {
+          mediaId: savedOriginal.id,
+          mediaSubdir: MANAGED_OUTGOING_ORIGINALS_SUBDIR,
+          contentType: savedOriginalContentType,
+          width: null,
+          height: null,
+          sizeBytes: savedOriginal.size,
+          filename: toRecordFilename(savedOriginal.path),
+        };
         originalBuffer = resized.buffer;
         originalStats = await getVariantStats(savedOriginal.path);
         effectiveMetadata = orientManagedImageMetadata(
@@ -930,7 +1064,8 @@ export async function createManagedOutgoingImageBlocks(params: {
         retentionClass: params.messageId ? "history" : "transient",
         alt,
         original: {
-          path: savedOriginal.path,
+          mediaId: savedOriginal.id,
+          mediaSubdir: MANAGED_OUTGOING_ORIGINALS_SUBDIR,
           contentType: savedOriginalContentType,
           width: originalStats.width,
           height: originalStats.height,
@@ -939,13 +1074,14 @@ export async function createManagedOutgoingImageBlocks(params: {
         },
       };
       await writeManagedImageRecord(record, stateDir);
+      savedOriginalForCleanup = null;
       blocks.push(buildManagedImageBlock(record));
       if (resizeWarning) {
         blocks.push(resizeWarning);
       }
     } catch (error) {
-      if (savedOriginalPath) {
-        await fs.rm(savedOriginalPath, { force: true }).catch(() => {});
+      if (savedOriginalForCleanup) {
+        await deleteManagedImageOriginal(savedOriginalForCleanup, stateDir);
       }
       const sanitizedError = getSanitizedManagedImageAttachmentError(error, alt);
       if (params.continueOnPrepareError) {
@@ -1047,14 +1183,14 @@ export async function handleManagedOutgoingImageHttpRequest(
     });
     return true;
   }
-  if (!(await recordMatchesTranscriptMessage(record))) {
+  if (!(await recordMatchesTranscriptMessage(record, undefined, opts.stateDir))) {
     sendStatus(res, 404, "not found");
     return true;
   }
 
   let body: Buffer;
   try {
-    body = (await readLocalFileSafely({ filePath: record.original.path })).buffer;
+    body = await readManagedImageOriginalBuffer(record, opts.stateDir);
   } catch {
     sendStatus(res, 404, "not found");
     return true;

@@ -9,10 +9,10 @@ import {
   noteOpencodeProviderOverrides,
 } from "./doctor-config-analysis.js";
 import { runDoctorConfigPreflight } from "./doctor-config-preflight.js";
-import { normalizeCompatibilityConfigValues } from "./doctor-legacy-config.js";
 import type { DoctorOptions, DoctorPrompter } from "./doctor-prompter.js";
 import { emitDoctorNotes, sanitizeDoctorNote } from "./doctor/emit-notes.js";
 import { finalizeDoctorConfigFlow } from "./doctor/finalize-config-flow.js";
+import { normalizeCompatibilityConfigValues } from "./doctor/legacy-config.js";
 import {
   applyLegacyCompatibilityStep,
   applyUnknownConfigKeyStep,
@@ -89,7 +89,6 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
   const shouldRepair = params.options.repair === true || params.options.yes === true;
   const preflight = await runDoctorConfigPreflight({
     repairPrefixedConfig: shouldRepair,
-    recoverCorruptTargetStore: shouldRepair,
   });
   const snapshot = preflight.snapshot;
   const baseCfg = preflight.baseConfig;

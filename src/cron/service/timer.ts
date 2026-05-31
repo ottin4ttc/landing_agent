@@ -1,17 +1,12 @@
 import { resolveFailoverReasonFromError } from "../../agents/failover-error.js";
-import { readSessionEntry } from "../../config/sessions/store-load.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
+import { getSessionEntry } from "../../config/sessions.js";
 import type { CronConfig, CronRetryOn } from "../../config/types.cron.js";
 import type { HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
 import {
   HEARTBEAT_SKIP_CRON_IN_PROGRESS,
   isRetryableHeartbeatBusySkipReason,
 } from "../../infra/heartbeat-wake.js";
-import {
-  DEFAULT_AGENT_ID,
-  normalizeAgentId,
-  resolveAgentIdFromSessionKey,
-} from "../../routing/session-key.js";
+import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { clearCronJobActive, markCronJobActive } from "../active-jobs.js";
@@ -23,7 +18,6 @@ import {
   summarizeCronRunDiagnostics,
 } from "../run-diagnostics.js";
 import { computeNextRunAtMs } from "../schedule.js";
-import { sweepCronRunSessions } from "../session-reaper.js";
 import type {
   CronAgentExecutionPhaseUpdate,
   CronAgentExecutionStarted,
@@ -188,10 +182,7 @@ function resolveRunConcurrency(state: CronServiceState): number {
   return Math.max(1, Math.floor(raw));
 }
 
-function resolveMainSessionCronDeliveryContext(
-  state: CronServiceState,
-  job: CronJob,
-): DeliveryContext | undefined {
+function resolveMainSessionCronDeliveryContext(job: CronJob): DeliveryContext | undefined {
   const targetSessionKey = job.sessionKey?.trim();
   if (!targetSessionKey) {
     return undefined;
@@ -200,12 +191,8 @@ function resolveMainSessionCronDeliveryContext(
   const agentId = normalizeAgentId(
     explicitAgentId || resolveAgentIdFromSessionKey(targetSessionKey),
   );
-  const storePath = state.deps.resolveSessionStorePath?.(agentId) ?? state.deps.sessionStorePath;
-  if (!storePath) {
-    return undefined;
-  }
   try {
-    const sessionEntry = readSessionEntry(storePath, targetSessionKey) as SessionEntry | undefined;
+    const sessionEntry = getSessionEntry({ agentId, sessionKey: targetSessionKey });
     return deliveryContextFromSession(sessionEntry);
   } catch {
     return undefined;
@@ -906,42 +893,6 @@ export async function onTimer(state: CronServiceState) {
       });
     }
   } finally {
-    // Piggyback session reaper on timer tick (self-throttled to every 5 min).
-    // Placed in `finally` so the reaper runs even when a long-running job keeps
-    // `state.running` true across multiple timer ticks — the early return at the
-    // top of onTimer would otherwise skip the reaper indefinitely.
-    const storePaths = new Set<string>();
-    if (state.deps.resolveSessionStorePath) {
-      const defaultAgentId = state.deps.defaultAgentId ?? DEFAULT_AGENT_ID;
-      if (state.store?.jobs?.length) {
-        for (const job of state.store.jobs) {
-          const agentId =
-            typeof job.agentId === "string" && job.agentId.trim() ? job.agentId : defaultAgentId;
-          storePaths.add(state.deps.resolveSessionStorePath(agentId));
-        }
-      } else {
-        storePaths.add(state.deps.resolveSessionStorePath(defaultAgentId));
-      }
-    } else if (state.deps.sessionStorePath) {
-      storePaths.add(state.deps.sessionStorePath);
-    }
-
-    if (storePaths.size > 0) {
-      const nowMs = state.deps.nowMs();
-      for (const storePath of storePaths) {
-        try {
-          await sweepCronRunSessions({
-            cronConfig: state.deps.cronConfig,
-            sessionStorePath: storePath,
-            nowMs,
-            log: state.deps.log,
-          });
-        } catch (err) {
-          state.deps.log.warn({ err: String(err), storePath }, "cron: session reaper sweep failed");
-        }
-      }
-    }
-
     state.running = false;
     armTimer(state);
   }
@@ -1386,7 +1337,7 @@ async function executeMainSessionCronJob(
   const cronStartedAt =
     typeof job.state.runningAtMs === "number" ? job.state.runningAtMs : state.deps.nowMs();
   const cronRunSessionKey = resolveMainSessionCronRunSessionKey(job, cronStartedAt);
-  const deliveryContext = resolveMainSessionCronDeliveryContext(state, job);
+  const deliveryContext = resolveMainSessionCronDeliveryContext(job);
   state.deps.enqueueSystemEvent(text, {
     agentId: job.agentId,
     sessionKey: cronRunSessionKey,

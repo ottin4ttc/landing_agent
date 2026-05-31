@@ -1,7 +1,7 @@
+import type { ModelRegistry } from "../../agents/model-registry-contract.js";
 import { loadAgentModelRegistry } from "../../agents/model-registry-loader.js";
 import { shouldSuppressBuiltInModel } from "../../agents/model-suppression.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { ModelRegistry } from "../../llm/model-registry.js";
 import type { Model } from "../../llm/types.js";
 import { loadModelRegistry } from "./list.registry.js";
 import type { ConfiguredEntry } from "./list.types.js";

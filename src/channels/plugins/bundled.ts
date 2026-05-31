@@ -841,11 +841,7 @@ export function listBundledChannelLegacySessionSurfaces(
     if (surface) {
       return [surface];
     }
-    if (!hasSetupEntryFeature(setupEntry, "legacySessionSurfaces")) {
-      return [];
-    }
-    const plugin = getBundledChannelSetupPluginForRoot(id, rootScope, loadContext);
-    return plugin?.messaging ? [plugin.messaging] : [];
+    return [];
   });
 }
 
@@ -863,13 +859,7 @@ export function listBundledChannelLegacyStateMigrationDetectors(
     if (detector) {
       return [detector];
     }
-    if (!hasSetupEntryFeature(setupEntry, "legacyStateMigrations")) {
-      return [];
-    }
-    const plugin = getBundledChannelSetupPluginForRoot(id, rootScope, loadContext);
-    return plugin?.lifecycle?.detectLegacyStateMigrations
-      ? [plugin.lifecycle.detectLegacyStateMigrations]
-      : [];
+    return [];
   });
 }
 

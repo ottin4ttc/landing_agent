@@ -9,6 +9,10 @@ import {
 import { resetDiagnosticEventsForTest } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { clearInternalHooks, resetGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import { clearPluginCommands } from "openclaw/plugin-sdk/plugin-runtime";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseForTest,
+} from "openclaw/plugin-sdk/sqlite-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { defaultCodexAppInventoryCache } from "./app-inventory-cache.js";
@@ -89,12 +93,15 @@ async function drainActiveAppServerAttemptsForTest(): Promise<void> {
   ]);
 }
 
-export function createParams(sessionFile: string, workspaceDir: string): EmbeddedRunAttemptParams {
+export function createParams(
+  transcriptPath: string,
+  workspaceDir: string,
+): EmbeddedRunAttemptParams {
   return {
     prompt: "hello",
     sessionId: "session-1",
     sessionKey: "agent:main:session-1",
-    sessionFile,
+    path: transcriptPath,
     workspaceDir,
     runId: "run-1",
     provider: "codex",
@@ -113,6 +120,18 @@ export function createParams(sessionFile: string, workspaceDir: string): Embedde
     authProfileStore: { version: 1, profiles: {} },
     modelRegistry: {} as never,
   } as EmbeddedRunAttemptParams;
+}
+
+export function codexAppServerTestBindingIdentity(
+  params: Pick<EmbeddedRunAttemptParams, "sessionKey" | "sessionId"> = {
+    sessionKey: "agent:main:session-1",
+    sessionId: "session-1",
+  },
+) {
+  return {
+    sessionKey: params.sessionKey,
+    sessionId: params.sessionId,
+  };
 }
 
 export function createCodexRuntimePlanFixture(): NonNullable<
@@ -470,6 +489,7 @@ export function setupRunAttemptTestHooks(): void {
     vi.stubEnv("CODEX_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
     tempDir = await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), "openclaw-codex-run-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", tempDir);
   });
 
   afterEach(async () => {
@@ -487,6 +507,8 @@ export function setupRunAttemptTestHooks(): void {
     resetGlobalHookRunner();
     clearInternalHooks();
     defaultCodexAppInventoryCache.clear();
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();

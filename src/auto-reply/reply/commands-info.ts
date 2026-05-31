@@ -266,7 +266,6 @@ export const handleStatusCommand: CommandHandler = async (params, allowTextComma
     sessionKey: params.sessionKey,
     parentSessionKey: targetSessionEntry?.parentSessionKey ?? params.ctx.ParentSessionKey,
     sessionScope: params.sessionScope,
-    storePath: params.storePath,
     provider: params.provider,
     model: params.model,
     contextTokens: params.contextTokens,

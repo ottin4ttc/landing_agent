@@ -1,23 +1,100 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadSessionStore, saveSessionStore, type SessionEntry } from "../config/sessions.js";
-import { CURRENT_SESSION_VERSION } from "../config/sessions/version.js";
+import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 
+// SQLite-backed session store stand-in. The rotation flow drives the real
+// agentCommand persistence path; we back getSessionEntry/upsertSessionEntry/
+// patchSessionEntry/listSessionEntries with this in-memory map instead of an
+// on-disk session-entries.sqlite database so the test stays hermetic.
 const state = vi.hoisted(() => ({
   cfg: undefined as OpenClawConfig | undefined,
   workspaceDir: undefined as string | undefined,
   agentDir: undefined as string | undefined,
   runAgentAttemptMock: vi.fn(),
   deliveryFreshEntries: [] as Array<SessionEntry | undefined>,
+  sessionRows: new Map<string, SessionEntry>(),
 }));
+
+function cloneEntry(entry: SessionEntry): SessionEntry {
+  return structuredClone(entry);
+}
 
 vi.mock("../config/io.js", () => ({
   getRuntimeConfig: () => state.cfg,
   readConfigFileSnapshotForWrite: async () => ({ snapshot: { valid: false } }),
 }));
+
+// Override only the SQLite session-row accessors; keep the rest of the barrel
+// (mergeSessionEntry, setSessionRuntimeModel, key helpers) real so the
+// rotation merge logic runs against the production implementation.
+vi.mock("../config/sessions.js", async () => {
+  const actual = await vi.importActual<typeof import("../config/sessions.js")>(
+    "../config/sessions.js",
+  );
+  return {
+    ...actual,
+    getSessionEntry: ({ sessionKey }: { sessionKey: string }) => {
+      const entry = state.sessionRows.get(sessionKey);
+      return entry ? cloneEntry(entry) : undefined;
+    },
+    upsertSessionEntry: ({ sessionKey, entry }: { sessionKey: string; entry: SessionEntry }) => {
+      state.sessionRows.set(sessionKey, cloneEntry(entry));
+    },
+  };
+});
+
+vi.mock("../config/sessions/store.js", async () => {
+  const actual = await vi.importActual<typeof import("../config/sessions/store.js")>(
+    "../config/sessions/store.js",
+  );
+  return {
+    ...actual,
+    getSessionEntry: ({ sessionKey }: { sessionKey: string }) => {
+      const entry = state.sessionRows.get(sessionKey);
+      return entry ? cloneEntry(entry) : undefined;
+    },
+    upsertSessionEntry: ({ sessionKey, entry }: { sessionKey: string; entry: SessionEntry }) => {
+      state.sessionRows.set(sessionKey, cloneEntry(entry));
+    },
+    listSessionEntries: () =>
+      Array.from(state.sessionRows.entries()).map(([sessionKey, entry]) => ({
+        sessionKey,
+        entry: cloneEntry(entry),
+      })),
+    patchSessionEntry: async (params: {
+      sessionKey: string;
+      fallbackEntry?: SessionEntry;
+      update: (entry: SessionEntry) => unknown;
+    }) => {
+      const existing = state.sessionRows.get(params.sessionKey) ?? params.fallbackEntry;
+      if (!existing) {
+        return null;
+      }
+      // attempt-execution.shared returns an already-merged entry from update();
+      // keep the existing row when update() opts out (returns null).
+      const result = await params.update(cloneEntry(existing));
+      if (!result) {
+        return state.sessionRows.get(params.sessionKey) ?? null;
+      }
+      const next = ((result as { patch?: Partial<SessionEntry> }).patch ??
+        result) as SessionEntry;
+      state.sessionRows.set(params.sessionKey, cloneEntry(next));
+      return cloneEntry(next);
+    },
+  };
+});
+
+// Session routing metadata lives in SQLite; the rotation test never exercises
+// channel routing, so return no routing info.
+vi.mock("../config/sessions/session-entries.sqlite.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../config/sessions/session-entries.sqlite.js")
+  >("../config/sessions/session-entries.sqlite.js");
+  return {
+    ...actual,
+    readSqliteSessionRoutingInfo: () => undefined,
+  };
+});
 
 vi.mock("./agent-runtime-config.js", () => ({
   resolveAgentRuntimeConfig: async () => ({
@@ -143,18 +220,13 @@ beforeAll(async () => {
   agentCommand = (await import("./agent-command.js")).agentCommand;
 });
 
-beforeEach(async () => {
+beforeEach(() => {
   vi.clearAllMocks();
   state.deliveryFreshEntries = [];
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-rotation-e2e-"));
-  state.workspaceDir = path.join(tmpDir, "workspace");
-  state.agentDir = path.join(tmpDir, "agent");
-  await fs.mkdir(state.workspaceDir, { recursive: true });
-  await fs.mkdir(state.agentDir, { recursive: true });
+  state.sessionRows = new Map();
+  state.workspaceDir = "/tmp/openclaw-rotation-workspace";
+  state.agentDir = "/tmp/openclaw-rotation-agent";
   state.cfg = {
-    session: {
-      store: path.join(tmpDir, "sessions.json"),
-    },
     agents: {
       defaults: {
         models: {
@@ -165,22 +237,14 @@ beforeEach(async () => {
   } as OpenClawConfig;
 });
 
-afterEach(async () => {
-  const storePath = state.cfg?.session?.store;
+afterEach(() => {
   state.cfg = undefined;
   state.workspaceDir = undefined;
   state.agentDir = undefined;
-  if (storePath) {
-    await fs.rm(path.dirname(storePath), { recursive: true, force: true });
-  }
+  state.sessionRows = new Map();
 });
 
-function makeResult(params: {
-  sessionId: string;
-  sessionFile?: string;
-  text: string;
-  compactionCount?: number;
-}) {
+function makeResult(params: { sessionId: string; text: string; compactionCount?: number }) {
   return {
     payloads: [{ text: params.text }],
     meta: {
@@ -195,7 +259,6 @@ function makeResult(params: {
       finalAssistantVisibleText: params.text,
       agentMeta: {
         sessionId: params.sessionId,
-        ...(params.sessionFile ? { sessionFile: params.sessionFile } : {}),
         provider: "openai",
         model: "gpt-5.5",
         ...(params.compactionCount ? { compactionCount: params.compactionCount } : {}),
@@ -204,33 +267,11 @@ function makeResult(params: {
   };
 }
 
-async function readSessionMessages(sessionFile: string) {
-  const raw = await fs.readFile(sessionFile, "utf-8");
-  return raw
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as { type?: string; message?: { role?: string } })
-    .filter((entry) => entry.type === "message")
-    .map((entry) => entry.message);
-}
-
-function requireStorePath(): string {
-  const storePath = state.cfg?.session?.store;
-  if (!storePath) {
-    throw new Error("missing test session store path");
-  }
-  return storePath;
-}
-
 describe("agentCommand compaction transcript rotation", () => {
-  it("keeps sessions.json on the rotated successor", async () => {
-    const storePath = requireStorePath();
-    const sessionsDir = await fs.realpath(path.dirname(storePath));
-    const rotatedSessionFile = path.join(sessionsDir, "rotated-session.jsonl");
+  it("persists the rotated successor under the original session key", async () => {
     state.runAgentAttemptMock.mockResolvedValueOnce(
       makeResult({
         sessionId: "rotated-session",
-        sessionFile: rotatedSessionFile,
         text: "first answer after rotation",
         compactionCount: 1,
       }),
@@ -242,48 +283,26 @@ describe("agentCommand compaction transcript rotation", () => {
       cwd: state.workspaceDir,
     });
 
-    const storeAfterRotation = loadSessionStore(storePath, { skipCache: true });
-    const entriesAfterRotation = Object.entries(storeAfterRotation);
-    expect(entriesAfterRotation).toHaveLength(1);
-    const [sessionKey, rotatedEntry] = entriesAfterRotation[0] ?? [];
+    const entries = Array.from(state.sessionRows.entries());
+    expect(entries).toHaveLength(1);
+    const [sessionKey, rotatedEntry] = entries[0] ?? [];
     expect(sessionKey).toBe("agent:main:explicit:old-session");
     expect(rotatedEntry).toMatchObject({
       sessionId: "rotated-session",
-      sessionFile: rotatedSessionFile,
       usageFamilyKey: "agent:main:explicit:old-session",
       usageFamilySessionIds: ["old-session", "rotated-session"],
       compactionCount: 1,
     });
-    await expect(readSessionMessages(rotatedSessionFile)).resolves.toEqual([
-      expect.objectContaining({ role: "assistant" }),
-    ]);
   });
 
   it("resumes the next turn from the rotated successor", async () => {
-    const storePath = requireStorePath();
-    const sessionsDir = await fs.realpath(path.dirname(storePath));
-    const rotatedSessionFile = path.join(sessionsDir, "rotated-session.jsonl");
     const sessionKey = "agent:main:explicit:old-session";
-    await fs.writeFile(
-      rotatedSessionFile,
-      `${JSON.stringify({
-        type: "session",
-        version: CURRENT_SESSION_VERSION,
-        id: "rotated-session",
-        timestamp: new Date(0).toISOString(),
-        cwd: state.workspaceDir,
-      })}\n`,
-      "utf-8",
-    );
-    await saveSessionStore(storePath, {
-      [sessionKey]: {
-        sessionId: "rotated-session",
-        sessionFile: rotatedSessionFile,
-        updatedAt: Date.now(),
-        usageFamilyKey: sessionKey,
-        usageFamilySessionIds: ["old-session", "rotated-session"],
-        compactionCount: 1,
-      },
+    state.sessionRows.set(sessionKey, {
+      sessionId: "rotated-session",
+      updatedAt: Date.now(),
+      usageFamilyKey: sessionKey,
+      usageFamilySessionIds: ["old-session", "rotated-session"],
+      compactionCount: 1,
     });
     state.runAgentAttemptMock.mockResolvedValueOnce(
       makeResult({
@@ -299,20 +318,17 @@ describe("agentCommand compaction transcript rotation", () => {
     });
 
     const secondAttempt = state.runAgentAttemptMock.mock.calls[0]?.[0] as
-      | { sessionId?: string; sessionFile?: string; sessionKey?: string }
+      | { sessionId?: string; sessionKey?: string }
       | undefined;
     expect(secondAttempt).toMatchObject({
       sessionId: "rotated-session",
       sessionKey,
-      sessionFile: rotatedSessionFile,
     });
     expect(state.deliveryFreshEntries.at(-1)).toMatchObject({
       sessionId: "rotated-session",
-      sessionFile: rotatedSessionFile,
     });
-    expect(loadSessionStore(storePath, { skipCache: true })[sessionKey ?? ""]).toMatchObject({
+    expect(state.sessionRows.get(sessionKey)).toMatchObject({
       sessionId: "rotated-session",
-      sessionFile: rotatedSessionFile,
     });
   });
 });

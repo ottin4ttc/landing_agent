@@ -1,6 +1,6 @@
-import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import { createSubscribedSessionHarness } from "./embedded-agent-subscribe.e2e-harness.js";
+import type { AssistantMessage } from "./pi-ai-contract.js";
 
 type AssistantMessageWithPhase = AssistantMessage & {
   phase?: "commentary" | "final_answer";

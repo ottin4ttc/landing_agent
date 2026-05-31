@@ -17,6 +17,7 @@ import {
   type AuthProfileStore,
   type OAuthCredential,
 } from "openclaw/plugin-sdk/agent-runtime";
+import { updateAuthProfileStoreWithLock } from "openclaw/plugin-sdk/provider-auth";
 import type { CodexAppServerClient } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config.js";
 import type {
@@ -595,7 +596,49 @@ async function resolveOAuthCredentialForCodexAppServer(
           isCodexAppServerAuthProvider(storedCredential.provider, params.config)
         ? storedCredential
         : credential;
-  return resolved?.apiKey ? { ...candidate, access: resolved.apiKey } : candidate;
+  const resolvedCredential = resolved?.apiKey
+    ? { ...candidate, access: resolved.apiKey }
+    : candidate;
+  if (params.forceRefresh) {
+    await mirrorOwnerRefreshToLocalOAuthClone({
+      agentDir: params.agentDir,
+      ownerAgentDir,
+      profileId,
+      credential: resolvedCredential,
+      config: params.config,
+    });
+  }
+  return resolvedCredential;
+}
+
+async function mirrorOwnerRefreshToLocalOAuthClone(params: {
+  agentDir: string;
+  ownerAgentDir?: string;
+  profileId: string;
+  credential: OAuthCredential;
+  config?: AuthProfileOrderConfig;
+}): Promise<void> {
+  if (params.ownerAgentDir === params.agentDir) {
+    return;
+  }
+  // Only rewrite an existing local clone. Missing child rows should keep
+  // inheriting the owner profile instead of materializing a new copy.
+  await updateAuthProfileStoreWithLock({
+    agentDir: params.agentDir,
+    saveOptions: {
+      filterExternalAuthProfiles: false,
+      forceLocalProfileIds: [params.profileId],
+      syncExternalCli: false,
+    },
+    updater: (store) => {
+      const local = store.profiles[params.profileId];
+      if (local?.type !== "oauth" || !isCodexAppServerAuthProvider(local.provider, params.config)) {
+        return false;
+      }
+      store.profiles[params.profileId] = { ...params.credential };
+      return true;
+    },
+  });
 }
 
 function isCodexAppServerAuthProvider(provider: string, config?: AuthProfileOrderConfig): boolean {

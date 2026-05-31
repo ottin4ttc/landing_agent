@@ -102,7 +102,6 @@ export async function applyInlineDirectiveOverrides(params: {
   sessionEntry: SessionEntry;
   sessionStore: Record<string, SessionEntry>;
   sessionKey: string;
-  storePath?: string;
   sessionScope: SessionScope | undefined;
   isGroup: boolean;
   allowTextCommands: boolean;
@@ -137,7 +136,6 @@ export async function applyInlineDirectiveOverrides(params: {
     sessionEntry,
     sessionStore,
     sessionKey,
-    storePath,
     sessionScope,
     isGroup,
     allowTextCommands,
@@ -171,7 +169,6 @@ export async function applyInlineDirectiveOverrides(params: {
     sessionEntry,
     sessionStore,
     sessionKey,
-    storePath,
     elevatedEnabled,
     elevatedAllowed,
     elevatedFailures,
@@ -235,7 +232,6 @@ export async function applyInlineDirectiveOverrides(params: {
     sessionEntry,
     sessionStore,
     sessionKey,
-    storePath,
     elevatedEnabled,
     elevatedAllowed,
     defaultProvider,
@@ -358,7 +354,6 @@ export async function applyInlineDirectiveOverrides(params: {
         sessionKey,
         parentSessionKey: targetSessionEntry?.parentSessionKey ?? ctx.ParentSessionKey,
         sessionScope,
-        storePath,
         provider,
         model,
         contextTokens,
@@ -398,7 +393,6 @@ export async function applyInlineDirectiveOverrides(params: {
       sessionEntry,
       sessionStore,
       sessionKey,
-      storePath,
       elevatedEnabled,
       elevatedAllowed,
       elevatedFailures,

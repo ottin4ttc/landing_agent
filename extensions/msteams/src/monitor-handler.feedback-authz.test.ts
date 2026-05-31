@@ -1,6 +1,9 @@
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { loadSqliteSessionTranscriptEvents } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-runtime";
+import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
 import { runMSTeamsFeedbackInvokeHandler } from "./feedback-invoke.js";
@@ -125,39 +128,73 @@ function createFeedbackInvokeContext(params: {
   } as unknown as MSTeamsTurnContext;
 }
 
-async function expectFileMissing(filePath: string) {
-  let error: unknown;
-  try {
-    await access(filePath);
-  } catch (caught) {
-    error = caught;
-  }
-  expect(error).toBeInstanceOf(Error);
-  expect((error as NodeJS.ErrnoException).code).toBe("ENOENT");
+function readFeedbackTranscriptMessage(params: {
+  stateDir: string;
+  sessionId: string;
+}): Record<string, unknown> | undefined {
+  const events = loadSqliteSessionTranscriptEvents({
+    env: { ...process.env, OPENCLAW_STATE_DIR: params.stateDir },
+    agentId: "default",
+    sessionId: params.sessionId,
+  });
+  const messageEvent = events
+    .map((entry) => entry.event)
+    .find((entry) => {
+      return Boolean(
+        entry &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        (entry as { type?: unknown }).type === "message" &&
+        (entry as { message?: { event?: unknown } }).message?.event === "feedback",
+      );
+    }) as { message?: Record<string, unknown> } | undefined;
+  return messageEvent?.message;
 }
 
 async function withFeedbackHandler(params: {
   cfg: OpenClawConfig;
   context: Parameters<typeof createFeedbackInvokeContext>[0];
+  sessionKey?: string;
+  sessionId?: string;
   assertResult: (args: { tmpDir: string }) => Promise<void>;
 }) {
   const tmpDir = await mkdtemp(path.join(tmpdir(), "openclaw-msteams-feedback-"));
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = tmpDir;
   try {
+    if (params.sessionKey && params.sessionId) {
+      upsertSessionEntry({
+        agentId: "default",
+        env: { ...process.env, OPENCLAW_STATE_DIR: tmpDir },
+        sessionKey: params.sessionKey,
+        entry: {
+          sessionId: params.sessionId,
+          updatedAt: Date.now(),
+        },
+      });
+    }
     const deps = createDeps({
       cfg: {
         ...params.cfg,
-        session: { store: tmpDir },
+        session: {},
       },
     });
     await runMSTeamsFeedbackInvokeHandler(createFeedbackInvokeContext(params.context), deps);
     await params.assertResult({ tmpDir });
   } finally {
+    resetPluginStateStoreForTests();
+    if (previousStateDir == null) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
     await rm(tmpDir, { recursive: true, force: true });
   }
 }
 
 describe("msteams feedback invoke authz", () => {
   beforeEach(() => {
+    resetPluginStateStoreForTests();
     feedbackReflectionMockState.runFeedbackReflection.mockReset();
     feedbackReflectionMockState.runFeedbackReflection.mockResolvedValue(undefined);
   });
@@ -180,12 +217,16 @@ describe("msteams feedback invoke authz", () => {
         senderName: "Owner",
         comment: "allowed feedback",
       },
+      sessionKey: "msteams:direct:owner-aad",
+      sessionId: "owner-session",
       assertResult: async ({ tmpDir }) => {
-        const transcript = await readFile(
-          path.join(tmpDir, "msteams_direct_owner-aad.jsonl"),
-          "utf-8",
-        );
-        const event = JSON.parse(transcript.trim()) as Record<string, unknown>;
+        const event = readFeedbackTranscriptMessage({
+          stateDir: tmpDir,
+          sessionId: "owner-session",
+        });
+        if (!event) {
+          throw new Error("expected feedback transcript event");
+        }
         expect(Object.keys(event).toSorted()).toEqual([
           "agentId",
           "comment",
@@ -238,12 +279,16 @@ describe("msteams feedback invoke authz", () => {
         senderName: "Owner",
         comment: "allowed dm feedback",
       },
+      sessionKey: "msteams:direct:owner-aad",
+      sessionId: "owner-session",
       assertResult: async ({ tmpDir }) => {
-        const transcript = await readFile(
-          path.join(tmpDir, "msteams_direct_owner-aad.jsonl"),
-          "utf-8",
-        );
-        const event = JSON.parse(transcript.trim()) as Record<string, unknown>;
+        const event = readFeedbackTranscriptMessage({
+          stateDir: tmpDir,
+          sessionId: "owner-session",
+        });
+        if (!event) {
+          throw new Error("expected feedback transcript event");
+        }
         expect(Object.keys(event).toSorted()).toEqual([
           "agentId",
           "comment",
@@ -289,47 +334,52 @@ describe("msteams feedback invoke authz", () => {
         senderName: "Attacker",
         comment: "blocked feedback",
       },
+      sessionKey: "msteams:direct:attacker-aad",
+      sessionId: "attacker-session",
       assertResult: async ({ tmpDir }) => {
-        await expectFileMissing(path.join(tmpDir, "msteams_direct_attacker-aad.jsonl"));
+        expect(
+          readFeedbackTranscriptMessage({
+            stateDir: tmpDir,
+            sessionId: "attacker-session",
+          }),
+        ).toBeUndefined();
         expect(feedbackReflectionMockState.runFeedbackReflection).not.toHaveBeenCalled();
       },
     });
   });
 
   it("does not trigger reflection for a group sender outside groupAllowFrom", async () => {
-    const tmpDir = await mkdtemp(path.join(tmpdir(), "openclaw-msteams-feedback-"));
-    try {
-      const deps = createDeps({
-        cfg: {
-          session: { store: tmpDir },
-          channels: {
-            msteams: {
-              groupPolicy: "allowlist",
-              groupAllowFrom: ["owner-aad"],
-              feedbackReflection: true,
-            },
+    await withFeedbackHandler({
+      cfg: {
+        channels: {
+          msteams: {
+            groupPolicy: "allowlist",
+            groupAllowFrom: ["owner-aad"],
+            feedbackReflection: true,
           },
-        } as OpenClawConfig,
-      });
-
-      await runMSTeamsFeedbackInvokeHandler(
-        createFeedbackInvokeContext({
-          reaction: "dislike",
-          conversationId: "19:group@thread.tacv2;messageid=bot-msg-1",
-          conversationType: "groupChat",
-          senderId: "attacker-aad",
-          senderName: "Attacker",
-          teamId: "team-1",
-          channelName: "General",
-          comment: "blocked reflection",
-        }),
-        deps,
-      );
-
-      await expectFileMissing(path.join(tmpDir, "msteams_group_19_group_thread_tacv2.jsonl"));
-      expect(feedbackReflectionMockState.runFeedbackReflection).not.toHaveBeenCalled();
-    } finally {
-      await rm(tmpDir, { recursive: true, force: true });
-    }
+        },
+      } as OpenClawConfig,
+      context: {
+        reaction: "dislike",
+        conversationId: "19:group@thread.tacv2;messageid=bot-msg-1",
+        conversationType: "groupChat",
+        senderId: "attacker-aad",
+        senderName: "Attacker",
+        teamId: "team-1",
+        channelName: "General",
+        comment: "blocked reflection",
+      },
+      sessionKey: "msteams:group:19:group@thread.tacv2",
+      sessionId: "group-session",
+      assertResult: async ({ tmpDir }) => {
+        expect(
+          readFeedbackTranscriptMessage({
+            stateDir: tmpDir,
+            sessionId: "group-session",
+          }),
+        ).toBeUndefined();
+        expect(feedbackReflectionMockState.runFeedbackReflection).not.toHaveBeenCalled();
+      },
+    });
   });
 });

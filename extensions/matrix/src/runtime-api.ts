@@ -95,7 +95,6 @@ export { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 export { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
 export { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
 export { normalizePollInput, type PollInput } from "openclaw/plugin-sdk/poll-runtime";
-export { writeJsonFileAtomically } from "openclaw/plugin-sdk/json-store";
 export {
   buildChannelKeyCandidates,
   resolveChannelEntryMatch,
