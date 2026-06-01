@@ -11,6 +11,7 @@ type GuardedJsonApiRequestParams = {
   errorPrefix: string;
 };
 
+/** Performs a provider JSON request through the SSRF guard and always releases the response pin. */
 export async function guardedJsonApiRequest<T = unknown>(
   params: GuardedJsonApiRequestParams,
 ): Promise<T> {
@@ -28,6 +29,7 @@ export async function guardedJsonApiRequest<T = unknown>(
   try {
     if (!response.ok) {
       if (params.allowNotFound && response.status === 404) {
+        // Provider lookup/delete paths use 404 as "already gone" rather than a hard failure.
         return undefined as T;
       }
       const errorText = await response.text();
@@ -44,6 +46,7 @@ export async function guardedJsonApiRequest<T = unknown>(
       throw new Error(`${params.errorPrefix}: malformed JSON response`);
     }
   } finally {
+    // Release the SSRF guard's resolved-address pin after all body reads finish.
     await release();
   }
 }
