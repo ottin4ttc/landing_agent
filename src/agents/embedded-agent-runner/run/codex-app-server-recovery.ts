@@ -1,6 +1,10 @@
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
-/** Decides whether a Codex app-server transport failure can be replayed once. */
+/**
+ * Decides whether a Codex app-server transport failure can be replayed once.
+ * Recovery is restricted to early stdio failures with no assistant/tool/approval
+ * side effects, so retrying cannot duplicate visible output or external work.
+ */
 export function resolveCodexAppServerRecoveryRetry(params: {
   attempt: EmbeddedRunAttemptResult;
   alreadyRetried: boolean;
@@ -54,4 +58,5 @@ export function resolveCodexAppServerRecoveryRetry(params: {
   return { retry: true };
 }
 
+/** Backward-compatible alias for the original client-close-only helper name. */
 export const resolveCodexAppServerClientCloseRetry = resolveCodexAppServerRecoveryRetry;
