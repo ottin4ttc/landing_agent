@@ -17,6 +17,7 @@ export type LocalMediaAccessErrorCode =
   | "not-file";
 
 export class LocalMediaAccessError extends Error {
+  /** Stable machine-readable access failure reason for callers and tests. */
   code: LocalMediaAccessErrorCode;
 
   constructor(code: LocalMediaAccessErrorCode, message: string, options?: ErrorOptions) {
@@ -26,6 +27,7 @@ export class LocalMediaAccessError extends Error {
   }
 }
 
+/** Returns the process default roots used when callers do not pass scoped localRoots. */
 export function getDefaultLocalRoots(): readonly string[] {
   return getDefaultMediaLocalRoots();
 }
@@ -59,6 +61,7 @@ export async function assertLocalMediaAllowed(
     options?.inboundRoots?.length &&
     isInboundPathAllowed({ filePath: mediaPath, roots: options.inboundRoots })
   ) {
+    // Channel-specific inbound roots are trusted staging areas supplied by the channel contract.
     return;
   }
   const roots = localRoots ?? getDefaultLocalRoots();
