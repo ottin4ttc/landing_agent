@@ -12,7 +12,7 @@ import type { ChatLog } from "./components/chat-log.js";
 import type { TuiAgentsList, TuiBackend, TuiSessionMutationResult } from "./tui-backend.js";
 import { asString, extractTextFromMessage, isCommandMessage } from "./tui-formatters.js";
 import { TUI_SESSION_LOOKUP_LIMIT } from "./tui-session-list-policy.js";
-import type { SessionInfo, TuiOptions, TuiStateAccess } from "./tui-types.js";
+import type { SessionInfo, TuiAbortActiveResult, TuiOptions, TuiStateAccess } from "./tui-types.js";
 
 type SessionActionBtwPresenter = {
   clear: () => void;
@@ -612,7 +612,9 @@ export function createSessionActions(context: SessionActionContext) {
     clearDisplayedSession();
   };
 
-  const abortActive = async (params?: { preferActive?: boolean }): Promise<TuiAbortActiveResult> => {
+  const abortActive = async (params?: {
+    preferActive?: boolean;
+  }): Promise<TuiAbortActiveResult> => {
     if (
       opts.local === true &&
       state.activityStatus === "finishing context" &&

@@ -33,6 +33,7 @@ import { formatStatusSummary } from "./tui-status-summary.js";
 import type {
   AgentSummary,
   GatewayStatusSummary,
+  TuiAbortActiveResult,
   TuiResult,
   TuiOptions,
   TuiStateAccess,
