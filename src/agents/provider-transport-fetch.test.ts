@@ -271,6 +271,68 @@ describe("buildGuardedModelFetch", () => {
     expect(items).toEqual([{ ok: true }]);
   });
 
+  it("accepts missing content-type on successful ChatGPT Responses streams", async () => {
+    const release = vi.fn(async () => undefined);
+    const model = {
+      id: "gpt-5.5",
+      provider: "openai",
+      api: "openai-chatgpt-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+    } as unknown as Model<"openai-chatgpt-responses">;
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response(responseStreamText('event: response.created\ndata: {"ok": true}\n\n'), {
+        status: 200,
+      }),
+      finalUrl: "https://chatgpt.com/backend-api/codex/responses",
+      release,
+    });
+
+    const response = await buildGuardedModelFetch(model)(
+      "https://chatgpt.com/backend-api/codex/responses",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+      },
+    );
+
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    await expect(response.text()).resolves.toContain("response.created");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects HTML content on successful ChatGPT Responses streams", async () => {
+    const release = vi.fn(async () => undefined);
+    const model = {
+      id: "gpt-5.5",
+      provider: "openai",
+      api: "openai-chatgpt-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+    } as unknown as Model<"openai-chatgpt-responses">;
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: new Response("<html>not the API</html>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+      finalUrl: "https://chatgpt.com/backend-api/codex/responses",
+      release,
+    });
+
+    await expect(
+      buildGuardedModelFetch(model)("https://chatgpt.com/backend-api/codex/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.5", stream: true }),
+      }),
+    ).rejects.toMatchObject({
+      name: "ProviderHttpError",
+      status: 200,
+      code: "invalid_provider_content_type",
+      errorType: "invalid_response",
+    });
+    expect(release).toHaveBeenCalled();
+  });
+
   it("returns promptly for missing content-type SSE streams that remain open", async () => {
     const source = openResponseStreamText('data: {"ok": true}\n\n');
     fetchWithSsrFGuardMock.mockResolvedValue({
