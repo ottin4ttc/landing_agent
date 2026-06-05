@@ -46,6 +46,50 @@ function normalizeQwenOAuthContent(content: unknown): unknown {
   return normalized.length > 0 ? normalized : content;
 }
 
+type PayloadFieldRead = { ok: true; value: unknown } | { ok: false };
+
+function readPayloadField(record: Record<string, unknown>, key: string): PayloadFieldRead {
+  try {
+    return { ok: true, value: record[key] };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function forcePayloadField(record: Record<string, unknown>, key: string, value: unknown): boolean {
+  try {
+    Object.defineProperty(record, key, {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    });
+    const next = readPayloadField(record, key);
+    return next.ok && next.value === value;
+  } catch {
+    return false;
+  }
+}
+
+function deletePayloadField(record: Record<string, unknown>, key: string): boolean {
+  try {
+    delete record[key];
+    return !Object.hasOwn(record, key);
+  } catch {
+    return false;
+  }
+}
+
+function copyPlainDataFields(value: Record<string, unknown>): Record<string, unknown> {
+  const copy: Record<string, unknown> = {};
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+    if ("value" in descriptor) {
+      copy[key] = descriptor.value;
+    }
+  }
+  return copy;
+}
+
 function patchQwenOAuthPayload(payload: Record<string, unknown>): void {
   const messages = payload.messages;
   if (!Array.isArray(messages)) {
@@ -69,22 +113,31 @@ function patchQwenOAuthPayload(payload: Record<string, unknown>): void {
 }
 
 function setQwenChatTemplateThinking(payload: Record<string, unknown>, enabled: boolean): void {
-  const existing = payload.chat_template_kwargs;
-  if (existing && typeof existing === "object" && !Array.isArray(existing)) {
-    const next: Record<string, unknown> = {
-      ...(existing as Record<string, unknown>),
-      enable_thinking: enabled,
-    };
-    if (!Object.hasOwn(next, "preserve_thinking")) {
-      next.preserve_thinking = true;
-    }
-    payload.chat_template_kwargs = next;
-    return;
+  const existing = readPayloadField(payload, "chat_template_kwargs");
+  let next: Record<string, unknown>;
+  if (
+    existing.ok &&
+    existing.value &&
+    typeof existing.value === "object" &&
+    !Array.isArray(existing.value)
+  ) {
+    next = copyPlainDataFields(existing.value as Record<string, unknown>);
+  } else {
+    next = {};
   }
-  payload.chat_template_kwargs = {
-    enable_thinking: enabled,
-    preserve_thinking: true,
-  };
+  next.enable_thinking = enabled;
+  if (!Object.hasOwn(next, "preserve_thinking")) {
+    next.preserve_thinking = true;
+  }
+  if (!forcePayloadField(payload, "chat_template_kwargs", next)) {
+    throw new Error("Qwen chat template payload patch failed");
+  }
+}
+
+function removeQwenPayloadField(payload: Record<string, unknown>, key: string): void {
+  if (!deletePayloadField(payload, key)) {
+    throw new Error(`Qwen payload field could not be removed: ${key}`);
+  }
 }
 
 function readQwenThinkingFormatFromModel(model: Parameters<StreamFn>[0]): QwenThinkingFormat {
@@ -110,13 +163,13 @@ export function createQwenThinkingWrapper(
       const effectiveThinkingFormat = thinkingFormat ?? readQwenThinkingFormatFromModel(model);
       if (effectiveThinkingFormat === "qwen-chat-template") {
         setQwenChatTemplateThinking(payloadObj, enableThinking);
-        delete payloadObj.enable_thinking;
-      } else {
-        payloadObj.enable_thinking = enableThinking;
+        removeQwenPayloadField(payloadObj, "enable_thinking");
+      } else if (!forcePayloadField(payloadObj, "enable_thinking", enableThinking)) {
+        throw new Error("Qwen enable_thinking payload patch failed");
       }
-      delete payloadObj.reasoning_effort;
-      delete payloadObj.reasoningEffort;
-      delete payloadObj.reasoning;
+      removeQwenPayloadField(payloadObj, "reasoning_effort");
+      removeQwenPayloadField(payloadObj, "reasoningEffort");
+      removeQwenPayloadField(payloadObj, "reasoning");
     },
     {
       shouldPatch: ({ model }) => model.api === "openai-completions" && model.reasoning,

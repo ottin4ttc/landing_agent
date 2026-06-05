@@ -39,6 +39,36 @@ function capturePayload(params: {
   return captured;
 }
 
+function patchPayload(params: {
+  payload: Record<string, unknown>;
+  thinkingLevel?: "off" | "low" | "medium" | "high" | "xhigh" | "max";
+  thinkingFormat?: string;
+  reasoning?: unknown;
+}): Record<string, unknown> {
+  const baseStreamFn: StreamFn = (_model, _context, options) => {
+    options?.onPayload?.(params.payload, _model);
+    return {} as ReturnType<StreamFn>;
+  };
+  const wrapped = createQwenThinkingWrapper(
+    baseStreamFn,
+    params.thinkingLevel ?? "high",
+    params.thinkingFormat,
+  );
+
+  void wrapped(
+    {
+      api: "openai-completions",
+      provider: "qwen",
+      id: "qwen3.6-plus",
+      reasoning: true,
+    } as Model<"openai-completions">,
+    { messages: [] } as Context,
+    params.reasoning === undefined ? {} : ({ reasoning: params.reasoning } as never),
+  );
+
+  return params.payload;
+}
+
 describe("createQwenThinkingWrapper", () => {
   it("maps disabled thinking to Qwen top-level enable_thinking", () => {
     const payload = capturePayload({
@@ -49,6 +79,24 @@ describe("createQwenThinkingWrapper", () => {
         reasoningEffort: "high",
       },
     });
+
+    expect(payload).toEqual({ enable_thinking: false });
+  });
+
+  it("overwrites hostile configurable top-level thinking fields", () => {
+    const payload: Record<string, unknown> = {
+      reasoning_effort: "high",
+      reasoning: { effort: "high" },
+      reasoningEffort: "high",
+    };
+    Object.defineProperty(payload, "enable_thinking", {
+      configurable: true,
+      get() {
+        throw new Error("enable_thinking getter failed");
+      },
+    });
+
+    expect(() => patchPayload({ payload, thinkingLevel: "off" })).not.toThrow();
 
     expect(payload).toEqual({ enable_thinking: false });
   });
@@ -76,6 +124,43 @@ describe("createQwenThinkingWrapper", () => {
     ).toEqual({
       chat_template_kwargs: { enable_thinking: false, preserve_thinking: true },
     });
+  });
+
+  it("replaces unreadable qwen-chat-template kwargs without crashing", () => {
+    const payload: Record<string, unknown> = {
+      enable_thinking: true,
+      reasoning_effort: "high",
+    };
+    Object.defineProperty(payload, "chat_template_kwargs", {
+      configurable: true,
+      get() {
+        throw new Error("chat_template_kwargs getter failed");
+      },
+    });
+
+    expect(() =>
+      patchPayload({
+        payload,
+        thinkingFormat: "qwen-chat-template",
+        thinkingLevel: "off",
+      }),
+    ).not.toThrow();
+
+    expect(payload).toEqual({
+      chat_template_kwargs: { enable_thinking: false, preserve_thinking: true },
+    });
+  });
+
+  it("fails closed when unsupported Qwen payload fields cannot be removed", () => {
+    const payload: Record<string, unknown> = { enable_thinking: true };
+    Object.defineProperty(payload, "reasoning", {
+      configurable: false,
+      value: { effort: "high" },
+    });
+
+    expect(() => patchPayload({ payload, thinkingLevel: "off" })).toThrow(
+      "Qwen payload field could not be removed: reasoning",
+    );
   });
 
   it("uses the runtime model qwen-chat-template format when the wrapper context omits it", () => {
