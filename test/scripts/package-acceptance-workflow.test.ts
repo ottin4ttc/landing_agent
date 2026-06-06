@@ -1624,6 +1624,8 @@ describe("package artifact reuse", () => {
     );
     expect(fullRelease.jobs?.prepare_release_package?.["timeout-minutes"]).toBe(15);
     expect(releaseChecks.jobs?.prepare_release_package?.["timeout-minutes"]).toBe(15);
+    expect(workflowJob(RELEASE_CHECKS_WORKFLOW, "cross_os_release_checks").with?.windows_runner)
+      .toBe("blacksmith-32vcpu-windows-2025");
     expect(crossOs.jobs?.cross_os_release_checks?.["timeout-minutes"]).toBe(60);
     expect(liveE2e.jobs?.validate_release_live_cache?.["timeout-minutes"]).toBe(20);
     expect(readFileSync(LIVE_E2E_WORKFLOW, "utf8")).toContain(
