@@ -17,6 +17,56 @@ export const MAX_COALESCED_TEXT_CHARS = 4000;
 export const MAX_COALESCED_ATTACHMENTS = 20;
 export const MAX_COALESCED_ENTRIES = 10;
 
+/**
+ * Longest text (in whitespace-delimited words) still treated as a split
+ * lead-in. Apple peels short command fragments — `Dump`, `Save this`,
+ * `look at` — off the front of a `<command> <payload>` send; anything longer
+ * reads as a self-contained message and dispatches instantly.
+ */
+export const LEAD_IN_MAX_WORDS = 3;
+
+const URL_PATTERN = /\bhttps?:\/\/\S+/i;
+
+/** True when the text carries an http(s) URL — the typical split-send payload. */
+export function iMessageTextHasUrl(text: string | null | undefined): boolean {
+  return URL_PATTERN.test(text ?? "");
+}
+
+/**
+ * A "split lead-in" is the short text fragment Apple delivers as its own
+ * `chat.db` row just before the payload row of a `<command> <URL/attachment>`
+ * send (e.g. `Dump` ahead of `https://…`, or a bare caption typed just before
+ * an image). It is the ONLY DM shape the monitor holds back to wait for a
+ * follow-up; every other shape dispatches instantly so normal conversation
+ * carries zero added latency.
+ *
+ * Heuristic: non-empty short text (≤ {@link LEAD_IN_MAX_WORDS} words), no URL,
+ * no media, and no terminal sentence punctuation. The dangling, unpunctuated
+ * shape is what separates a lead-in (`Dump`) from a complete one-liner
+ * (`what's for dinner?`). The cost of a false positive is bounded: a lone
+ * short fragment with no follow-up still flushes after the coalesce window.
+ */
+export function isIMessageSplitLeadIn(params: {
+  text: string | null | undefined;
+  hasMedia: boolean;
+}): boolean {
+  if (params.hasMedia) {
+    return false;
+  }
+  const text = (params.text ?? "").trim();
+  if (!text) {
+    return false;
+  }
+  if (iMessageTextHasUrl(text)) {
+    return false;
+  }
+  if (/[.?!…]$/.test(text)) {
+    return false;
+  }
+  const words = text.split(/\s+/).filter(Boolean);
+  return words.length >= 1 && words.length <= LEAD_IN_MAX_WORDS;
+}
+
 export type CoalescedIMessagePayload = IMessagePayload & {
   /**
    * Source GUIDs folded into this merged payload, in arrival order. Includes

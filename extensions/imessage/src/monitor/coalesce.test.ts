@@ -2,6 +2,8 @@
 import { describe, expect, it } from "vitest";
 import {
   combineIMessagePayloads,
+  iMessageTextHasUrl,
+  isIMessageSplitLeadIn,
   MAX_COALESCED_ATTACHMENTS,
   MAX_COALESCED_ENTRIES,
   MAX_COALESCED_TEXT_CHARS,
@@ -158,5 +160,54 @@ describe("combineIMessagePayloads", () => {
 
   it("respects the documented entry cap value", () => {
     expect(MAX_COALESCED_ENTRIES).toBeGreaterThan(1);
+  });
+});
+
+describe("iMessageTextHasUrl", () => {
+  it("detects http and https URLs anywhere in the text", () => {
+    expect(iMessageTextHasUrl("https://stocks.apple.com/A16n5gO09T5y1YRM")).toBe(true);
+    expect(iMessageTextHasUrl("check this http://example.com out")).toBe(true);
+  });
+
+  it("returns false for plain text and empty input", () => {
+    expect(iMessageTextHasUrl("Dump")).toBe(false);
+    expect(iMessageTextHasUrl("look at this")).toBe(false);
+    expect(iMessageTextHasUrl("")).toBe(false);
+    expect(iMessageTextHasUrl(null)).toBe(false);
+    expect(iMessageTextHasUrl(undefined)).toBe(false);
+  });
+});
+
+describe("isIMessageSplitLeadIn", () => {
+  it("treats short bare command fragments as lead-ins", () => {
+    expect(isIMessageSplitLeadIn({ text: "Dump", hasMedia: false })).toBe(true);
+    expect(isIMessageSplitLeadIn({ text: "Save this", hasMedia: false })).toBe(true);
+    expect(isIMessageSplitLeadIn({ text: "look at", hasMedia: false })).toBe(true);
+  });
+
+  it("does not hold complete one-liners (terminal punctuation)", () => {
+    expect(isIMessageSplitLeadIn({ text: "what's for dinner?", hasMedia: false })).toBe(false);
+    expect(isIMessageSplitLeadIn({ text: "thanks.", hasMedia: false })).toBe(false);
+    expect(isIMessageSplitLeadIn({ text: "got it!", hasMedia: false })).toBe(false);
+  });
+
+  it("does not hold longer messages beyond the word cap", () => {
+    expect(isIMessageSplitLeadIn({ text: "can you look at this for me", hasMedia: false })).toBe(
+      false,
+    );
+  });
+
+  it("does not hold messages that already carry the payload", () => {
+    expect(isIMessageSplitLeadIn({ text: "Dump https://example.com", hasMedia: false })).toBe(
+      false,
+    );
+    expect(isIMessageSplitLeadIn({ text: "https://example.com", hasMedia: false })).toBe(false);
+    expect(isIMessageSplitLeadIn({ text: "Dump", hasMedia: true })).toBe(false);
+  });
+
+  it("does not hold empty or whitespace-only text", () => {
+    expect(isIMessageSplitLeadIn({ text: "", hasMedia: false })).toBe(false);
+    expect(isIMessageSplitLeadIn({ text: "   ", hasMedia: false })).toBe(false);
+    expect(isIMessageSplitLeadIn({ text: null, hasMedia: false })).toBe(false);
   });
 });

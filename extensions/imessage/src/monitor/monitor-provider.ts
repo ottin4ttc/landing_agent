@@ -66,7 +66,7 @@ import { normalizeIMessageHandle } from "../targets.js";
 import { attachIMessageMonitorAbortHandler } from "./abort-handler.js";
 import { runIMessageCatchup } from "./catchup-bridge.js";
 import { advanceIMessageCatchupCursor, resolveCatchupConfig } from "./catchup.js";
-import { combineIMessagePayloads } from "./coalesce.js";
+import { combineIMessagePayloads, iMessageTextHasUrl, isIMessageSplitLeadIn } from "./coalesce.js";
 import { repairIMessageConversationAnchor } from "./conversation-repair.js";
 import { createIMessageEchoCachingSend, deliverReplies } from "./deliver.js";
 import { resolveIMessageDmHistoryContext, resolveIMessageDmHistoryLimit } from "./dm-history.js";
@@ -346,11 +346,21 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     ? await resolveIMessageStartupRowidWatermark(watchSourceDbPath)
     : null;
 
-  // When `coalesceSameSenderDms` is enabled and the user has not set an
-  // explicit inbound debounce for this channel, widen the window to 2500 ms.
-  // Apple's split-send for `<command> <URL>` arrives ~0.8-2.0 s apart on most
-  // setups, so the legacy 0 ms default would flush the command alone before
-  // the URL row reaches the debouncer.
+  // `coalesceSameSenderDms` merges Apple's split-send — a `<command> <URL>` or
+  // `<caption> <image>` send that arrives as two `chat.db` rows ~0.8-2.0 s
+  // apart — into one agent turn, WITHOUT taxing normal conversation. Rather
+  // than debounce every DM (which delayed every reply by the full window), the
+  // monitor classifies each DM:
+  //   - "lead-in"      — a short bare fragment (`Dump`) that plausibly precedes
+  //                      a payload. Held until the payload arrives or the window
+  //                      elapses.
+  //   - "payload-join" — a URL/attachment that completes a pending lead-in.
+  //                      Merged into the held lead-in and flushed immediately.
+  //   - "instant"      — everything else (prose, questions, lone URLs). Zero
+  //                      added latency.
+  // The window only bounds how long a lead-in waits for a follow-up, so it must
+  // still exceed Apple's max split gap; real split-sends flush as soon as the
+  // payload row lands.
   const coalesceSameSenderDms = imessageCfg.coalesceSameSenderDms === true;
   const inboundCfg = cfg.messages?.inbound;
   const hasExplicitInboundDebounce =
@@ -359,8 +369,59 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
   const debounceMsOverride =
     coalesceSameSenderDms && !hasExplicitInboundDebounce ? 2500 : undefined;
 
+  // Keys of DM lead-ins currently buffered, awaiting a payload follow-up. A
+  // payload that matches a pending key merges into the held lead-in instead of
+  // dispatching on its own.
+  const pendingLeadInKeys = new Set<string>();
+
+  const buildDmCoalesceKey = (msg: IMessagePayload): string | null => {
+    const sender = msg.sender?.trim();
+    if (!sender) {
+      return null;
+    }
+    const conversationId =
+      msg.chat_id != null
+        ? `chat:${msg.chat_id}`
+        : (msg.chat_guid ?? msg.chat_identifier ?? "unknown");
+    return `imessage:${accountInfo.accountId}:dm:${conversationId}:${sender}`;
+  };
+
+  type DmCoalesceMode = "lead-in" | "payload-join" | "instant";
+  type DmCoalesceDecision = { mode: DmCoalesceMode; key: string };
+
+  // Classify a DM for split-send coalescing. Returns null when coalescing does
+  // not apply (disabled, group chat, reaction, or a from-me echo), so the
+  // legacy/group path handles the message.
+  const classifyDmCoalesce = (msg: IMessagePayload): DmCoalesceDecision | null => {
+    if (!coalesceSameSenderDms || msg.is_group === true) {
+      return null;
+    }
+    if (msg.is_from_me === true) {
+      return null;
+    }
+    if (resolveIMessageReactionContext(msg, (msg.text ?? "").trim())) {
+      return null;
+    }
+    const key = buildDmCoalesceKey(msg);
+    if (!key) {
+      return null;
+    }
+    const hasMedia = Boolean(
+      msg.attachments?.some((attachment) => !isIMessagePluginPayloadAttachment(attachment)),
+    );
+    const isPayload = hasMedia || iMessageTextHasUrl(msg.text);
+    if (isPayload && pendingLeadInKeys.has(key)) {
+      return { mode: "payload-join", key };
+    }
+    if (isIMessageSplitLeadIn({ text: msg.text, hasMedia })) {
+      return { mode: "lead-in", key };
+    }
+    return { mode: "instant", key };
+  };
+
   const { debouncer: inboundDebouncer } = createChannelInboundDebouncer<{
     message: IMessagePayload;
+    dm?: DmCoalesceDecision;
   }>({
     cfg,
     channel: "imessage",
@@ -371,21 +432,17 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       if (!sender) {
         return null;
       }
+      // DM coalesce path: key on chat:sender so a lead-in and its payload
+      // follow-up fall into the same bucket and merge into one agent turn.
+      if (entry.dm) {
+        return entry.dm.key;
+      }
+      // Group chats / coalesce-disabled use the legacy key so multi-user turn
+      // structure is preserved.
       const conversationId =
         msg.chat_id != null
           ? `chat:${msg.chat_id}`
           : (msg.chat_guid ?? msg.chat_identifier ?? "unknown");
-
-      // With coalesceSameSenderDms enabled, DMs key on chat:sender so two
-      // distinct user sends — `Dump` followed by a pasted URL that Apple
-      // delivers as a separate row — fall into the same bucket and merge
-      // into one agent turn. Group chats fall through to the legacy key so
-      // shouldDebounce can route them to the instant-dispatch path and
-      // preserve multi-user turn structure.
-      if (coalesceSameSenderDms && msg.is_group !== true) {
-        return `imessage:${accountInfo.accountId}:dm:${conversationId}:${sender}`;
-      }
-
       return `imessage:${accountInfo.accountId}:${conversationId}:${sender}`;
     },
     shouldDebounce: (entry) => {
@@ -397,16 +454,16 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       if (msg.is_from_me === true) {
         return false;
       }
-
-      // With coalesceSameSenderDms enabled, debounce DM messages aggressively
-      // (text, media, control commands) so split-sends — `Dump <URL>`,
-      // `Save 📎image caption`, and rapid floods — merge into one agent
-      // turn. Group chats keep instant dispatch so the bot stays responsive
-      // when multiple people are typing.
-      if (coalesceSameSenderDms) {
-        return msg.is_group !== true;
+      // DM coalesce path: only hold lead-ins and the payloads that join them;
+      // everything else dispatches instantly.
+      if (entry.dm) {
+        return entry.dm.mode !== "instant";
       }
-
+      // Group chats keep instant dispatch when coalescing is enabled so the bot
+      // stays responsive when multiple people are typing.
+      if (coalesceSameSenderDms) {
+        return false;
+      }
       // Legacy gate: text-only, no control commands, no media.
       return shouldDebounceTextInbound({
         text: msg.text,
@@ -419,6 +476,13 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     onFlush: async (entries) => {
       if (entries.length === 0) {
         return;
+      }
+      // A flushing bucket is no longer pending — clear any lead-in keys it held
+      // so a later payload is classified fresh.
+      for (const entry of entries) {
+        if (entry.dm) {
+          pendingLeadInKeys.delete(entry.dm.key);
+        }
       }
       if (entries.length === 1) {
         await handleMessageNow(entries[0].message);
@@ -433,6 +497,13 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
         logVerbose(`[imessage] coalesced ${entries.length} messages: "${preview}${ellipsis}"`);
       }
       await handleMessageNow(combined);
+    },
+    onCancel: (entries) => {
+      for (const entry of entries) {
+        if (entry.dm) {
+          pendingLeadInKeys.delete(entry.dm.key);
+        }
+      }
     },
     onError: (err) => {
       runtime.error?.(`imessage debounce flush failed: ${String(err)}`);
@@ -1053,7 +1124,18 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     if (!repairedMessage) {
       return;
     }
-    await inboundDebouncer.enqueue({ message: repairedMessage });
+    const dm = classifyDmCoalesce(repairedMessage) ?? undefined;
+    if (dm?.mode === "lead-in") {
+      // Remember this lead-in so the payload row that follows merges into it
+      // instead of dispatching on its own.
+      pendingLeadInKeys.add(dm.key);
+    }
+    await inboundDebouncer.enqueue({ message: repairedMessage, dm });
+    if (dm?.mode === "payload-join") {
+      // The payload has merged into the buffered lead-in; flush now so the
+      // combined turn dispatches immediately rather than waiting out the window.
+      await inboundDebouncer.flushKey(dm.key);
+    }
   };
 
   await waitForTransportReady({
