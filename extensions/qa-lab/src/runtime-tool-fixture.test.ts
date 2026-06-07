@@ -149,6 +149,61 @@ describe("runtime tool fixture", () => {
     ]);
   });
 
+  it("accepts captured image_generate plans after an async prompt abort", async () => {
+    const env = await makeEnv({
+      mock: { baseUrl: "http://127.0.0.1:9999" },
+    });
+    const runAgentPrompt = vi.fn(async (_env, params: { sessionKey: string }) => {
+      if (params.sessionKey.endsWith(":happy")) {
+        throw new Error("agent.wait returned error: agent run aborted");
+      }
+      return {};
+    });
+    const fetchJson = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          allInputText: "tool search qa check target=image_generate",
+          plannedToolName: "image_generate",
+          plannedToolArgs: {
+            prompt: "QA lighthouse runtime parity fixture",
+            filename: "runtime-tool-fixture",
+          },
+        },
+        {
+          allInputText: "tool search qa failure target=image_generate",
+          plannedToolName: "image_generate",
+          plannedToolArgs: { __qaFailureMode: "denied-input" },
+        },
+      ]);
+
+    const details = await runRuntimeToolFixture(
+      env,
+      {
+        toolName: "image_generate",
+        ensureImageGeneration: true,
+        promptSnippet: "target=image_generate",
+        failurePromptSnippet: "failure target=image_generate",
+        toolCoverage: {
+          bucket: "openclaw-dynamic-integration",
+          expectedLayer: "openclaw-dynamic",
+        },
+      },
+      {
+        createSession: vi.fn(async (_env, _label, key) => key!),
+        readEffectiveTools: vi.fn(async () => new Set(["image_generate"])),
+        runAgentPrompt,
+        fetchJson,
+        ensureImageGenerationConfigured: vi.fn(),
+      },
+    );
+
+    expect(runAgentPrompt).toHaveBeenCalledTimes(2);
+    expect(details).toContain("image_generate mock provider happy planned args");
+    expect(details).toContain("image_generate mock provider failure planned args");
+  });
+
   it("requires live runtime tool fixtures to produce transcript tool output", async () => {
     const env = await makeEnv();
     await writeQaSessionTranscript(env, "agent:qa:runtime-tool:read:happy", [
