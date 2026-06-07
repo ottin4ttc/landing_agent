@@ -341,7 +341,12 @@ describe("buildGuardedModelFetch", () => {
     expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
   });
 
-  it("rejects native redirect following for provider requests with bodies", async () => {
+  it("rejects native redirect following for provider requests", async () => {
+    fetchWithSsrFGuardMock.mockImplementation(async () => ({
+      response: new Response("ok", { status: 200 }),
+      finalUrl: "https://api.openai.com/v1/responses",
+      release: vi.fn(async () => undefined),
+    }));
     const model = {
       id: "gpt-5.4",
       provider: "openai",
@@ -353,6 +358,12 @@ describe("buildGuardedModelFetch", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: '{"input":"secret prompt"}',
+    });
+
+    expect((latestGuardedFetchParams().init as RequestInit | undefined)?.redirect).toBe("error");
+
+    await buildGuardedModelFetch(model)("https://api.openai.com/v1/models", {
+      method: "GET",
     });
 
     expect((latestGuardedFetchParams().init as RequestInit | undefined)?.redirect).toBe("error");

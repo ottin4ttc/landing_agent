@@ -787,20 +787,8 @@ function captureProviderTransportExchange(params: {
   });
 }
 
-function hasUnsafeProviderRedirectReplayRisk(init?: RequestInit): boolean {
-  if (init?.body === undefined || init.body === null) {
-    return false;
-  }
-  const method = (init.method ?? "GET").toUpperCase();
-  return method !== "GET" && method !== "HEAD";
-}
-
 function applyProviderRedirectPolicy(init: DispatcherAwareRequestInit): DispatcherAwareRequestInit {
-  if (
-    !hasUnsafeProviderRedirectReplayRisk(init) ||
-    init.redirect === "error" ||
-    init.redirect === "manual"
-  ) {
+  if (init.redirect === "error" || init.redirect === "manual") {
     return init;
   }
   return { ...init, redirect: "error" };

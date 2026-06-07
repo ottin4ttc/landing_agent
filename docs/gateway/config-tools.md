@@ -274,7 +274,6 @@ If `warningThreshold >= criticalThreshold` or `criticalThreshold >= globalCircui
         maxResponseBytes: 2000000,
         timeoutSeconds: 30,
         cacheTtlMinutes: 15,
-        maxRedirects: 3,
         readability: true,
         userAgent: "custom-ua",
       },
