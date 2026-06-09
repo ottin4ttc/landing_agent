@@ -172,6 +172,7 @@ describe("createAgentSession tool defaults", () => {
     // Transcript writes share the caller-provided lock so concurrent event
     // handlers cannot interleave JSONL persistence.
     const events: string[] = [];
+    const lockOptions: Array<{ publishOwnedWrite?: boolean } | undefined> = [];
     const sessionManager = SessionManager.inMemory();
     const { session } = await createAgentSession({
       model: testModel,
@@ -179,7 +180,8 @@ describe("createAgentSession tool defaults", () => {
       sessionManager,
       settingsManager: SettingsManager.inMemory(),
       modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
-      withSessionWriteLock: async (run) => {
+      withSessionWriteLock: async (run, options) => {
+        lockOptions.push(options);
         events.push("lock:start");
         try {
           return await run();
@@ -203,6 +205,7 @@ describe("createAgentSession tool defaults", () => {
     });
 
     expect(events).toEqual(["lock:start", "lock:end"]);
+    expect(lockOptions).toEqual([{ publishOwnedWrite: true }]);
     expect(sessionManager.getEntries().some((entry) => entry.type === "message")).toBe(true);
   });
 

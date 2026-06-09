@@ -949,6 +949,58 @@ describe("embedded attempt session lock lifecycle", () => {
     expect(controller.hasSessionTakeover()).toBe(false);
   });
 
+  it("accepts compaction appends published through the owned transcript write context", async () => {
+    const sessionFile = await createTempSessionFile();
+    const acquireSessionWriteLockLocal31 = vi.fn(async () => ({ release: vi.fn(async () => {}) }));
+    const controller = await createEmbeddedAttemptSessionLockController({
+      acquireSessionWriteLock: acquireSessionWriteLockLocal31,
+      lockOptions: { ...lockOptions, sessionFile },
+    });
+    const sessionManager = SessionManager.open(sessionFile);
+    const firstKeptEntryId = sessionManager.appendMessage({
+      role: "user",
+      content: "old question",
+      timestamp: 1,
+    });
+    sessionManager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "old answer" }],
+      api: "messages",
+      provider: "openclaw",
+      model: "session-lock-test",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: 2,
+    });
+
+    await controller.releaseForPrompt();
+    await withOwnedSessionTranscriptWrites(
+      {
+        sessionFile,
+        sessionKey: "agent:main:telegram:direct:7216393410",
+        withSessionWriteLock: (operation, options) =>
+          controller.withSessionWriteLock(operation, options),
+      },
+      async () =>
+        await runWithOwnedSessionTranscriptWritePublication(
+          { sessionFile, sessionKey: "agent:main:telegram:direct:7216393410" },
+          () => {
+            sessionManager.appendCompaction("threshold summary", firstKeptEntryId, 160_001);
+          },
+        ),
+    );
+
+    await expect(controller.withSessionWriteLock(() => "finalize")).resolves.toBe("finalize");
+    expect(controller.hasSessionTakeover()).toBe(false);
+  });
+
   it("still rejects unowned external compaction appends before the prompt stream lock is reacquired", async () => {
     const sessionFile = await createTempSessionFile();
     const release = vi.fn(async () => {});
