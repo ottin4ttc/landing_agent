@@ -2,6 +2,12 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.6.10
+
+### Fixes
+
+- Alpha/nightly release metadata refreshes generated plugin inventory, config, Plugin SDK API, package version, and shrinkwrap state for the June 10 candidate.
+
 ## 2026.6.5
 
 ### Highlights
