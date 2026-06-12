@@ -34,5 +34,6 @@ struct GatewayChannelRequestTests {
 
         // Give the delayed send failure task time to run; this used to crash due to a double-resume.
         try? await Task.sleep(nanoseconds: 250 * 1_000_000)
+        await channel.shutdown()
     }
 }

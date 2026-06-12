@@ -214,6 +214,7 @@ struct GatewayChannelConnectTests {
             if case .failure = r2 { true } else { false }
         }())
         #expect(session.snapshotMakeCount() == 1)
+        await channel.shutdown()
     }
 
     @Test func `default operator connect scopes preserve pairing and admin`() async throws {
@@ -361,8 +362,11 @@ struct GatewayChannelConnectTests {
             #expect(error.recommendedNextStep == .updateAuthConfiguration)
             #expect(error.recommendedNextStepCode == GatewayConnectRecoveryNextStep.updateAuthConfiguration.rawValue)
         } catch {
+            await channel.shutdown()
             Issue.record("unexpected error: \(error)")
+            return
         }
+        await channel.shutdown()
     }
 
     @Test func `connect maps user cancelled authentication with cached TLS failure`() async throws {
@@ -385,7 +389,10 @@ struct GatewayChannelConnectTests {
         } catch let error as GatewayTLSValidationError {
             #expect(error.failure == failure)
         } catch {
+            await channel.shutdown()
             Issue.record("unexpected error: \(error)")
+            return
         }
+        await channel.shutdown()
     }
 }
