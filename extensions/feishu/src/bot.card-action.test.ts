@@ -207,7 +207,7 @@ describe("Feishu Card Action Handler", () => {
     expect(message.chat_id).toBe("u123"); // Fallback to open_id
   });
 
-  it("includes card action sibling payload fields in legacy fallback content", async () => {
+  it("keeps legacy command content while carrying card action sibling payload fields", async () => {
     const event = createCardActionEvent({
       token: "tok2-siblings",
       actionValue: { command: "/submit", field: "expense" },
@@ -221,8 +221,8 @@ describe("Feishu Card Action Handler", () => {
     await handleFeishuCardAction({ cfg, event, runtime });
 
     const message = handleMessage();
-    const content = JSON.parse(String(message.content)) as { text?: string };
-    expect(JSON.parse(content.text ?? "")).toEqual({
+    expect(message.content).toBe('{"text":"/submit"}');
+    expect(JSON.parse(String(message.cardActionPayloadContent))).toEqual({
       command: "/submit",
       field: "expense",
       option: "approved",

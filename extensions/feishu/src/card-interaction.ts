@@ -86,6 +86,10 @@ function hasOwn(value: object, key: string): boolean {
   return Object.hasOwn(value, key);
 }
 
+function hasFeishuCardActionDataPayload(action: FeishuCardActionEventLike["action"]): boolean {
+  return FEISHU_CARD_ACTION_DATA_PAYLOAD_KEYS.some((key) => hasOwn(action, key));
+}
+
 function buildFeishuCardActionPayloadValue(action: FeishuCardActionEventLike["action"]): unknown {
   const actionValue = action.value;
   if (!isRecord(actionValue)) {
@@ -111,16 +115,22 @@ export function createFeishuCardInteractionEnvelope(
   };
 }
 
+export function buildFeishuCardActionPayloadText(
+  event: FeishuCardActionEventLike,
+): string | undefined {
+  if (!isRecord(event.action.value) || !hasFeishuCardActionDataPayload(event.action)) {
+    return undefined;
+  }
+  return JSON.stringify(buildFeishuCardActionPayloadValue(event.action));
+}
+
 export function buildFeishuCardActionTextFallback(event: FeishuCardActionEventLike): string {
   const actionValue = event.action.value;
   if (isRecord(actionValue)) {
-    const hasDataPayload = FEISHU_CARD_ACTION_DATA_PAYLOAD_KEYS.some((key) =>
-      hasOwn(event.action, key),
-    );
-    if (!hasDataPayload && typeof actionValue.text === "string") {
+    if (typeof actionValue.text === "string") {
       return actionValue.text;
     }
-    if (!hasDataPayload && typeof actionValue.command === "string") {
+    if (typeof actionValue.command === "string") {
       return actionValue.command;
     }
     return JSON.stringify(buildFeishuCardActionPayloadValue(event.action));

@@ -9,6 +9,7 @@ import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import { handleFeishuMessage, type FeishuMessageEvent } from "./bot.js";
 import {
   decodeFeishuCardAction,
+  buildFeishuCardActionPayloadText,
   buildFeishuCardActionTextFallback,
   type FeishuCardActionSiblingPayload,
 } from "./card-interaction.js";
@@ -138,6 +139,7 @@ function buildSyntheticMessageEvent(
   event: FeishuCardActionEvent,
   content: string,
   chatType: "p2p" | "group",
+  cardActionPayloadContent?: string,
 ): FeishuMessageEvent {
   const replyTargetMessageId = event.context.open_message_id ?? event.open_message_id;
   return {
@@ -156,6 +158,7 @@ function buildSyntheticMessageEvent(
       chat_type: chatType,
       message_type: "text",
       content: JSON.stringify({ text: content }),
+      ...(cardActionPayloadContent !== undefined ? { cardActionPayloadContent } : {}),
     },
   };
 }
@@ -178,6 +181,7 @@ async function dispatchSyntheticCommand(params: {
   channelRuntime?: PluginRuntime["channel"];
   accountId?: string;
   chatType?: "p2p" | "group";
+  cardActionPayloadContent?: string;
 }): Promise<void> {
   const resolvedChatType = await resolveCardActionChatType({
     event: params.event,
@@ -187,7 +191,12 @@ async function dispatchSyntheticCommand(params: {
   });
   await handleFeishuMessage({
     cfg: params.cfg,
-    event: buildSyntheticMessageEvent(params.event, params.command, resolvedChatType),
+    event: buildSyntheticMessageEvent(
+      params.event,
+      params.command,
+      resolvedChatType,
+      params.cardActionPayloadContent,
+    ),
     botOpenId: params.botOpenId,
     runtime: params.runtime,
     channelRuntime: params.channelRuntime,
@@ -492,6 +501,7 @@ export async function handleFeishuCardAction(params: {
     }
 
     const content = buildFeishuCardActionTextFallback(event);
+    const cardActionPayloadContent = buildFeishuCardActionPayloadText(event);
 
     log(
       `feishu[${account.accountId}]: handling card action from ${event.operator.open_id}: ${content}`,
@@ -506,6 +516,7 @@ export async function handleFeishuCardAction(params: {
       runtime,
       channelRuntime: params.channelRuntime,
       accountId,
+      cardActionPayloadContent,
     });
     completeFeishuCardActionToken({ token: event.token, accountId: account.accountId });
   } catch (err) {

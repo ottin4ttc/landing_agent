@@ -20,6 +20,8 @@ export type FeishuMessageEvent = {
     chat_type: "p2p" | "group" | "topic_group" | "private";
     message_type: string;
     content: string;
+    // Internal synthetic card-action body used when command routing keeps value.command/text.
+    cardActionPayloadContent?: string;
     create_time?: string;
     mentions?: Array<{
       key: string;

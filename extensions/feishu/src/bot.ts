@@ -287,6 +287,10 @@ export function parseFeishuMessageEvent(
   const rawContent = parseMessageContent(event.message.content, event.message.message_type);
   const mentionedBot = checkBotMentioned(event, botOpenId);
   const hasAnyMention = (event.message.mentions?.length ?? 0) > 0;
+  const cardActionPayloadContent =
+    typeof event.message.cardActionPayloadContent === "string"
+      ? event.message.cardActionPayloadContent
+      : undefined;
   // Strip the bot's own mention so slash commands like @Bot /help retain
   // the leading /. This applies in both p2p *and* group contexts — the
   // mentionedBot flag already captures whether the bot was addressed, so
@@ -314,6 +318,7 @@ export function parseFeishuMessageEvent(
     threadId: event.message.thread_id || undefined,
     content,
     contentType: event.message.message_type,
+    ...(cardActionPayloadContent !== undefined ? { cardActionPayloadContent } : {}),
   };
 
   // Detect mention forward request: message mentions bot + at least one other user
@@ -989,13 +994,14 @@ export async function handleFeishuMessage(params: {
     const inboundMedia = toInboundMediaFacts(mediaList, {
       transcribed: (_media, index) => index === preflightAudioIndex,
     });
-    const agentFacingContent = audioTranscript ?? ctx.content;
+    const commandFacingContent = audioTranscript ?? ctx.content;
+    const agentFacingContent = audioTranscript ?? ctx.cardActionPayloadContent ?? ctx.content;
     const agentFacingCtx =
-      audioTranscript === undefined
+      agentFacingContent === ctx.content
         ? ctx
         : {
             ...ctx,
-            content: audioTranscript,
+            content: agentFacingContent,
           };
     const effectiveCommandProbeBody =
       audioTranscript === undefined
@@ -1363,7 +1369,7 @@ export async function handleFeishuMessage(params: {
           bodyForAgent: messageBody,
           inboundHistory,
           rawBody: agentFacingContent,
-          commandBody: agentFacingContent,
+          commandBody: commandFacingContent,
         },
         access: {
           mentions: {
