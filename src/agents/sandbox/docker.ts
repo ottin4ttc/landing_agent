@@ -19,6 +19,7 @@ type ExecDockerRawOptions = {
   allowFailure?: boolean;
   input?: Buffer | string;
   signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export type ExecDockerRawResult = {
@@ -33,10 +34,29 @@ type ExecDockerRawError = Error & {
   stderr: Buffer;
 };
 
+const DEFAULT_DOCKER_COMMAND_TIMEOUT_MS = 60_000;
+
 function createAbortError(): Error {
   const err = new Error("Aborted");
   err.name = "AbortError";
   return err;
+}
+
+function createDockerTimeoutError(args: string[], timeoutMs: number): Error {
+  const err = Object.assign(
+    new Error(
+      `docker ${args.join(" ")} timed out after ${timeoutMs}ms. Docker may be hung; restart Docker, or set \`agents.defaults.sandbox.mode=off\` to disable sandboxing.`,
+    ),
+    { code: "ETIMEDOUT" },
+  );
+  err.name = "TimeoutError";
+  return err;
+}
+
+function normalizeDockerCommandTimeoutMs(timeoutMs: number | undefined): number {
+  return typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : DEFAULT_DOCKER_COMMAND_TIMEOUT_MS;
 }
 
 type DockerSpawnRuntime = {
@@ -86,15 +106,51 @@ export function execDockerRaw(
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let aborted = false;
+    let settled = false;
+    const timeoutMs = normalizeDockerCommandTimeoutMs(opts?.timeoutMs);
 
     const signal = opts?.signal;
-    const handleAbort = () => {
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      child.kill("SIGTERM");
+      settleReject(createDockerTimeoutError(args, timeoutMs));
+    }, timeoutMs);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      if (signal) {
+        signal.removeEventListener("abort", handleAbort);
+      }
+    }
+
+    function settleResolve(result: ExecDockerRawResult) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(result);
+    }
+
+    function settleReject(error: unknown) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    }
+
+    function handleAbort() {
       if (aborted) {
         return;
       }
       aborted = true;
       child.kill("SIGTERM");
-    };
+      settleReject(createAbortError());
+    }
     if (signal) {
       if (signal.aborted) {
         handleAbort();
@@ -111,9 +167,6 @@ export function execDockerRaw(
     });
 
     child.on("error", (error) => {
-      if (signal) {
-        signal.removeEventListener("abort", handleAbort);
-      }
       if (
         error &&
         typeof error === "object" &&
@@ -126,20 +179,17 @@ export function execDockerRaw(
           ),
           { code: "INVALID_CONFIG", cause: error },
         );
-        reject(friendly);
+        settleReject(friendly);
         return;
       }
-      reject(error);
+      settleReject(error);
     });
 
     child.on("close", (code) => {
-      if (signal) {
-        signal.removeEventListener("abort", handleAbort);
-      }
       const stdout = Buffer.concat(stdoutChunks);
       const stderr = Buffer.concat(stderrChunks);
       if (aborted || signal?.aborted) {
-        reject(createAbortError());
+        settleReject(createAbortError());
         return;
       }
       const exitCode = code ?? 0;
@@ -153,10 +203,10 @@ export function execDockerRaw(
             stderr,
           },
         );
-        reject(error);
+        settleReject(error);
         return;
       }
-      resolve({ stdout, stderr, code: exitCode });
+      settleResolve({ stdout, stderr, code: exitCode });
     });
 
     const stdin = child.stdin;
