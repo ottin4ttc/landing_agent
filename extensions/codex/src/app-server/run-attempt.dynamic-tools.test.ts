@@ -36,6 +36,8 @@ import {
   runCodexAppServerAttempt,
   setupRunAttemptTestHooks,
   tempDir,
+  threadStartResult,
+  turnStartResult,
 } from "./run-attempt-test-harness.js";
 import { testing } from "./run-attempt.js";
 
@@ -71,6 +73,8 @@ setupRunAttemptTestHooks();
 
 describe("runCodexAppServerAttempt dynamic tools", () => {
   it("preserves model order across queued native and dynamic tools", async () => {
+    const threadId = "thread-dynamic-order";
+    const turnId = "turn-dynamic-order";
     let rejectSlowTool!: (error: Error) => void;
     const slowToolResult = new Promise<never>((_resolve, reject) => {
       rejectSlowTool = reject;
@@ -82,11 +86,22 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
       result: textToolResult("fast result"),
       format: () => "later dynamic summary",
     });
-    const harness = createStartedThreadHarness();
+    const harness = createStartedThreadHarness(async (method) => {
+      if (method === "thread/start") {
+        return threadStartResult(threadId);
+      }
+      if (method === "turn/start") {
+        return turnStartResult(turnId);
+      }
+      return undefined;
+    });
     const params = createParams(
       path.join(tempDir, "session.jsonl"),
       path.join(tempDir, "workspace"),
     );
+    params.sessionId = "session-dynamic-order";
+    params.sessionKey = "agent:main:session-dynamic-order";
+    params.runId = "run-dynamic-order";
     let terminalPresentation: string | undefined;
     let latestOrdinal = -1;
     let nextOrdinal = 0;
@@ -137,7 +152,7 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
     ]) {
       await harness.notify({
         method: "rawResponseItem/completed",
-        params: { threadId: "thread-1", turnId: "turn-1", item },
+        params: { threadId, turnId, item },
       });
     }
     const webSearchItem = {
@@ -149,13 +164,13 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
     };
     const webSearchStarted = harness.notify({
       method: "item/started",
-      params: { threadId: "thread-1", turnId: "turn-1", item: webSearchItem },
+      params: { threadId, turnId, item: webSearchItem },
     });
     const rawWebSearch = harness.notify({
       method: "rawResponseItem/completed",
       params: {
-        threadId: "thread-1",
-        turnId: "turn-1",
+        threadId,
+        turnId,
         item: {
           type: "web_search_call",
           status: "completed",
@@ -166,8 +181,8 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
     await harness.notify({
       method: "rawResponseItem/completed",
       params: {
-        threadId: "thread-1",
-        turnId: "turn-1",
+        threadId,
+        turnId,
         item: {
           type: "function_call",
           name: "fast_summary",
@@ -181,8 +196,8 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
       id: "request-slow",
       method: "item/tool/call",
       params: {
-        threadId: "thread-1",
-        turnId: "turn-1",
+        threadId,
+        turnId,
         callId: "call-slow",
         namespace: null,
         tool: "slow_failure",
@@ -204,14 +219,14 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
     };
     const nativeStarted = harness.notify({
       method: "item/started",
-      params: { threadId: "thread-1", turnId: "turn-1", item: nativeItem },
+      params: { threadId, turnId, item: nativeItem },
     });
     await harness.handleServerRequest({
       id: "request-later",
       method: "item/tool/call",
       params: {
-        threadId: "thread-1",
-        turnId: "turn-1",
+        threadId,
+        turnId,
         callId: "call-later",
         namespace: null,
         tool: "fast_summary",
@@ -222,15 +237,15 @@ describe("runCodexAppServerAttempt dynamic tools", () => {
     await webSearchStarted;
     await harness.notify({
       method: "item/completed",
-      params: { threadId: "thread-1", turnId: "turn-1", item: nativeItem },
+      params: { threadId, turnId, item: nativeItem },
     });
     await harness.notify({
       method: "item/completed",
-      params: { threadId: "thread-1", turnId: "turn-1", item: webSearchItem },
+      params: { threadId, turnId, item: webSearchItem },
     });
     rejectSlowTool(new Error("slow failure"));
     await slowCall;
-    await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await harness.completeTurn({ threadId, turnId });
     await run;
 
     expect(terminalPresentation).toBe("later dynamic summary");
