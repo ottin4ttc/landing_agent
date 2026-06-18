@@ -151,12 +151,21 @@ export async function listMemoryFiles(
   workspaceDir: string,
   extraPaths?: string[],
   multimodal?: MemoryMultimodalSettings,
+  options?: { excludedRoots?: string[] },
 ): Promise<string[]> {
   const result: string[] = [];
   const memoryDir = path.join(workspaceDir, "memory");
+  const excludedRoots = (options?.excludedRoots ?? []).map((entry) => path.resolve(entry));
 
-  const shouldSkipWorkspaceMemoryPath = (absPath: string): boolean =>
-    shouldSkipRootMemoryAuxiliaryPath({ workspaceDir, absPath });
+  const shouldSkipWorkspaceMemoryPath = (absPath: string): boolean => {
+    if (shouldSkipRootMemoryAuxiliaryPath({ workspaceDir, absPath })) {
+      return true;
+    }
+    return excludedRoots.some((root) => {
+      const relative = path.relative(root, absPath);
+      return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+    });
+  };
 
   const addMarkdownFile = async (absPath: string) => {
     try {

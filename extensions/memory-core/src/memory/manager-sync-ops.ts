@@ -11,6 +11,7 @@ import {
   createSubsystemLogger,
   onSessionTranscriptUpdate,
   resolveAgentDir,
+  resolveAgentWorkspaceDir,
   resolveSessionTranscriptsDirForAgent,
   resolveUserPath,
   type OpenClawConfig,
@@ -1787,11 +1788,18 @@ export abstract class MemoryManagerSyncOps {
         ? this.db.prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ?`)
         : null;
 
-    const files = await listMemoryFiles(
-      this.workspaceDir,
-      this.settings.extraPaths,
-      this.settings.multimodal,
+    const agentIds = new Set([
+      this.agentId,
+      ...(this.cfg.agents?.list ?? [])
+        .map((entry) => entry.id?.trim())
+        .filter((agentId): agentId is string => Boolean(agentId)),
+    ]);
+    const excludedRoots = Array.from(agentIds, (agentId) =>
+      path.join(resolveAgentWorkspaceDir(this.cfg, agentId), "memory", ".dreams"),
     );
+    const files = await listMemoryFiles(this.workspaceDir, this.settings.extraPaths, this.settings.multimodal, {
+      excludedRoots,
+    });
     const fileEntries = (
       await runWithConcurrency(
         files.map(

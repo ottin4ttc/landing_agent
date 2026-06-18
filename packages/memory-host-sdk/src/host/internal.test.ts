@@ -142,6 +142,23 @@ describe("memory host SDK package internals", () => {
     ]);
   });
 
+  it("excludes configured agents' private dreams from cross-workspace extra paths", async () => {
+    const tmpDir = getTmpDir();
+    const workspaceDir = path.join(tmpDir, "workspace");
+    const peerWorkspaceDir = path.join(tmpDir, "peer-workspace");
+    const peerDreamDir = path.join(peerWorkspaceDir, "memory", ".dreams", "agents", "peer");
+    fsSync.mkdirSync(workspaceDir, { recursive: true });
+    fsSync.mkdirSync(peerDreamDir, { recursive: true });
+    fsSync.writeFileSync(path.join(peerWorkspaceDir, "note.md"), "# Shared note");
+    fsSync.writeFileSync(path.join(peerDreamDir, "DREAMS.md"), "# Private dream");
+
+    const files = await listMemoryFiles(workspaceDir, [peerWorkspaceDir], undefined, {
+      excludedRoots: [path.join(peerWorkspaceDir, "memory", ".dreams")],
+    });
+
+    expect(files).toEqual([path.join(peerWorkspaceDir, "note.md")]);
+  });
+
   it("allows top-level dreams path casing variants", () => {
     expect(isMemoryPath("dreams.md")).toBe(true);
     expect(isMemoryPath("DREAMS.md")).toBe(true);
