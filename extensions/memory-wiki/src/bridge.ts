@@ -92,8 +92,9 @@ function resolveSharedVaultBridgeConfigs(params: {
   const knownAgentIds = new Set(params.config.agentId ? [params.config.agentId] : []);
   for (const agent of params.appConfig.agents?.list ?? []) {
     const config = resolveMemoryWikiConfigForAgent(params.appConfig, agent.id);
+    const agentId = config.agentId ?? agent.id;
     if (
-      knownAgentIds.has(config.agentId) ||
+      knownAgentIds.has(agentId) ||
       path.resolve(config.vault.path) !== vaultPath ||
       config.vaultMode !== "bridge" ||
       !config.bridge.enabled ||
@@ -101,7 +102,7 @@ function resolveSharedVaultBridgeConfigs(params: {
     ) {
       continue;
     }
-    knownAgentIds.add(config.agentId);
+    knownAgentIds.add(agentId);
     configs.push(config);
   }
   return configs;
