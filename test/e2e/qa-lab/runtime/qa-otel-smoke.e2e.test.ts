@@ -206,7 +206,11 @@ describe("qa-otel-smoke receiver bounds", () => {
 
   it("checks the qa-channel smoke session key for raw OTLP leaks", () => {
     expect(testing.disallowedBodyNeedles(testing.parseArgs([]))).toEqual(
-      expect.arrayContaining(["agent:qa:otel-trace-smoke", "qa-agent:direct:dm:qa-operator"]),
+      expect.arrayContaining([
+        "agent:qa:otel-trace-smoke",
+        "agent:qa:main",
+        "qa-agent:direct:dm:qa-operator",
+      ]),
     );
   });
 
@@ -449,8 +453,8 @@ describe("qa-otel-smoke receiver bounds", () => {
 
   it("fails when required latency report buckets cannot be computed", () => {
     const input = makePassingSmokeAssertionInput();
-    input.spans = input.spans.map((span) => {
-      const { startMs, endMs, durationMs, startUnixNano, endUnixNano, ...rest } = span;
+    input.spans = input.spans.map((capturedSpan) => {
+      const { startMs, endMs, durationMs, startUnixNano, endUnixNano, ...rest } = capturedSpan;
       void startMs;
       void endMs;
       void durationMs;
@@ -509,15 +513,13 @@ describe("qa-otel-smoke receiver bounds", () => {
     const input = makePassingSmokeAssertionInput();
     input.disallowedBodyNeedles = testing.disallowedBodyNeedles(testing.parseArgs([]));
     input.bodyText = {
-      traces: ["trace payload leaked qa-agent:direct:dm:qa-operator"],
+      traces: ["trace payload leaked agent:qa:main"],
     };
 
     const assertion = testing.assertSmoke(input);
 
     expect(assertion.passed).toBe(false);
-    expect(assertion.failures).toContain(
-      "OTLP traces payload leaked content: qa-agent:direct:dm:qa-operator",
-    );
+    expect(assertion.failures).toContain("OTLP traces payload leaked content: agent:qa:main");
   });
 
   it("still requires OTLP log records to carry trace correlation", () => {
