@@ -634,6 +634,36 @@ describe("QmdMemoryManager", () => {
     await manager.close();
   });
 
+  it("restores private artifact ignores after initial collection setup", async () => {
+    cfg = withAgentMemoryConfig(cfg, {
+      backend: "qmd",
+      qmd: {
+        includeDefaultMemory: true,
+        update: { interval: "0s", debounceMs: 60_000, onBoot: false },
+      },
+    });
+
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "collection" && args[1] === "add") {
+        const child = createMockChild({ autoClose: false });
+        // QMD collection add keeps only path, pattern, and context fields.
+        void fs
+          .writeFile(qmdIndexConfigPath(), "collections: {}\n", "utf8")
+          .then(() => child.closeWith(0));
+        return child;
+      }
+      return createMockChild();
+    });
+
+    const { manager } = await createManager({ mode: "full" });
+
+    const indexConfig = await fs.readFile(qmdIndexConfigPath(), "utf8");
+    expect(indexConfig).toContain('  "memory-dir-main":');
+    expect(indexConfig).toContain('    ignore:\n      - ".dreams/**"');
+
+    await manager.close();
+  });
+
   it("keeps explicit qmd collection roots watchable when their directory name is ignored", async () => {
     const rootNames = ["build", "dist", "vendor", ".cache"];
     const roots = rootNames.map((name) => path.join(workspaceDir, name));

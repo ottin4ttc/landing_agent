@@ -12,7 +12,11 @@ import {
   withTrailingNewline,
 } from "openclaw/plugin-sdk/memory-host-markdown";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
-import { updateDeepDreamsFile } from "./dreaming-dreams-file.js";
+import {
+  ensureDreamingArtifactDirectory,
+  updateDeepDreamsFile,
+  writeDreamingArtifactFile,
+} from "./dreaming-dreams-file.js";
 import { resolveMemoryCoreNowMs, resolveMemoryCoreTimestamp } from "./time.js";
 
 const DAILY_PHASE_HEADINGS: Record<Exclude<MemoryDreamingPhaseName, "deep">, string> = {
@@ -109,7 +113,10 @@ export async function writeDailyDreamingPhaseBlock(params: {
       params.timezone,
       params.agentId,
     );
-    await fs.mkdir(path.dirname(inlinePath), { recursive: true });
+    await ensureDreamingArtifactDirectory({
+      workspaceDir: params.workspaceDir,
+      filePath: inlinePath,
+    });
     const original = await fs.readFile(inlinePath, "utf-8").catch((err: unknown) => {
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
         return "";
@@ -124,7 +131,11 @@ export async function writeDailyDreamingPhaseBlock(params: {
       endMarker: markers.end,
       body,
     });
-    await fs.writeFile(inlinePath, withTrailingNewline(updated), "utf-8");
+    await writeDreamingArtifactFile({
+      workspaceDir: params.workspaceDir,
+      filePath: inlinePath,
+      content: withTrailingNewline(updated),
+    });
   }
 
   if (shouldWriteSeparate(params.storage)) {
@@ -135,14 +146,17 @@ export async function writeDailyDreamingPhaseBlock(params: {
       params.timezone,
       params.agentId,
     );
-    await fs.mkdir(path.dirname(reportPath), { recursive: true });
     const report = [
       `# ${params.phase === "light" ? "Light Sleep" : "REM Sleep"}`,
       "",
       body,
       "",
     ].join("\n");
-    await fs.writeFile(reportPath, report, "utf-8");
+    await writeDreamingArtifactFile({
+      workspaceDir: params.workspaceDir,
+      filePath: reportPath,
+      content: report,
+    });
   }
 
   await appendMemoryHostEvent(
@@ -189,8 +203,11 @@ export async function writeDeepDreamingReport(params: {
       params.timezone,
       params.agentId,
     );
-    await fs.mkdir(path.dirname(reportPath), { recursive: true });
-    await fs.writeFile(reportPath, `# Deep Sleep\n\n${body}\n`, "utf-8");
+    await writeDreamingArtifactFile({
+      workspaceDir: params.workspaceDir,
+      filePath: reportPath,
+      content: `# Deep Sleep\n\n${body}\n`,
+    });
   }
   await appendMemoryHostEvent(
     params.workspaceDir,

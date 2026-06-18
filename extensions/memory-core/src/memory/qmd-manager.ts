@@ -632,6 +632,10 @@ export class QmdMemoryManager implements MemorySearchManager {
         log.warn(`qmd collection add failed for ${collection.name}: ${message}`);
       }
     }
+
+    // QMD collection add and rebind rewrite collection entries, dropping managed
+    // fields such as private artifact ignore patterns.
+    await this.refreshManagedCollectionIndexConfig();
   }
 
   private async tryRebindSameNameCollection(params: {
