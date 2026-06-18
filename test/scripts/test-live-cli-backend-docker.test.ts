@@ -30,4 +30,13 @@ describe("scripts/test-live-cli-backend-docker.sh", () => {
     expect(forwardedVars).toContain("OPENCLAW_LIVE_CLI_BACKEND_RESUME_ARGS");
     expect(forwardedVars).toContain("OPENCLAW_TEST_CONSOLE");
   });
+
+  it("prints redacted Claude subscription probe failures", () => {
+    const script = fs.readFileSync(SCRIPT_PATH, "utf8");
+
+    expect(script).toContain('direct_probe_log="$(mktemp)"');
+    expect(script).toContain("direct Claude subscription probe exited with status");
+    expect(script).toContain("<redacted-email>");
+    expect(script).toContain("<redacted-secret>");
+  });
 });

@@ -365,17 +365,30 @@ WRAP
   if [ "$auth_mode" = "subscription" ]; then
     claude --version
     direct_token="OPENCLAW-CLAUDE-SUBSCRIPTION-DIRECT"
-    direct_output="$(
-      claude \
-        -p "Reply exactly: $direct_token" \
-        --output-format text \
-        --model sonnet \
-        --permission-mode bypassPermissions \
-        --setting-sources user \
-        --strict-mcp-config \
-        --mcp-config '{"mcpServers":{}}' \
-        --no-session-persistence
-    )"
+    direct_probe_log="$(mktemp)"
+    set +e
+    claude \
+      -p "Reply exactly: $direct_token" \
+      --output-format text \
+      --model sonnet \
+      --permission-mode bypassPermissions \
+      --setting-sources user \
+      --strict-mcp-config \
+      --mcp-config '{"mcpServers":{}}' \
+      --no-session-persistence >"$direct_probe_log" 2>&1
+    direct_probe_status=$?
+    set -e
+    direct_output="$(<"$direct_probe_log")"
+    if [ "$direct_probe_status" -ne 0 ]; then
+      echo "ERROR: direct Claude subscription probe exited with status $direct_probe_status." >&2
+      sed -E \
+        -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/<redacted-email>/g' \
+        -e 's/(sk-ant-|sk-)[A-Za-z0-9_-]+/<redacted-secret>/g' \
+        "$direct_probe_log" >&2
+      rm -f "$direct_probe_log"
+      exit "$direct_probe_status"
+    fi
+    rm -f "$direct_probe_log"
     if [[ "$direct_output" != *"$direct_token"* ]]; then
       echo "ERROR: direct Claude subscription probe did not return expected token." >&2
       echo "$direct_output" >&2
