@@ -43,6 +43,14 @@ describe("OpenClaw performance workflow", () => {
     expect(workflow).toContain("Optional parent workflow dispatch identifier");
   });
 
+  it("pins the Kova evaluator that reads agent payloads", () => {
+    const workflow = readFileSync(WORKFLOW, "utf8");
+    const kovaRef = "203edbf552fb71d735e6268798fad436f4097e29";
+
+    expect(workflow).toContain(`default: ${kovaRef}`);
+    expect(workflow).toContain(`inputs.kova_ref || '${kovaRef}'`);
+  });
+
   it("uses the clawgrit reports token for every report repo push path", () => {
     const prepare = findStep("Prepare clawgrit reports checkout");
     const publish = findStep("Publish to clawgrit reports");
