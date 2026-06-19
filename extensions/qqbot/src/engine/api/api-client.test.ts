@@ -3,6 +3,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../types.js";
 import { ApiClient } from "./api-client.js";
 
+const { fetchWithSsrFGuardMock } = vi.hoisted(() => ({
+  fetchWithSsrFGuardMock: vi.fn(),
+}));
+
+vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
+  fetchWithSsrFGuard: fetchWithSsrFGuardMock,
+  ssrfPolicyFromHttpBaseUrlAllowedHostname: (baseUrl: string) => ({
+    allowHostnames: [new URL(baseUrl).hostname],
+  }),
+}));
+
 function cancelTrackedResponse(
   text: string,
   init: ResponseInit,
@@ -27,6 +38,7 @@ function cancelTrackedResponse(
 
 describe("ApiClient", () => {
   afterEach(() => {
+    fetchWithSsrFGuardMock.mockReset();
     vi.restoreAllMocks();
   });
 
@@ -36,7 +48,11 @@ describe("ApiClient", () => {
       headers: { "content-type": "text/plain" },
     });
     const textSpy = vi.spyOn(tracked.response, "text").mockRejectedValue(new Error("unbounded"));
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(tracked.response);
+    const release = vi.fn(async () => {});
+    fetchWithSsrFGuardMock.mockResolvedValue({
+      response: tracked.response,
+      release,
+    });
 
     const client = new ApiClient({ baseUrl: "https://qqbot.test" });
 
@@ -53,5 +69,13 @@ describe("ApiClient", () => {
     expect(String(error)).not.toContain("tail");
     expect(tracked.wasCanceled()).toBe(true);
     expect(textSpy).not.toHaveBeenCalled();
+    expect(fetchWithSsrFGuardMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        auditContext: "qqbot.api",
+        timeoutMs: 30_000,
+        url: "https://qqbot.test/v2/users/@me",
+      }),
+    );
+    expect(release).toHaveBeenCalledOnce();
   });
 });
