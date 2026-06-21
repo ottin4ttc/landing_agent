@@ -20,14 +20,15 @@ const mergeOrigin = (
     return undefined;
   }
   const merged: SessionOrigin = existing ? { ...existing } : {};
-  // A provider/surface change is a fresh channel identity (e.g. a dmScope:"main" session moving
-  // Slack -> Telegram). Channel-keyed fields belong to the prior channel; drop them so an inbound
-  // that omits them (Telegram DMs carry no nativeChannelId/threadId/accountId) does not keep
-  // reactions, native threading, and status reads pointed at the previous channel.
+  // A provider/surface/account change is a fresh channel identity (e.g. a dmScope:"main" session
+  // moving Slack -> Telegram, or between Slack accounts). Channel-keyed fields belong to the prior
+  // channel; drop them so an inbound that omits them does not keep reactions, native threading, and
+  // status reads pointed at the previous channel.
   const channelChanged =
     existing != null &&
     ((next?.provider != null && next.provider !== existing.provider) ||
-      (next?.surface != null && next.surface !== existing.surface));
+      (next?.surface != null && next.surface !== existing.surface) ||
+      (next?.accountId != null && next.accountId !== existing.accountId));
   if (channelChanged) {
     delete merged.nativeChannelId;
     delete merged.nativeDirectUserId;

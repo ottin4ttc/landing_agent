@@ -110,6 +110,26 @@ describe("session origin across a channel switch", () => {
     expect(afterFollowUp.origin?.nativeChannelId).toBe("D111SLACK");
     expect(afterFollowUp.origin?.threadId).toBe("1700000000.000100");
   });
+
+  it("clears stale channel-keyed fields when the account changes and the new turn omits them", () => {
+    const afterSlack = applyOrigin(undefined, slackTurn);
+    const slackOtherAccount = {
+      Provider: "slack",
+      Surface: "slack",
+      ChatType: "direct",
+      From: "slack:U0002",
+      To: "slack:D222SLACK",
+      AccountId: "slack-team-2",
+    } satisfies Partial<MsgContext>;
+
+    const afterAccountSwitch = applyOrigin(afterSlack, slackOtherAccount);
+
+    expect(afterAccountSwitch.origin?.provider).toBe("slack");
+    expect(afterAccountSwitch.origin?.accountId).toBe("slack-team-2");
+    expect(afterAccountSwitch.origin?.nativeChannelId).toBeUndefined();
+    expect(afterAccountSwitch.origin?.nativeDirectUserId).toBeUndefined();
+    expect(afterAccountSwitch.origin?.threadId).toBeUndefined();
+  });
 });
 
 // Drive the production inbound-event context builder so the bug premise itself is proven, not
