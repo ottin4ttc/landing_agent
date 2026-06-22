@@ -1,3 +1,11 @@
+import type {
+  AgentsListResult,
+  ChatModelOverride,
+  ModelCatalogEntry,
+  SessionsListResult,
+  ToolsCatalogResult,
+  ToolsEffectiveResult,
+} from "../../api/types.ts";
 import type { SettingsAppHost, SettingsHost } from "../../app/app-host.ts";
 import { resolveAgentIdFromSessionKey } from "../../lib/session-key.ts";
 import {
@@ -9,14 +17,6 @@ import {
   isMissingOperatorReadScopeError,
 } from "../../ui/controllers/scope-errors.ts";
 import type { GatewayBrowserClient } from "../../ui/gateway.ts";
-import type {
-  AgentsListResult,
-  ChatModelOverride,
-  ModelCatalogEntry,
-  SessionsListResult,
-  ToolsCatalogResult,
-  ToolsEffectiveResult,
-} from "../../ui/types.ts";
 import { loadChannels } from "../channels/data.ts";
 import { saveConfig } from "../config/data.ts";
 import type { ConfigState } from "../config/data.ts";

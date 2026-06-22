@@ -1,3 +1,12 @@
+import type {
+  FastMode,
+  GatewaySessionRow,
+  SessionCompactionCheckpoint,
+  SessionsCompactionBranchResult,
+  SessionsCompactionListResult,
+  SessionsCompactionRestoreResult,
+  SessionsListResult,
+} from "../../api/types.ts";
 import {
   areUiSessionKeysEquivalent,
   isUiGlobalSessionKey,
@@ -14,15 +23,6 @@ import {
 } from "../../ui/controllers/scope-errors.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "../../ui/gateway.ts";
 import { isSessionRunActive } from "../../ui/session-run-state.ts";
-import type {
-  FastMode,
-  GatewaySessionRow,
-  SessionCompactionCheckpoint,
-  SessionsCompactionBranchResult,
-  SessionsCompactionListResult,
-  SessionsCompactionRestoreResult,
-  SessionsListResult,
-} from "../../ui/types.ts";
 // Control UI controller manages sessions gateway state.
 import {
   reconcileChatRunFromCurrentSessionRow,

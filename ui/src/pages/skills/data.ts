@@ -1,11 +1,11 @@
-// Control UI page data owns skills gateway state.
-import type { GatewayBrowserClient } from "../../ui/gateway.ts";
 import type {
   AgentsListResult,
   SkillClawHubLink,
   SkillStatusEntry,
   SkillStatusReport,
-} from "../../ui/types.ts";
+} from "../../api/types.ts";
+// Control UI page data owns skills gateway state.
+import type { GatewayBrowserClient } from "../../ui/gateway.ts";
 
 export type ClawHubSearchResult = {
   score: number;

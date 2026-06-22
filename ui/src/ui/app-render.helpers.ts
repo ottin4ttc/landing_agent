@@ -1,5 +1,6 @@
 // Control UI module implements app render behavior.
 import { html, nothing } from "lit";
+import type { SessionsListResult } from "../api/types.ts";
 import {
   isSettingsNavigationRoute,
   navigationIconForRoute,
@@ -43,7 +44,6 @@ import {
 import { resolveControlUiAuthToken } from "./control-ui-auth.ts";
 import { normalizeChatAutoScrollMode, type ChatAutoScrollMode } from "./storage.ts";
 import type { ThemeMode } from "./theme.ts";
-import type { SessionsListResult } from "./types.ts";
 
 export { isCronSessionKey, parseSessionKey, resolveSessionDisplayName, resolveSessionOptionGroups };
 export { switchChatSession, switchChatSessionAndWait };
