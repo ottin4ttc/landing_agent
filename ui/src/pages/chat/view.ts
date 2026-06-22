@@ -23,7 +23,6 @@ import {
   renderReadingIndicatorGroup,
   renderStreamingGroup,
 } from "../../ui/chat/grouped-render.ts";
-import { CHAT_HISTORY_RENDER_LIMIT } from "../../ui/chat/history-limits.ts";
 import type {
   ChatInputHistoryKeyInput,
   ChatInputHistoryKeyResult,
@@ -78,6 +77,7 @@ import {
 } from "./attachment-payload-store.ts";
 import { buildChatItems, type BuildChatItemsProps } from "./build-chat-items.ts";
 import { renderChatQueue } from "./chat-queue.ts";
+import { CHAT_HISTORY_RENDER_LIMIT } from "./history-limits.ts";
 import type { ChatAttachment, ChatQueueItem } from "./types.ts";
 import "../../components/resizable-divider.ts";
 

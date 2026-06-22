@@ -4,13 +4,13 @@ import { html, render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setUiTimeFormatPreference } from "../../lib/format.ts";
 import type { MessageGroup } from "../../pages/chat/chat-types.ts";
+import { normalizeMessage } from "../../pages/chat/message-normalizer.ts";
 import {
   formatChatTimestampForDisplay,
   renderMessageGroup,
   renderStreamingGroup,
   resetAssistantAttachmentAvailabilityCacheForTest,
 } from "./grouped-render.ts";
-import { normalizeMessage } from "./message-normalizer.ts";
 
 const localStorageValues = vi.hoisted(() => new Map<string, string>());
 const markdownRenderMock = vi.hoisted(() =>
@@ -31,7 +31,7 @@ vi.mock("../../local-storage.ts", () => ({
   }),
 }));
 
-vi.mock("../markdown.ts", () => ({
+vi.mock("../../components/markdown.ts", () => ({
   toSanitizedMarkdownHtml: markdownRenderMock,
   toStreamingMarkdownHtml: streamingMarkdownRenderMock,
   toStreamingPlainTextHtml: streamingTextRenderMock,

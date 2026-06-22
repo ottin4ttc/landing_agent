@@ -20,12 +20,12 @@ import { detectTextDirection } from "../text-direction.ts";
 import { resolveToolDisplay } from "../tool-display.ts";
 import { resolveLocalUserName } from "../user-identity.ts";
 export { resolveAssistantTextAvatar } from "../views/agents-utils.ts";
-import { renderChatAvatar } from "./chat-avatar.ts";
-import { renderCopyAsMarkdownButton } from "./copy-as-markdown.ts";
-import { extractThinkingCached, formatReasoningMarkdown } from "./message-extract.ts";
-import { isToolResultMessage, normalizeMessage } from "./message-normalizer.ts";
-import { normalizeRoleForGrouping } from "./role-normalizer.ts";
-import { formatCompactTokenCount } from "./token-format.ts";
+import {
+  extractThinkingCached,
+  formatReasoningMarkdown,
+} from "../../pages/chat/message-extract.ts";
+import { isToolResultMessage, normalizeMessage } from "../../pages/chat/message-normalizer.ts";
+import { normalizeRoleForGrouping } from "../../pages/chat/role-normalizer.ts";
 import {
   extractToolCardsCached,
   formatCollapsedToolPreviewText,
@@ -36,7 +36,10 @@ import {
   renderToolCard,
   renderToolPreview,
   resolveCollapsedToolDetail,
-} from "./tool-cards.ts";
+} from "../../pages/chat/tool-cards.ts";
+import { renderChatAvatar } from "./chat-avatar.ts";
+import { renderCopyAsMarkdownButton } from "./copy-as-markdown.ts";
+import { formatCompactTokenCount } from "./token-format.ts";
 
 type AssistantAttachmentAvailability =
   | { status: "checking" }
