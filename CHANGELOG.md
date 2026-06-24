@@ -10,7 +10,7 @@ Docs: https://docs.openclaw.ai
 - **Richer operator workflows:** `openclaw agent --message-file` and the RAFT CLI wake bridge add practical file-driven and remote wake-up paths. (#93351, #95497) Thanks @ooiuuii and @vincentkoc.
 - **Safer plugin distribution:** additional official plugins are externalized cleanly, with bundled plugin icon metadata available to installed clients. (#95683, #95845) Thanks @vincentkoc and @Patrick-Erichsen.
 - **Stronger mobile operations:** Android settings detail panels improve configuration visibility and control on mobile. (#95148) Thanks @Tosko4.
-- **More reliable agent turns:** Codex partial deltas, harness activation, and long-context prompt-cache stability reduce lost progress and inconsistent runs. (#95404, #95652, #95624) Thanks @agonza1, @vincentkoc.
+- **More reliable agent turns:** Codex partial deltas, harness activation, and long-context prompt-cache stability reduce lost progress and inconsistent runs. (#95404, #95652, #95624) Thanks @agonza1 and @vincentkoc.
 
 ### Changes
 
@@ -19,17 +19,17 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
-- **Channel delivery:** Telegram progress rendering, webhook lifecycle, reaction directives, duplicate mirror writes, queued update draining, and WhatsApp durable reply targets are now more reliable. (#95532, #93002, #95183, #94506, #94977, #95069, #95577, #95007, #95914) Thanks @amknight, @snowzlmbot, @zhangguiping-xydt, @shadow-enthusiast, @xialonglee, @travellingsoldier85, @obviyus, @hugenshen, @Cuttingwater, @heichaowo, @LiuwqGit, @freidrich-goldenflow, and @mcaxtr.
+- **Channel delivery:** Telegram progress rendering, webhook lifecycle, reaction directives, duplicate mirror writes, queued update draining, and WhatsApp durable reply targets are now more reliable. (#95532, #93002, #95183, #94506, #94977, #95069, #95577, #95007, #95914) Thanks @amknight, @snowzlmbot, @zhangguiping-xydt, @shadow-enthusiast, @xialonglee, @travellingsoldier85, @obviyus, @hugenshen, @Cuttingwater, @heichaowo, @LiuwqGit, @freidrich-goldenflow, @mcaxtr, and @vincentkoc.
 - **WhatsApp and message identity:** native quotes, Baileys group reliability, and approval reactions across JID drift now preserve the intended conversation context. (#95483, #94338, #95935) Thanks @mcaxtr, @xialonglee, and @octopuslabs-fl.
 - **Gateway and session safety:** stuck release claims, draining-state reporting, remote probe timeouts, malformed paired access lists, and non-delivery session identity are handled without silent routing loss. (#95299, #94915, #89859, #92178, #95467) Thanks @mikasa0818, @kriegerbangerz-ship-it, @markoub, @vincentkoc, @maxschachere, @mushuiyu886, @gozzbb2, @wangmiao0668000666, @ly-wang19, @EmilioNicolas, and @yetval.
 - **Agent and fallback behavior:** aborted runs stop cleanly, provider response bodies stay bounded, Claude CLI credit failures continue through fallback, and Codex usage-limit responses classify correctly. (#94412, #95218, #95508, #95420, #95418, #95417, #95400) Thanks @szsip239, @vincentkoc, @Alix-007, @mikasa0818, @sallyom, @riazrahaman, and @jason-allen-oneal.
-- **Provider and model edge cases:** OpenRouter IDs, Ollama discovery and embeddings, Gemini freshness, and model-catalog prefixes now resolve against the right runtime metadata. (#95268, #94811, #93956, #95682, #95744) Thanks @Darren2030, @daniel-alejandro-t, @mushuiyu886, @jason-allen-oneal, @Sunjae-k, @parveshsaini, and @vincentkoc.
-- **Configuration and UI guardrails:** non-interactive configure fails closed, TLS paths reject empty values, memory artifacts are sanitized, and the UI uses the patched DOMPurify release. (#94238, #94054, #95791, #95691) Thanks @ruomuxydt, @NianJiuZst, @miorbnli, @vincentkoc, @SweetSophia, @YB0y.
+- **Provider and model edge cases:** OpenRouter IDs, Ollama discovery and embeddings, Gemini freshness, and model-catalog prefixes now resolve against the right runtime metadata. (#95268, #94811, #93956, #95682, #95744) Thanks @Darren2030, @daniel-alejandro-t, @mushuiyu886, @jason-allen-oneal, @Sunjae-k, @parveshsaini, @vincentkoc, and @shakkernerd.
+- **Configuration and UI guardrails:** non-interactive configure fails closed, TLS paths reject empty values, memory artifacts are sanitized, and the UI uses the patched DOMPurify release. (#94238, #94054, #95791, #95691) Thanks @ruomuxydt, @NianJiuZst, @miorbnli, @vincentkoc, @SweetSophia, and @YB0y.
 - **Cron and delivery validation:** no-config delivery checks, thread-aware dedupe, and pending recurring runs retain their intended destinations. (#95754, #95794, #94323) Thanks @vincentkoc and @yetval.
 
 ### Complete contribution record
 
-This audited record covers the complete v2026.6.10..9e3a917d9ee0032b89c425cb1847825930c4df63 history: 304 merged PRs. The generation manifest also supplies direct commits as editorial input; the grouped notes above prioritize user impact.
+This audited record covers the complete v2026.6.10..4d96909daf8623eeeb2dc1e177dc193ae40d8afa history: 305 merged PRs. The generation manifest also supplies direct commits as editorial input; the grouped notes above prioritize user impact.
 
 #### Pull requests
 
@@ -337,6 +337,7 @@ This audited record covers the complete v2026.6.10..9e3a917d9ee0032b89c425cb1847
 - **PR #96233** fix(agents): run heartbeat_prompt_contribution on harness prompt builds. Thanks @azogheb and @vincentkoc.
 - **PR #55018** fix: avoid O(N²) shallow-copy in mapSensitivePaths schema traversal. Thanks @xdhuangyandi and @vincentkoc and @huangyandi-red.
 - **PR #95831** fix: compact Codex OAuth OpenAI sessions without API keys. Related #95693. Thanks @sallyom and @YUI-TIEN.
+- **PR #96244** fix(auto-reply): align channel intro wording with chat_type. Related #95645. Thanks @arkyu2077 and @vincentkoc and @iloveleon19.
 
 ## 2026.6.10
 
