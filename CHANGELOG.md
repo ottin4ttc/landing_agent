@@ -21,7 +21,7 @@ Docs: https://docs.openclaw.ai
 
 - **Channel delivery:** Telegram progress rendering, webhook lifecycle, reaction directives, duplicate mirror writes, queued update draining, and WhatsApp durable reply targets are now more reliable. (#95532, #93002, #95183, #94506, #94977, #95069, #95577, #95007, #95914) Thanks @amknight, @snowzlmbot, @zhangguiping-xydt, @shadow-enthusiast, @xialonglee, @travellingsoldier85, @obviyus, @hugenshen, @Cuttingwater, @heichaowo, @LiuwqGit, @freidrich-goldenflow, @mcaxtr, and @vincentkoc.
 - **WhatsApp and message identity:** native quotes, Baileys group reliability, and approval reactions across JID drift now preserve the intended conversation context. (#95483, #94338, #95935) Thanks @mcaxtr, @xialonglee, and @octopuslabs-fl.
-- **Gateway and session safety:** stuck release claims, draining-state reporting, remote probe timeouts, malformed paired access lists, and non-delivery session identity are handled without silent routing loss. (#95299, #94915, #89859, #92178, #95467) Thanks @mikasa0818, @kriegerbangerz-ship-it, @markoub, @vincentkoc, @maxschachere, @mushuiyu886, @gozzbb2, @wangmiao0668000666, @ly-wang19, @EmilioNicolas, and @yetval.
+- **Gateway and session safety:** stuck release claims, draining-state reporting, remote probe timeouts, malformed paired access lists, and non-delivery session identity are handled without silent routing loss. (#95299, #94915, #89859, #92178, #95467) Thanks @mikasa0818, @kriegerbangerz-ship-it, @markoub, @vincentkoc, @maxschachere, @mushuiyu886, @gozzbb2, @wangmiao0668000666, @ly-wang19, @EmilioNicolas, @yetval, and @hellocli.
 - **Agent and fallback behavior:** aborted runs stop cleanly, provider response bodies stay bounded, Claude CLI credit failures continue through fallback, and Codex usage-limit responses classify correctly. (#94412, #95218, #95508, #95420, #95418, #95417, #95400) Thanks @szsip239, @vincentkoc, @Alix-007, @mikasa0818, @sallyom, @riazrahaman, and @jason-allen-oneal.
 - **Provider and model edge cases:** OpenRouter IDs, Ollama discovery and embeddings, Gemini freshness, and model-catalog prefixes now resolve against the right runtime metadata. (#95268, #94811, #93956, #95682, #95744) Thanks @Darren2030, @daniel-alejandro-t, @mushuiyu886, @jason-allen-oneal, @Sunjae-k, @parveshsaini, @vincentkoc, and @shakkernerd.
 - **Configuration and UI guardrails:** non-interactive configure fails closed, TLS paths reject empty values, memory artifacts are sanitized, and the UI uses the patched DOMPurify release. (#94238, #94054, #95791, #95691) Thanks @ruomuxydt, @NianJiuZst, @miorbnli, @vincentkoc, @SweetSophia, and @YB0y.
@@ -29,7 +29,7 @@ Docs: https://docs.openclaw.ai
 
 ### Complete contribution record
 
-This audited record covers the complete v2026.6.10..ee421ef7da7edf152ab911d74ffcfd852ecf43e2 history: 305 merged PRs. The generation manifest also supplies direct commits as editorial input; the grouped notes above prioritize user impact.
+This audited record covers the complete v2026.6.10..0a4d0daa8cc99e9b2c6bc78c2e67357272a9fd53 history: 308 merged PRs. The generation manifest also supplies direct commits as editorial input; the grouped notes above prioritize user impact.
 
 #### Pull requests
 
@@ -86,7 +86,7 @@ This audited record covers the complete v2026.6.10..ee421ef7da7edf152ab911d74ffc
 - **PR #95404** fix(codex): stream non-final-answer assistant deltas as partials. Related #95422. Thanks @agonza1 and @vincentkoc.
 - **PR #58993** fix(googlechat): support spaceType field for DM vs Space detection. Thanks @Starhappysh and @vincentkoc.
 - **PR #94148** fix(doctor): prevent non-interactive --fix from auto-restarting gateway. Related #78217. Thanks @zhangguiping-xydt and @esqandil.
-- **PR #89859** fix(gateway): honor remote status probe timeout. Related #65355. Thanks @mushuiyu886 and @gozzbb2.
+- **PR #89859** fix(gateway): honor remote status probe timeout. Related #65355. Thanks @mushuiyu886 and @hellocli.
 - **PR #95466** fix(ci): increase timeouts in flaky process-group signal test. Thanks @jason-allen-oneal.
 - **PR #95720** fix(matrix): prevent double bootstrapCrossSigning reset in forced reset. Related #78396. Thanks @vincentkoc and @jteddy.
 - **PR #95707** fix(synology-chat): remove duplicate local deliver timeout. Thanks @vincentkoc.
@@ -148,7 +148,7 @@ This audited record covers the complete v2026.6.10..ee421ef7da7edf152ab911d74ffc
 - **PR #95686** fix(xai): request encrypted reasoning include for all reasoning models. Thanks @geraint0923 and @fuller-stack-dev.
 - **PR #82909** fix(telegram): repair message cache reply types. Thanks @lidge-jun.
 - **PR #94942** fix(matrix): prune finished fake-indexeddb transactions to prevent OOM. Related #90455. Thanks @xzh-icenter and @yar-sh.
-- **PR #93994** fix(setup): point non-interactive health hints at onboard flags. Related #93947. Thanks @zhouhe-xydt and @NianJiuZst.
+- **PR #93994** fix(setup): point non-interactive health hints at onboard flags. Related #93947. Thanks @BK-Z1 and @NianJiuZst.
 - **PR #93956** fix(ollama): skip auto-discovery for remote/cloud base URLs. Thanks @jason-allen-oneal.
 - **PR #93547** fix(acp): recover stale persistent sessions by structured resume-required code [AI-assisted]. Related #87830. Thanks @amersheeny and @chouzz.
 - **PR #94204** fix(control-ui): rewrite manifest hrefs for configured base path. Related #94157. Thanks @hugenshen and @xrow.
@@ -338,6 +338,9 @@ This audited record covers the complete v2026.6.10..ee421ef7da7edf152ab911d74ffc
 - **PR #55018** fix: avoid O(N²) shallow-copy in mapSensitivePaths schema traversal. Thanks @xdhuangyandi and @vincentkoc and @huangyandi-red.
 - **PR #95831** fix: compact Codex OAuth OpenAI sessions without API keys. Related #95693. Thanks @sallyom and @YUI-TIEN.
 - **PR #96244** fix(auto-reply): align channel intro wording with chat_type. Related #95645. Thanks @arkyu2077 and @vincentkoc and @iloveleon19.
+- **PR #97118** fix(telegram): recover stalled ingress spool claims. Thanks @vincentkoc.
+- **PR #97543** fix(telegram): recover stalled ingress spool claims. Thanks @vincentkoc.
+- **PR #97122** ci(docker): publish releases to Docker Hub. Thanks @vincentkoc.
 
 ## 2026.6.10
 
