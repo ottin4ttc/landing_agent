@@ -2448,6 +2448,10 @@ export async function runCodexAppServerAttempt(
       threadId: thread.threadId,
       cwd: codexExecutionCwd,
       appServer: turnAppServer,
+      ...(thread.pluginAppPolicyContext &&
+      Object.keys(thread.pluginAppPolicyContext.apps).length > 0
+        ? { approvalsReviewer: "user" as const }
+        : {}),
       promptText: codexTurnPromptText,
       sandboxPolicy: codexSandboxPolicy,
       environmentSelection: codexEnvironmentSelection,
