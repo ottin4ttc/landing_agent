@@ -11,7 +11,13 @@ import {
   shouldLogSubsystemToConsole,
 } from "./console.js";
 import { type LogLevel, levelToMinLevel } from "./levels.js";
-import { getChildLogger, isFileLogLevelEnabled } from "./logger.js";
+import {
+  attachDiagnosticLogSemantics,
+  getChildLogger,
+  hasDiagnosticLogSemantics,
+  isFileLogLevelEnabled,
+  splitDiagnosticLogSemanticFields,
+} from "./logger.js";
 import { redactSensitiveText } from "./redact.js";
 import { loggingState } from "./state.js";
 
@@ -355,7 +361,7 @@ function logToFile(
   if (typeof method !== "function") {
     return;
   }
-  if (meta && Object.keys(meta).length > 0) {
+  if (meta && (Object.keys(meta).length > 0 || hasDiagnosticLogSemantics(meta))) {
     method.call(fileLogger, meta, message);
   } else {
     method.call(fileLogger, message);
@@ -376,6 +382,7 @@ export function createSubsystemLogger(subsystem: string): SubsystemLogger {
     }
     let consoleMessageOverride: string | undefined;
     let fileMeta = meta;
+    let consoleMeta = meta;
     if (meta && Object.keys(meta).length > 0) {
       const { consoleMessage, ...rest } = meta as Record<string, unknown> & {
         consoleMessage?: unknown;
@@ -383,7 +390,11 @@ export function createSubsystemLogger(subsystem: string): SubsystemLogger {
       if (typeof consoleMessage === "string") {
         consoleMessageOverride = consoleMessage;
       }
-      fileMeta = Object.keys(rest).length > 0 ? rest : undefined;
+      const { attributes, semantics } = splitDiagnosticLogSemanticFields(rest);
+      consoleMeta = attributes;
+      fileMeta = semantics
+        ? attachDiagnosticLogSemantics({ ...(attributes ?? {}) }, semantics)
+        : attributes;
     }
     if (fileEnabled) {
       logToFile(getChildLogger({ subsystem: resolvedSubsystem }), level, message, fileMeta);
@@ -397,7 +408,7 @@ export function createSubsystemLogger(subsystem: string): SubsystemLogger {
         level,
         subsystem: resolvedSubsystem,
         message: consoleMessage,
-        meta: fileMeta,
+        meta: consoleMeta,
       })
     ) {
       return;
@@ -409,7 +420,7 @@ export function createSubsystemLogger(subsystem: string): SubsystemLogger {
         subsystem: resolvedSubsystem,
         message: consoleSettings.style === "json" ? message : consoleMessage,
         style: consoleSettings.style,
-        meta: fileMeta,
+        meta: consoleMeta,
       }),
       { redacted: true },
     );

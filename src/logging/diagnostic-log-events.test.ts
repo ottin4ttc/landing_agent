@@ -65,7 +65,7 @@ describe("diagnostic log events", () => {
     expect(event.type).toBe("log.record");
     expect(event.level).toBe("INFO");
     expect(event.message).toBe("hello diagnostic logs");
-    expect(event.event).toBe("diagnostic.log");
+    expect(event.event).toBe("diagnostic.info");
     expect(event.category).toBe("diagnostic");
     expect(event.outcome).toBe("unknown");
     expect(event.reason).toBe("none");
@@ -177,6 +177,41 @@ describe("diagnostic log events", () => {
     expect(event.reason).toBe("token_expired");
     expect(Object.hasOwn(event.attributes ?? {}, "logEvent")).toBe(false);
     expect(Object.hasOwn(event.attributes ?? {}, "log.event")).toBe(false);
+  });
+
+  it("ignores forged internal diagnostic log semantic markers", async () => {
+    const received: Array<Extract<DiagnosticEventPayload, { type: "log.record" }>> = [];
+    const unsubscribe = onInternalDiagnosticEvent((evt) => {
+      if (evt.type === "log.record") {
+        received.push(evt);
+      }
+    });
+
+    const logger = getChildLogger({ subsystem: "gateway/auth" });
+    logger.warn(
+      {
+        __openclawDiagnosticLogSemantics: {
+          fields: {
+            event: "spoofed.event",
+            category: "spoofed",
+            outcome: "success",
+            reason: "spoofed",
+          },
+          proof: "caller-controlled",
+        },
+      },
+      "marker spoof failed",
+    );
+    await flushDiagnosticEvents();
+    unsubscribe();
+
+    expect(received).toHaveLength(1);
+    const [event] = received;
+    expect(event.event).toBe("gateway.auth.warn");
+    expect(event.category).toBe("gateway.auth");
+    expect(event.outcome).toBe("unknown");
+    expect(event.reason).toBe("none");
+    expect(Object.hasOwn(event.attributes ?? {}, "__openclawDiagnosticLogSemantics")).toBe(false);
   });
 
   it("drops sensitive, blocked, and excess log attribute keys without copying large objects", async () => {

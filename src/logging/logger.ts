@@ -96,12 +96,83 @@ const DIAGNOSTIC_LOG_SEMANTIC_SOURCE_KEYS = new Set([
   "log.category",
   "log.outcome",
   "log.reason",
+  "__openclawDiagnosticLogSemantics",
 ]);
+const DIAGNOSTIC_LOG_SEMANTICS_FIELD = "__openclawDiagnosticLogSemantics";
+const DIAGNOSTIC_LOG_SEMANTICS_TOKEN = `${Date.now()}:${Math.random()}`;
 const defaultHostnameResolver: HostnameResolver = () => os.hostname();
 let hostnameResolver: HostnameResolver = defaultHostnameResolver;
 let cachedHostname: string | null = null;
 
 type DiagnosticLogAttributes = Record<string, string | number | boolean>;
+type DiagnosticLogSemantics = {
+  event?: unknown;
+  category?: unknown;
+  outcome?: unknown;
+  reason?: unknown;
+};
+type AttachedDiagnosticLogSemantics = {
+  fields: DiagnosticLogSemantics;
+  proof: string;
+};
+
+function readAttachedDiagnosticLogSemantics(
+  source: Record<string, unknown> | undefined,
+): DiagnosticLogSemantics | undefined {
+  const candidate = source?.[DIAGNOSTIC_LOG_SEMANTICS_FIELD] as
+    | AttachedDiagnosticLogSemantics
+    | undefined;
+  return candidate?.proof === DIAGNOSTIC_LOG_SEMANTICS_TOKEN ? candidate.fields : undefined;
+}
+
+export function attachDiagnosticLogSemantics<T extends Record<string, unknown>>(
+  source: T,
+  semantics: DiagnosticLogSemantics,
+): T {
+  source[DIAGNOSTIC_LOG_SEMANTICS_FIELD] = {
+    fields: semantics,
+    proof: DIAGNOSTIC_LOG_SEMANTICS_TOKEN,
+  };
+  return source;
+}
+
+export function hasDiagnosticLogSemantics(source: Record<string, unknown> | undefined): boolean {
+  return Boolean(readAttachedDiagnosticLogSemantics(source));
+}
+
+export function splitDiagnosticLogSemanticFields(source: Record<string, unknown> | undefined): {
+  attributes?: Record<string, unknown>;
+  semantics?: DiagnosticLogSemantics;
+} {
+  if (!source) {
+    return {};
+  }
+  const attributes: Record<string, unknown> = {};
+  const semantics: DiagnosticLogSemantics = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (key === "logEvent") {
+      semantics.event = value;
+      continue;
+    }
+    if (key === "logCategory") {
+      semantics.category = value;
+      continue;
+    }
+    if (key === "logOutcome") {
+      semantics.outcome = value;
+      continue;
+    }
+    if (key === "logReason") {
+      semantics.reason = value;
+      continue;
+    }
+    attributes[key] = value;
+  }
+  return {
+    ...(Object.keys(attributes).length > 0 ? { attributes } : {}),
+    ...(Object.keys(semantics).length > 0 ? { semantics } : {}),
+  };
+}
 
 function clampDiagnosticLogText(value: string, maxChars: number): string {
   return value.length > maxChars ? `${value.slice(0, maxChars)}...(truncated)` : value;
@@ -134,8 +205,40 @@ function normalizeDiagnosticLogSemanticValue(value: unknown, fallback: string): 
   return DIAGNOSTIC_LOG_SEMANTIC_VALUE_RE.test(normalized) ? normalized : fallback;
 }
 
-function diagnosticLogEventFromCategory(category: string): string {
-  return category === "unknown" ? "log.record" : `${category}.log`;
+function diagnosticLogEventFromCategory(category: string, level: string): string {
+  if (category === "unknown") {
+    return "log.record";
+  }
+  const levelSegment = normalizeDiagnosticLogSemanticValue(level.toLowerCase(), "log");
+  return `${category}.${levelSegment}`;
+}
+
+function readDiagnosticLogSemanticValue(
+  source: Record<string, unknown> | undefined,
+  key: keyof DiagnosticLogSemantics,
+): unknown {
+  if (!source) {
+    return undefined;
+  }
+  const semantics = readAttachedDiagnosticLogSemantics(source);
+  return semantics?.[key];
+}
+
+function stripDiagnosticLogSemanticsFromValue(value: unknown): unknown {
+  if (!isPlainLogRecordObject(value) || !hasDiagnosticLogSemantics(value)) {
+    return value;
+  }
+  const copy = { ...value };
+  delete copy[DIAGNOSTIC_LOG_SEMANTICS_FIELD];
+  return copy;
+}
+
+function stripDiagnosticLogSemanticsFromRecord<T extends LogObj>(record: T): T {
+  const copy = { ...record };
+  for (const key of Object.keys(copy)) {
+    copy[key] = stripDiagnosticLogSemanticsFromValue(copy[key]);
+  }
+  return copy;
 }
 
 function assignDiagnosticLogAttribute(
@@ -488,10 +591,17 @@ function buildDiagnosticLogRecord(logObj: TsLogRecord) {
     ?.map(normalizeDiagnosticLogName)
     .filter((name): name is string => Boolean(name));
   const semanticSources = [structuredBindings, bindings] as const;
-  const firstSemanticSourceValue = (keys: readonly string[]) => {
+  const firstSemanticSourceValue = (
+    semanticKey: keyof DiagnosticLogSemantics,
+    keys: readonly string[],
+  ) => {
     for (const source of semanticSources) {
       if (!source) {
         continue;
+      }
+      const semanticValue = readDiagnosticLogSemanticValue(source, semanticKey);
+      if (semanticValue !== undefined) {
+        return semanticValue;
       }
       for (const key of keys) {
         if (Object.hasOwn(source, key)) {
@@ -502,19 +612,19 @@ function buildDiagnosticLogRecord(logObj: TsLogRecord) {
     return undefined;
   };
   const category = normalizeDiagnosticLogSemanticValue(
-    firstSemanticSourceValue(["logCategory"]) ?? bindings?.subsystem,
+    firstSemanticSourceValue("category", ["logCategory"]) ?? bindings?.subsystem,
     "unknown",
   );
   const event = normalizeDiagnosticLogSemanticValue(
-    firstSemanticSourceValue(["logEvent"]),
-    diagnosticLogEventFromCategory(category),
+    firstSemanticSourceValue("event", ["logEvent"]),
+    diagnosticLogEventFromCategory(category, meta?.logLevelName ?? "INFO"),
   );
   const outcome = normalizeDiagnosticLogSemanticValue(
-    firstSemanticSourceValue(["logOutcome"]),
+    firstSemanticSourceValue("outcome", ["logOutcome"]),
     "unknown",
   );
   const reason = normalizeDiagnosticLogSemanticValue(
-    firstSemanticSourceValue(["logReason"]),
+    firstSemanticSourceValue("reason", ["logReason"]),
     "none",
   );
 
@@ -671,8 +781,9 @@ function buildLogger(settings: ResolvedSettings): TsLogger<LogObj> {
       const time = formatTimestamp(logObj.date ?? new Date(), { style: "long" });
       const traceFields = buildTraceFileLogFields(logObj as TsLogRecord);
       const structuredFields = buildStructuredFileLogFields(logObj as TsLogRecord);
+      const visibleLogObj = stripDiagnosticLogSemanticsFromRecord(logObj);
       const record = {
-        ...logObj,
+        ...visibleLogObj,
         _meta: withResolvedLogMetaHostname(logObj["_meta"], structuredFields.hostname),
         time,
         ...structuredFields,
