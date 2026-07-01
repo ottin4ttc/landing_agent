@@ -22,7 +22,7 @@ function isProcessAlive(pid: number | undefined): boolean {
   }
 }
 
-function forceKillPid(pid: number | undefined): void {
+function forceKillPid(pid: number): void {
   if (!isProcessAlive(pid)) {
     return;
   }
