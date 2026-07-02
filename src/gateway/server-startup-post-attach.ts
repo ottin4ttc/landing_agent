@@ -22,6 +22,7 @@ import {
   type GatewayUpdateAvailableEventPayload,
 } from "./events.js";
 import { STARTUP_UNAVAILABLE_GATEWAY_METHODS } from "./methods/core-descriptors.js";
+import type { GatewayPluginEventBroadcastFn } from "./server-broadcast-types.js";
 import type { refreshLatestUpdateRestartSentinel } from "./server-restart-sentinel.js";
 import type { logGatewayStartup } from "./server-startup-log.js";
 import type { startGatewayTailscaleExposure } from "./server-tailscale.js";
@@ -678,6 +679,7 @@ export async function startGatewaySidecars(params: {
   prewarmPrimaryModel?: typeof prewarmConfiguredPrimaryModel;
   onPluginServices?: (pluginServices: PluginServicesHandle | null) => void;
   shouldStartPluginServices?: () => boolean;
+  gatewayEventBroadcast?: GatewayPluginEventBroadcastFn;
   log: { warn: (msg: string) => void };
   logHooks: {
     info: (msg: string) => void;
@@ -763,6 +765,7 @@ export async function startGatewaySidecars(params: {
               config: params.cfg,
               workspaceDir: params.defaultWorkspaceDir,
               startupTrace: params.startupTrace,
+              gatewayEventBroadcast: params.gatewayEventBroadcast,
             });
           } catch (err) {
             params.log.warn(`plugin services failed to start: ${String(err)}`);
@@ -1075,6 +1078,7 @@ export async function startGatewayPostAttachRuntime(
     isNixMode: boolean;
     startupStartedAt?: number;
     broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
+    gatewayEventBroadcast?: GatewayPluginEventBroadcastFn;
     tailscaleMode: GatewayTailscaleMode;
     resetOnExit: boolean;
     serviceName?: string;
@@ -1249,6 +1253,7 @@ export async function startGatewayPostAttachRuntime(
             onChannelsStarted: params.onChannelsStarted,
             onPluginServices: reportPluginServices,
             shouldStartPluginServices: () => params.isClosing?.() !== true,
+            gatewayEventBroadcast: params.gatewayEventBroadcast,
           }),
         );
         const loaderStatsAfter = getPluginModuleLoaderStats();

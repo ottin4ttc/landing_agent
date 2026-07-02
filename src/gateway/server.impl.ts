@@ -885,6 +885,7 @@ export async function startGatewayServer(
     clients,
     broadcast,
     broadcastToConnIds,
+    broadcastPluginEvent,
     agentRunSeq,
     dedupe,
     chatRunState,
@@ -1381,6 +1382,7 @@ export async function startGatewayServer(
           registry: loaded.pluginRegistry,
           config: params.nextConfig,
           workspaceDir: defaultWorkspaceDir,
+          gatewayEventBroadcast: broadcastPluginEvent,
         });
       } catch (err) {
         log.warn(`plugin services failed to start after reload: ${String(err)}`);
@@ -1615,6 +1617,7 @@ export async function startGatewayServer(
             isNixMode,
             startupStartedAt: opts.startupStartedAt,
             broadcast,
+            gatewayEventBroadcast: broadcastPluginEvent,
             tailscaleMode,
             resetOnExit: tailscaleConfig.resetOnExit ?? false,
             serviceName: tailscaleConfig.serviceName,

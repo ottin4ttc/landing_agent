@@ -77,6 +77,11 @@ import {
   type SessionsState,
 } from "./controllers/sessions.ts";
 import {
+  handleWorkboardChanged,
+  isWorkboardDocumentVisible,
+  resetWorkboardLiveUpdates,
+} from "./controllers/workboard.ts";
+import {
   resolveGatewayErrorDetailCode,
   type GatewayEventFrame,
   type GatewayHelloOk,
@@ -162,6 +167,7 @@ type GatewayHost = {
   fetchRealtimeTalkCatalog?: () => Promise<void>;
   sessionsChangedReloadTimer?: number | ReturnType<typeof globalThis.setTimeout> | null;
   controlUiBootstrapReady?: Promise<void> | null;
+  requestUpdate?: () => void;
 };
 
 type GatewayHostWithDeferredSessionMessageReload = GatewayHost & {
@@ -822,6 +828,7 @@ export function connectGateway(host: GatewayHost, options?: ConnectGatewayOption
       host.lastErrorCode = null;
       host.chatError = null;
       host.hello = hello;
+      resetWorkboardLiveUpdates(host);
       if (host.realtimeTalkOptionsOpen) {
         void host.fetchRealtimeTalkCatalog?.();
       }
@@ -1345,6 +1352,17 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
       host as unknown as Parameters<typeof handleSessionOperationEvent>[0],
       evt.payload as SessionOperationEventPayload | undefined,
     );
+    return;
+  }
+
+  if (evt.event === "plugin.workboard.changed") {
+    handleWorkboardChanged({
+      host,
+      client: host.client,
+      payload: evt.payload,
+      requestUpdate: () => host.requestUpdate?.(),
+      isActive: () => host.tab === "workboard" && isWorkboardDocumentVisible(),
+    });
     return;
   }
 
