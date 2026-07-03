@@ -141,15 +141,6 @@ type SlackAuthIdentity = {
   userId: string;
 };
 
-type SlackMessage = {
-  bot_id?: string;
-  blocks?: unknown[];
-  text?: string;
-  thread_ts?: string;
-  ts?: string;
-  user?: string;
-};
-
 type SlackObservedMessage = {
   botId?: string;
   channelId: string;
@@ -281,6 +272,8 @@ const slackHistoryMessageSchema = z.object({
   ts: z.string().min(1),
   user: z.string().optional(),
 });
+
+type SlackMessage = Omit<z.infer<typeof slackHistoryMessageSchema>, "ts"> & { ts?: string };
 
 const slackHistorySchema = z.object({
   ok: z.boolean().optional(),
@@ -2087,6 +2080,7 @@ export const testing = {
   collectSlackButtonLabels,
   collectSlackBlockText,
   findScenario,
+  getSlackIdentity,
   isSlackChannelReadyForQa,
   parseSlackQaCredentialPayload,
   preserveSlackGatewayDebugArtifacts,
@@ -2095,8 +2089,11 @@ export const testing = {
   resolveSlackApprovalCheckpointConfig,
   resolveApprovalDecision,
   resolveSlackQaRuntimeEnv,
+  sendSlackChannelMessage,
+  listSlackMessages,
   SLACK_QA_STANDARD_SCENARIO_IDS,
   toSlackQaScenarioArtifactResults,
   waitForSlackNoReply,
+  waitForSlackChannelStable,
 };
 export { testing as __testing };
