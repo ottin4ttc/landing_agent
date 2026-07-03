@@ -130,6 +130,7 @@ type SessionSqliteDatabase = Pick<
   | "session_entries"
   | "session_routes"
   | "sessions"
+  | "trajectory_runtime_events"
   | "transcript_event_identities"
   | "transcript_events"
 >;
@@ -2139,7 +2140,7 @@ function collectSqliteSessionMaintenanceBaseKeys(
   return keys;
 }
 
-function sumTranscriptEventJsonBytes() {
+function sumEventJsonBytes() {
   return (
     // kysely-allow-raw: SQLite byte accounting needs LENGTH(CAST(... AS BLOB)),
     // which Kysely does not expose as a typed aggregate helper.
@@ -2157,6 +2158,7 @@ function sumSessionEntryJsonBytes() {
 
 function readSqliteSessionRowBytes(database: OpenClawAgentDatabase): {
   entryBytesByKey: Map<string, number>;
+  trajectoryBytesBySessionId: Map<string, number>;
   transcriptBytesBySessionId: Map<string, number>;
 } {
   const db = getSessionKysely(database.db);
@@ -2169,7 +2171,15 @@ function readSqliteSessionRowBytes(database: OpenClawAgentDatabase): {
     db
       .selectFrom("transcript_events")
       .select(["session_id"])
-      .select(sumTranscriptEventJsonBytes())
+      .select(sumEventJsonBytes())
+      .groupBy("session_id"),
+  ).rows;
+  const trajectoryRows = executeSqliteQuerySync(
+    database.db,
+    db
+      .selectFrom("trajectory_runtime_events")
+      .select(["session_id"])
+      .select(sumEventJsonBytes())
       .groupBy("session_id"),
   ).rows;
   const entryBytesByKey = new Map<string, number>();
@@ -2181,7 +2191,22 @@ function readSqliteSessionRowBytes(database: OpenClawAgentDatabase): {
     const bytes = row.event_json_bytes;
     transcriptBytesBySessionId.set(row.session_id, normalizeSqliteNumber(bytes ?? 0));
   }
-  return { entryBytesByKey, transcriptBytesBySessionId };
+  const trajectoryBytesBySessionId = new Map<string, number>();
+  for (const row of trajectoryRows) {
+    const bytes = row.event_json_bytes;
+    trajectoryBytesBySessionId.set(row.session_id, normalizeSqliteNumber(bytes ?? 0));
+  }
+  return { entryBytesByKey, trajectoryBytesBySessionId, transcriptBytesBySessionId };
+}
+
+function getSqliteSessionStateBytes(
+  rowBytes: ReturnType<typeof readSqliteSessionRowBytes>,
+  sessionId: string,
+): number {
+  return (
+    (rowBytes.transcriptBytesBySessionId.get(sessionId) ?? 0) +
+    (rowBytes.trajectoryBytesBySessionId.get(sessionId) ?? 0)
+  );
 }
 
 function getSqliteSessionEntryUpdatedAt(entry?: SessionEntry): number {
@@ -2202,11 +2227,16 @@ function hasSqliteSessionDiskBudgetOverflow(
   );
   const transcriptRow = executeSqliteQueryTakeFirstSync(
     database.db,
-    db.selectFrom("transcript_events").select(sumTranscriptEventJsonBytes()),
+    db.selectFrom("transcript_events").select(sumEventJsonBytes()),
+  );
+  const trajectoryRow = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db.selectFrom("trajectory_runtime_events").select(sumEventJsonBytes()),
   );
   const entryBytes = normalizeSqliteNumber(entryRow?.entry_json_bytes ?? 0);
   const transcriptBytes = normalizeSqliteNumber(transcriptRow?.event_json_bytes ?? 0);
-  return entryBytes + transcriptBytes > maintenance.maxDiskBytes;
+  const trajectoryBytes = normalizeSqliteNumber(trajectoryRow?.event_json_bytes ?? 0);
+  return entryBytes + transcriptBytes + trajectoryBytes > maintenance.maxDiskBytes;
 }
 
 function applySqliteSessionDiskBudget(params: {
@@ -2241,9 +2271,9 @@ function enforceSqliteSessionDiskBudgetInStore(params: {
   const entryBytesByKey = new Map<string, number>();
   const sessionIdsByKey = new Map<string, readonly string[]>();
   const sessionIdRefCounts = new Map<string, number>();
-  // Transcript rows can be shared through usage-family references. Count each
-  // referenced session id once up front, then subtract row bytes only when the
-  // last remaining entry reference is removed.
+  // Session state rows can be shared through usage-family references. Count
+  // each referenced session id once, then subtract rows only after the last
+  // remaining entry reference is removed.
   for (const [key, entry] of Object.entries(params.store)) {
     const entryBytes = rowBytes.entryBytesByKey.get(key) ?? 0;
     const sessionIds = collectSqliteSessionStateIdsForEntry(entry);
@@ -2255,7 +2285,7 @@ function enforceSqliteSessionDiskBudgetInStore(params: {
     }
   }
   for (const sessionId of sessionIdRefCounts.keys()) {
-    totalBytes += rowBytes.transcriptBytesBySessionId.get(sessionId) ?? 0;
+    totalBytes += getSqliteSessionStateBytes(rowBytes, sessionId);
   }
   const totalBytesBefore = totalBytes;
   if (totalBytes <= maxDiskBytes) {
@@ -2298,7 +2328,7 @@ function enforceSqliteSessionDiskBudgetInStore(params: {
         continue;
       }
       sessionIdRefCounts.delete(sessionId);
-      totalBytes -= rowBytes.transcriptBytesBySessionId.get(sessionId) ?? 0;
+      totalBytes -= getSqliteSessionStateBytes(rowBytes, sessionId);
     }
   }
   return {

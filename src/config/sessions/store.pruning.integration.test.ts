@@ -9,6 +9,11 @@ import {
   resolveTrajectoryFilePath,
   resolveTrajectoryPointerFilePath,
 } from "../../trajectory/paths.js";
+import {
+  appendSqliteTrajectoryRuntimeEvents,
+  loadSqliteTrajectoryRuntimeEvents,
+} from "../../trajectory/runtime-store.sqlite.js";
+import type { TrajectoryEvent } from "../../trajectory/types.js";
 import type { SessionEntry } from "./types.js";
 
 // Keep integration tests deterministic: never read a real openclaw.json.
@@ -147,6 +152,32 @@ async function seedSqliteTranscriptMessage(params: {
       cwd: path.dirname(params.storePath),
       message: { role: "user", content: params.content },
     },
+  );
+}
+
+async function seedSqliteTrajectoryEvent(params: {
+  content: string;
+  sessionId: string;
+  sessionKey: string;
+  storePath: string;
+}): Promise<void> {
+  const event: TrajectoryEvent = {
+    traceSchema: "openclaw-trajectory",
+    schemaVersion: 1,
+    traceId: params.sessionId,
+    source: "runtime",
+    type: "budget.test",
+    ts: "2026-07-03T00:00:00.000Z",
+    seq: 1,
+    sourceSeq: 1,
+    sessionId: params.sessionId,
+    sessionKey: params.sessionKey,
+    runId: "budget-test",
+    data: { content: params.content },
+  };
+  await appendSqliteTrajectoryRuntimeEvents(
+    { sessionId: params.sessionId, storePath: params.storePath },
+    [event],
   );
 }
 
@@ -932,6 +963,116 @@ describe("Integration: saveSessionStore with pruning", () => {
         storePath,
       }).length,
     ).toBeGreaterThan(0);
+  });
+
+  it("sessions cleanup dry-run accounts SQLite trajectory rows in disk budget", async () => {
+    mockLoadConfig.mockReturnValue({
+      session: {
+        maintenance: {
+          mode: "enforce",
+          pruneAfter: "365d",
+          maxEntries: 500,
+          maxDiskBytes: 1_200,
+          highWaterBytes: 700,
+        },
+      },
+    });
+
+    const now = Date.now();
+    const oldKey = "agent:main:explicit:old-trajectory-budget";
+    const freshKey = "agent:main:explicit:fresh-trajectory-budget";
+    await seedSqliteSessionStore(storePath, {
+      [oldKey]: { sessionId: "old-trajectory-budget-session", updatedAt: now - DAY_MS },
+      [freshKey]: { sessionId: "fresh-trajectory-budget-session", updatedAt: now },
+    });
+    await seedSqliteTrajectoryEvent({
+      content: "old-" + "x".repeat(1_400),
+      sessionId: "old-trajectory-budget-session",
+      sessionKey: oldKey,
+      storePath,
+    });
+
+    const dryRun = await runSessionsCleanup({
+      cfg: {},
+      opts: { store: storePath, dryRun: true, enforce: true, activeKey: freshKey },
+      targets: [{ agentId: "main", storePath }],
+    });
+
+    const diskBudgetSummary = dryRun.previewResults[0]?.summary.diskBudget;
+    if (diskBudgetSummary === null || diskBudgetSummary === undefined) {
+      throw new Error("expected SQLite trajectory row-byte disk budget summary");
+    }
+    expect(diskBudgetSummary.totalBytesBefore).toBeGreaterThan(1_200);
+    expect(diskBudgetSummary.totalBytesAfter).toBeLessThan(diskBudgetSummary.totalBytesBefore);
+    expect(diskBudgetSummary.removedEntries).toBe(1);
+    expect(dryRun.previewResults[0]?.budgetEvictedKeys.has(oldKey)).toBe(true);
+    expect(loadSessionEntry({ storePath, sessionKey: oldKey })).toBeDefined();
+    await expect(
+      loadSqliteTrajectoryRuntimeEvents({
+        sessionId: "old-trajectory-budget-session",
+        storePath,
+      }),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("sessions cleanup apply removes budget-evicted SQLite trajectory rows", async () => {
+    mockLoadConfig.mockReturnValue({
+      session: {
+        maintenance: {
+          mode: "enforce",
+          pruneAfter: "365d",
+          maxEntries: 500,
+          maxDiskBytes: 1_200,
+          highWaterBytes: 700,
+        },
+      },
+    });
+
+    const now = Date.now();
+    const oldKey = "agent:main:explicit:old-trajectory-apply-budget";
+    const freshKey = "agent:main:explicit:fresh-trajectory-apply-budget";
+    await seedSqliteSessionStore(storePath, {
+      [oldKey]: { sessionId: "old-trajectory-apply-budget-session", updatedAt: now - DAY_MS },
+      [freshKey]: { sessionId: "fresh-trajectory-apply-budget-session", updatedAt: now },
+    });
+    await seedSqliteTrajectoryEvent({
+      content: "old-" + "x".repeat(1_400),
+      sessionId: "old-trajectory-apply-budget-session",
+      sessionKey: oldKey,
+      storePath,
+    });
+    await seedSqliteTrajectoryEvent({
+      content: "fresh",
+      sessionId: "fresh-trajectory-apply-budget-session",
+      sessionKey: freshKey,
+      storePath,
+    });
+
+    const applied = await runSessionsCleanup({
+      cfg: {},
+      opts: { store: storePath, enforce: true, activeKey: freshKey },
+      targets: [{ agentId: "main", storePath }],
+    });
+
+    const diskBudgetSummary = applied.appliedSummaries[0]?.diskBudget;
+    if (diskBudgetSummary === null || diskBudgetSummary === undefined) {
+      throw new Error("expected applied SQLite trajectory row-byte disk budget summary");
+    }
+    expect(diskBudgetSummary.removedEntries).toBe(1);
+    expect(loadSessionEntry({ storePath, sessionKey: oldKey })).toBeUndefined();
+    expect(loadSessionEntry({ storePath, sessionKey: freshKey })).toBeDefined();
+    await expect(
+      loadSqliteTrajectoryRuntimeEvents({
+        sessionId: "old-trajectory-apply-budget-session",
+        storePath,
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      loadSqliteTrajectoryRuntimeEvents({
+        sessionId: "fresh-trajectory-apply-budget-session",
+        storePath,
+      }),
+    ).resolves.toHaveLength(1);
   });
 
   it("sessions cleanup dry-run excludes stale and capped entry transcripts from orphan counts", async () => {

@@ -1741,3 +1741,5 @@
 {"type":"comment","timestamp":"2026-07-03T17:27:28.812974Z","issue_id":"oc-08c.5","payload":{"body":"Closed by fbf7b49106: updated trajectory and sessions CLI docs for SQLite-backed runtime capture and removed active sidecar placement guidance."}}
 {"type":"status_update","timestamp":"2026-07-03T17:28:56.63937Z","issue_id":"oc-08c.6","payload":{"status":"in_progress"}}
 {"type":"close","timestamp":"2026-07-03T17:32:08.870321Z","issue_id":"oc-08c.6","payload":{}}
+{"type":"status_update","timestamp":"2026-07-03T17:32:24.08313Z","issue_id":"oc-08c.7","payload":{"status":"in_progress"}}
+{"type":"close","timestamp":"2026-07-03T17:34:10.215926Z","issue_id":"oc-08c.7","payload":{}}
