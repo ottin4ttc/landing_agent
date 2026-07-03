@@ -613,6 +613,13 @@ describe("killSubagentRunAdmin", () => {
         updatedAt: Date.now(),
       },
     });
+    await replaceSessionEntry(
+      { sessionKey: childSessionKey, storePath },
+      {
+        sessionId: "sess-worker-finalizing",
+        updatedAt: Date.now(),
+      },
+    );
 
     addSubagentRunForTests({
       runId: "run-worker-finalizing",
@@ -1314,6 +1321,13 @@ describe("steerControlledSubagentRun", () => {
         updatedAt: Date.now(),
       },
     });
+    await replaceSessionEntry(
+      { sessionKey: childSessionKey, storePath },
+      {
+        sessionId: "sess-steer-finalizing",
+        updatedAt: Date.now(),
+      },
+    );
     addSubagentRunForTests({
       runId: "run-steer-finalizing",
       childSessionKey,
