@@ -2087,14 +2087,65 @@ function configHealthRow(entry: LegacyConfigHealthEntry): {
   };
 }
 
-function configHealthComparable(entry: LegacyConfigHealthEntry): string {
-  const row = configHealthRow(entry);
-  return JSON.stringify({
-    config_path: row.config_path,
-    last_known_good_json: row.last_known_good_json,
-    last_promoted_good_json: row.last_promoted_good_json,
-    last_observed_suspicious_signature: row.last_observed_suspicious_signature,
-  });
+type ConfigHealthComparableRow = {
+  config_path: string;
+  last_known_good_json: string | null;
+  last_promoted_good_json: string | null;
+  last_observed_suspicious_signature: string | null;
+};
+
+type ConfigHealthComparableFingerprint = {
+  hash?: unknown;
+  bytes?: unknown;
+  mode?: unknown;
+  hasMeta?: unknown;
+  gatewayMode?: unknown;
+};
+
+function configHealthFingerprintKey(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const fingerprint = parsed as ConfigHealthComparableFingerprint;
+    const mode =
+      typeof fingerprint.mode === "number" && Number.isFinite(fingerprint.mode)
+        ? fingerprint.mode & 0o777
+        : fingerprint.mode;
+    return JSON.stringify({
+      hash: fingerprint.hash,
+      bytes: fingerprint.bytes,
+      mode,
+      hasMeta: fingerprint.hasMeta,
+      gatewayMode: fingerprint.gatewayMode,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function sameConfigHealthFingerprintJson(left: string | null, right: string | null): boolean {
+  if (left === right) {
+    return true;
+  }
+  const leftKey = configHealthFingerprintKey(left);
+  return leftKey !== null && leftKey === configHealthFingerprintKey(right);
+}
+
+function configHealthEntryMatchesRow(
+  row: ConfigHealthComparableRow,
+  entry: LegacyConfigHealthEntry,
+): boolean {
+  return (
+    row.config_path === entry.configPath &&
+    sameConfigHealthFingerprintJson(row.last_known_good_json, entry.lastKnownGoodJson) &&
+    sameConfigHealthFingerprintJson(row.last_promoted_good_json, entry.lastPromotedGoodJson) &&
+    row.last_observed_suspicious_signature === entry.lastObservedSuspiciousSignature
+  );
 }
 
 function migrateLegacyConfigHealth(params: {
@@ -2133,27 +2184,14 @@ function migrateLegacyConfigHealth(params: {
               "last_observed_suspicious_signature",
             ]),
         ).rows;
-        const existingByPath = new Map(
-          existing.map(
-            (row) =>
-              [
-                row.config_path,
-                JSON.stringify({
-                  config_path: row.config_path,
-                  last_known_good_json: row.last_known_good_json,
-                  last_promoted_good_json: row.last_promoted_good_json,
-                  last_observed_suspicious_signature: row.last_observed_suspicious_signature,
-                }),
-              ] as const,
-          ),
-        );
+        const existingByPath = new Map(existing.map((row) => [row.config_path, row] as const));
         const entriesToInsert: LegacyConfigHealthEntry[] = [];
         let conflictCount = 0;
         for (const entry of entries) {
-          const existingEntryJson = existingByPath.get(entry.configPath);
-          if (existingEntryJson === undefined) {
+          const existingEntry = existingByPath.get(entry.configPath);
+          if (existingEntry === undefined) {
             entriesToInsert.push(entry);
-          } else if (existingEntryJson !== configHealthComparable(entry)) {
+          } else if (!configHealthEntryMatchesRow(existingEntry, entry)) {
             conflictCount += 1;
           }
         }
