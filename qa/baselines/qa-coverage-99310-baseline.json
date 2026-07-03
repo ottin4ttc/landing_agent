@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "generatedAt": "2026-07-03T18:55:00.000Z",
   "scope": [
-    "Wave 0 Lane 0A",
-    "Wave 0 Lane 0E"
+    "QA coverage inventory baseline",
+    "#99310 adoption verification"
   ],
   "trackingIssue": "https://github.com/openclaw/openclaw/issues/99621",
   "repository": {
@@ -2262,7 +2262,7 @@
       "telegram": 16,
       "whatsapp": 51
     },
-    "liveCoverageLaneMappedScenarioCount": 20
+    "liveCoverageMappedScenarioCount": 20
   },
   "realBoundaryRemediationClaims": [
     {
@@ -2542,7 +2542,7 @@
       "details": "sent -> edited: QA-CHANNEL-STREAMING-PREVIEW-FINAL-OK-1234567890"
     },
     {
-      "id": "wave0-existing-smokes",
+      "id": "existing-smokes",
       "surface": "docker-gateway-mcp-media",
       "runner": "blacksmith-testbox-through-crabbox",
       "provider": "blacksmith-testbox",
@@ -2608,9 +2608,30 @@
       ]
     }
   ],
-  "blockedLiveLanes": {
+  "remainingGaps": [
+    {
+      "id": "live-channel-credentials",
+      "status": "blocked",
+      "details": "Discord, Slack, Telegram, and WhatsApp live channel credentials are absent and no Convex credential broker variables are available in this worktree session."
+    },
+    {
+      "id": "real-boundary-remediation",
+      "status": "documented-not-converted",
+      "details": "Helper-backed primary claims are recorded as current ownership findings; this baseline does not change their executables or ownership."
+    }
+  ],
+  "commands": [
+    "node scripts/run-node.mjs qa coverage --json --output tmp/qa-baseline/qa-coverage.json",
+    "OPENCLAW_BUILD_PRIVATE_QA=1 node scripts/run-node.mjs qa suite --provider-mode mock-openai --scenario channel-message-flows --channel-driver qa-channel",
+    "OPENCLAW_BUILD_PRIVATE_QA=1 node scripts/run-node.mjs qa suite --provider-mode mock-openai --scenario channel-message-flows --channel-driver crabline --channel telegram",
+    "node scripts/run-vitest.mjs extensions/qa-channel/src/channel.test.ts extensions/qa-channel/src/inbound.test.ts extensions/qa-lab/src/crabline-transport.test.ts extensions/qa-lab/src/providers/mock-openai/server.test.ts extensions/qa-lab/src/qa-transport.test.ts extensions/qa-lab/src/scenario-catalog.test.ts extensions/qa-lab/src/scenario-flow-runner.test.ts extensions/qa-lab/src/scenario-runtime-api.test.ts extensions/qa-lab/src/suite-runtime-flow.test.ts",
+    "corepack pnpm openclaw qa suite --provider-mode mock-openai --scenario docker-compose-setup --scenario gateway-smoke --scenario mcp-gateway-connect-startup-retry --scenario webchat-auto-tts --concurrency 1 --fast",
+    "node scripts/run-node.mjs qa suite --provider-mode mock-openai --scenario hosted-image-generation-providers-live --allow-failures --concurrency 1 --fast",
+    "OPENCLAW_QA_MATRIX_NO_REPLY_WINDOW_MS=3000 corepack pnpm openclaw qa matrix --provider-mode mock-openai --profile fast --fail-fast"
+  ],
+  "blockedLiveExecutions": {
     "credentialBrokerAvailable": false,
-    "lanes": {
+    "executions": {
       "discord": {
         "status": "blocked",
         "missingEnvironmentVariables": [
@@ -2648,31 +2669,5 @@
         ]
       }
     }
-  },
-  "remainingGaps": [
-    {
-      "id": "live-channel-credentials",
-      "status": "blocked",
-      "details": "Discord, Slack, Telegram, and WhatsApp env credentials are absent and no Convex credential broker variables are available in this worktree session."
-    },
-    {
-      "id": "openclaw-pr-99374",
-      "status": "outside-assigned-lanes",
-      "details": "Shared script evidence writer PR remains open and is not integrated by Lane 0A or 0E."
-    },
-    {
-      "id": "real-boundary-remediation",
-      "status": "planned-wave-1-plus",
-      "details": "Helper-backed primary claims remain inventory findings; this lane does not implement their later real-boundary conversions."
-    }
-  ],
-  "commands": [
-    "node scripts/run-node.mjs qa coverage --json --output tmp/wave0/qa-coverage.json",
-    "OPENCLAW_BUILD_PRIVATE_QA=1 node scripts/run-node.mjs qa suite --provider-mode mock-openai --scenario channel-message-flows --channel-driver qa-channel",
-    "OPENCLAW_BUILD_PRIVATE_QA=1 node scripts/run-node.mjs qa suite --provider-mode mock-openai --scenario channel-message-flows --channel-driver crabline --channel telegram",
-    "node scripts/run-vitest.mjs extensions/qa-channel/src/channel.test.ts extensions/qa-channel/src/inbound.test.ts extensions/qa-lab/src/crabline-transport.test.ts extensions/qa-lab/src/providers/mock-openai/server.test.ts extensions/qa-lab/src/qa-transport.test.ts extensions/qa-lab/src/scenario-catalog.test.ts extensions/qa-lab/src/scenario-flow-runner.test.ts extensions/qa-lab/src/scenario-runtime-api.test.ts extensions/qa-lab/src/suite-runtime-flow.test.ts",
-    "corepack pnpm openclaw qa suite --provider-mode mock-openai --scenario docker-compose-setup --scenario gateway-smoke --scenario mcp-gateway-connect-startup-retry --scenario webchat-auto-tts --concurrency 1 --fast",
-    "node scripts/run-node.mjs qa suite --provider-mode mock-openai --scenario hosted-image-generation-providers-live --allow-failures --concurrency 1 --fast",
-    "OPENCLAW_QA_MATRIX_NO_REPLY_WINDOW_MS=3000 corepack pnpm openclaw qa matrix --provider-mode mock-openai --profile fast --fail-fast"
-  ]
+  }
 }

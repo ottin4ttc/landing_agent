@@ -1,8 +1,8 @@
-# E2E Expansion Wave 0 Baseline
+# QA Coverage and #99310 Adoption Baseline
 
 Baseline source revision: `df1452799b28782ebfe273b4dcaf779cf34ced38`  
 Tracking issue: https://github.com/openclaw/openclaw/issues/99621  
-Scope: Wave 0 Lanes 0A and 0E only.
+Scope: committed QA inventory, dependency proof, and current execution evidence.
 
 ## Repository Alignment
 
@@ -30,9 +30,9 @@ Scope: Wave 0 Lanes 0A and 0E only.
 | Duplicate legacy live IDs     |        0 |
 | Cross-catalog duplicate IDs   |        0 |
 
-The complete scenario list, execution kinds, source paths, and coverage claims are in `qa/baselines/e2e-expansion-wave0.json`.
+The complete scenario list, execution kinds, source paths, and coverage claims are in `qa/baselines/qa-coverage-99310-baseline.json`.
 
-The live catalog total is Discord 6, Slack 9, Telegram 16, and WhatsApp 51. The separate coverage-lane inventory maps 20 of those live scenarios into the standard coverage report.
+The live catalog total is Discord 6, Slack 9, Telegram 16, and WhatsApp 51. The standard coverage inventory maps 20 of those live scenarios.
 
 ## Real-Boundary Findings
 
@@ -41,7 +41,7 @@ The plan-listed helper-backed primary claims remain visible in the machine-reada
 - `channel-message-flows`: canonical transport-native flow from merged #99310.
 - `native-command-session-target`: existing canonical transport-native flow.
 
-The remaining listed claims retain their current helper/Vitest ownership for later Wave 1+ conversion. Three plan names are not canonical scenario IDs at this revision: `active-talk-agent-run-status`, `voice-call-cli-rpc-agent-tool`, and `telegram-bot-token`.
+The remaining listed claims retain their current helper/Vitest ownership. This baseline records that ownership without changing the executable boundary. Three reviewed claim names are not canonical scenario IDs at this revision: `active-talk-agent-run-status`, `voice-call-cli-rpc-agent-tool`, and `telegram-bot-token`.
 
 ## #99310 Adoption
 
@@ -77,22 +77,22 @@ QA Channel observed `sent -> edited -> edited -> edited`; Crabline Telegram obse
 
 Remote proof used Blacksmith Testbox through Crabbox lease `tbx_01kwmn13d2ttf48fq8z555027v`.
 
-## Blocked Live Lanes
+## Blocked Live Executions
 
-Discord, Slack, Telegram, and WhatsApp live channel lanes are credential-blocked in this session. Their required environment variables are absent, and no Convex credential broker configuration is available. This is recorded as blocked baseline state, not passing coverage. Hosted live image generation did have a safe configured credential path and passed.
+Discord, Slack, Telegram, and WhatsApp live channel executions are credential-blocked in this session. Their required environment variables are absent, and no Convex credential broker configuration is available. This is recorded as blocked baseline state, not passing coverage. Hosted live image generation did have a safe configured credential path and passed.
 
-## Remaining Wave 0 Gaps
+## Known Limitations
 
-- PR #99374 remains open; its shared script evidence writer integration belongs to Lane 0C, not this assigned Lane 0A/0E scope.
-- Real-boundary remediation findings are inventory only here; implementation belongs to later waves.
-- No Wave 1+ transport schema, evidence writer, or duplicate-ID validator implementation is included.
+- Discord, Slack, Telegram, and WhatsApp live channel credentials were unavailable for this capture.
+- Helper-backed primary claims are documented but not converted to different executables by this baseline.
+- No runtime behavior, transport schema, evidence writer, or duplicate-ID validator implementation is included.
 
 ## Reproduction
 
 ```bash
-node scripts/run-node.mjs qa coverage --json --output tmp/wave0/qa-coverage.json
+node scripts/run-node.mjs qa coverage --json --output tmp/qa-baseline/qa-coverage.json
 OPENCLAW_BUILD_PRIVATE_QA=1 node scripts/run-node.mjs qa suite --provider-mode mock-openai --scenario channel-message-flows --channel-driver qa-channel
 OPENCLAW_BUILD_PRIVATE_QA=1 node scripts/run-node.mjs qa suite --provider-mode mock-openai --scenario channel-message-flows --channel-driver crabline --channel telegram
 ```
 
-Broader smoke and Matrix commands are recorded in `qa/baselines/e2e-expansion-wave0.json` with runner/provider details.
+Broader smoke and Matrix commands are recorded in `qa/baselines/qa-coverage-99310-baseline.json` with runner/provider details.
