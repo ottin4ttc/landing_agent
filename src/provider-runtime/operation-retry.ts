@@ -1,6 +1,7 @@
 // Provider operation retry helpers run retryable provider operations with backoff.
 import { sleepWithAbort } from "../infra/backoff.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { computeExponentialRetryDelayMs } from "../infra/retry-delay.js";
 
 export type ProviderOperationRetryStage = "read" | "poll" | "download" | "create";
 
@@ -195,7 +196,7 @@ export function resolveTransientProviderDelayMs(
     baseDelayMs,
     Math.round(Number.isFinite(rawMaxDelayMs) ? rawMaxDelayMs : 1_000),
   );
-  return Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(attemptNumber - 1, 0));
+  return computeExponentialRetryDelayMs(baseDelayMs, attemptNumber, maxDelayMs);
 }
 
 export function shouldRetrySameKeyProviderOperation(params: {

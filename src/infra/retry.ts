@@ -3,6 +3,7 @@ import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { MAX_TIMER_TIMEOUT_MS, resolveTimerTimeoutMs } from "../shared/number-coercion.js";
 import { sleep } from "../utils.js";
 import { toErrorObject } from "./errors.js";
+import { computeExponentialRetryDelayMs } from "./retry-delay.js";
 import { generateSecureFraction } from "./secure-random.js";
 
 /** Retry timing knobs shared by generic retry runners and channel retry policies. */
@@ -121,7 +122,7 @@ export async function retryAsync<T>(
         if (i === attempts - 1) {
           break;
         }
-        const delay = resolveRetryDelayMs(initialDelayMs * 2 ** i);
+        const delay = resolveRetryDelayMs(computeExponentialRetryDelayMs(initialDelayMs, i + 1));
         await sleep(delay);
       }
     }
@@ -161,7 +162,7 @@ export async function retryAsync<T>(
       const hasRetryAfter = typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs);
       const baseDelay = hasRetryAfter
         ? Math.max(retryAfterMs, minDelayMs)
-        : minDelayMs * 2 ** (attempt - 1);
+        : computeExponentialRetryDelayMs(minDelayMs, attempt, maxDelayMs);
       const delayCap = hasRetryAfter ? retryAfterMaxDelayMs : maxDelayMs;
       let delay = Math.min(baseDelay, delayCap);
       // Server-supplied Retry-After is a lower-bound contract with the

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   executeProviderOperationWithRetry,
   resolveTransientProviderAttempts,
+  resolveTransientProviderDelayMs,
 } from "./operation-retry.js";
 
 describe("resolveTransientProviderAttempts", () => {
@@ -16,6 +17,26 @@ describe("resolveTransientProviderAttempts", () => {
   it("keeps valid attempt counts as integers", () => {
     expect(resolveTransientProviderAttempts({ attempts: 0 })).toBe(1);
     expect(resolveTransientProviderAttempts({ attempts: 3 })).toBe(3);
+  });
+});
+
+describe("resolveTransientProviderDelayMs", () => {
+  it("uses one-based exponential delays and caps growth", () => {
+    const options = { attempts: 4, baseDelayMs: 250, maxDelayMs: 1_000 };
+
+    expect(resolveTransientProviderDelayMs(options, 0)).toBe(250);
+    expect(resolveTransientProviderDelayMs(options, 1)).toBe(250);
+    expect(resolveTransientProviderDelayMs(options, 2)).toBe(500);
+    expect(resolveTransientProviderDelayMs(options, 4)).toBe(1_000);
+  });
+
+  it("preserves provider delay normalization before calculation", () => {
+    expect(
+      resolveTransientProviderDelayMs(
+        { attempts: 2, baseDelayMs: Number.NaN, maxDelayMs: Number.NaN },
+        2,
+      ),
+    ).toBe(500);
   });
 });
 
