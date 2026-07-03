@@ -1739,3 +1739,5 @@
 {"type":"comment","timestamp":"2026-07-03T17:27:27.5872Z","issue_id":"oc-08c.3","payload":{"body":"Closed by 04d2297c13: trajectory export and sessions tail read SQLite runtime rows for marker-backed sessions; follow mode uses storage seq cursors."}}
 {"type":"comment","timestamp":"2026-07-03T17:27:28.173453Z","issue_id":"oc-08c.4","payload":{"body":"Closed by 6e7ef63252: Codex app-server trajectory capture writes marker-backed events through the session-store runtime SDK seam into SQLite rows."}}
 {"type":"comment","timestamp":"2026-07-03T17:27:28.812974Z","issue_id":"oc-08c.5","payload":{"body":"Closed by fbf7b49106: updated trajectory and sessions CLI docs for SQLite-backed runtime capture and removed active sidecar placement guidance."}}
+{"type":"status_update","timestamp":"2026-07-03T17:28:56.63937Z","issue_id":"oc-08c.6","payload":{"status":"in_progress"}}
+{"type":"close","timestamp":"2026-07-03T17:32:08.870321Z","issue_id":"oc-08c.6","payload":{}}

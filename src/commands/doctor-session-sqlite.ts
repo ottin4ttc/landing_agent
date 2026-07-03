@@ -936,12 +936,30 @@ function moveImportedTranscriptArtifactsToArchive(
       moveImportedTranscriptToArchive(target, sessionKey, trajectoryPath, "trajectory", activeRun),
     );
   }
+  const trajectoryPointerPath = resolveTrajectoryPointerPath(transcriptPath);
+  if (trajectoryPointerPath && fs.existsSync(trajectoryPointerPath)) {
+    archived.push(
+      moveImportedTranscriptToArchive(
+        target,
+        sessionKey,
+        trajectoryPointerPath,
+        "trajectory",
+        activeRun,
+      ),
+    );
+  }
   return archived;
 }
 
 function resolveTrajectoryPath(transcriptPath: string): string | undefined {
   return transcriptPath.endsWith(".jsonl")
     ? `${transcriptPath.slice(0, -".jsonl".length)}.trajectory.jsonl`
+    : undefined;
+}
+
+function resolveTrajectoryPointerPath(transcriptPath: string): string | undefined {
+  return transcriptPath.endsWith(".jsonl")
+    ? `${transcriptPath.slice(0, -".jsonl".length)}.trajectory-path.json`
     : undefined;
 }
 

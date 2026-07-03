@@ -353,6 +353,45 @@ describe("runDoctorSessionSqlite", () => {
     ]);
   });
 
+  it("archives legacy trajectory pointer files with imported transcripts", async () => {
+    const store = createLegacyStore();
+    const pointerPath = path.join(store.sessionDir, "session-1.trajectory-path.json");
+    fs.writeFileSync(
+      pointerPath,
+      `${JSON.stringify({
+        traceSchema: "openclaw-trajectory-pointer",
+        schemaVersion: 1,
+        sessionId: "session-1",
+        runtimeFile: store.trajectoryPath,
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const expectedPointerPath = canonicalTestPath(pointerPath);
+
+    const report = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "import",
+      store: store.storePath,
+    });
+    const archivedNames =
+      report.targets[0]?.archivedTranscriptFiles.map((filePath) => path.basename(filePath)) ?? [];
+
+    expect(fs.existsSync(pointerPath)).toBe(false);
+    expect(archivedNames).toEqual(
+      expect.arrayContaining([expect.stringContaining("session-1.trajectory-path.json.imported-")]),
+    );
+    expect(
+      readMigrationManifest(report.migrationRun?.manifestPath).targets[0]?.plannedMoves,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "trajectory",
+          sourcePath: expectedPointerPath,
+        }),
+      ]),
+    );
+  });
+
   it("restores archived artifacts from the migration manifest", async () => {
     const store = createLegacyStore();
     const importReport = await runDoctorSessionSqlite({
