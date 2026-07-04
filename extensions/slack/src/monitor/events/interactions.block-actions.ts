@@ -9,7 +9,9 @@ import {
   parseStrictFiniteNumber,
   timestampMsToIsoString,
 } from "openclaw/plugin-sdk/number-runtime";
+import { parseAgentSessionKey, parseThreadSessionSuffix } from "openclaw/plugin-sdk/routing";
 import {
+  normalizeOptionalLowercaseString,
   normalizeOptionalString,
   normalizeUniqueTrimmedStringList,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -127,6 +129,38 @@ type ParsedSlackBlockAction = {
   threadTs?: string;
   actionSummary: SlackActionSummary;
 };
+
+type SlackModalSessionAuthority =
+  | { kind: "room"; channelId: string; channelType: "channel" | "group" }
+  | { kind: "direct" }
+  | { kind: "unknown" };
+
+function resolveSlackModalSessionAuthority(
+  sessionKey: string | undefined,
+): SlackModalSessionAuthority {
+  const baseSessionKey = parseThreadSessionSuffix(sessionKey).baseSessionKey;
+  const parsed = parseAgentSessionKey(baseSessionKey);
+  if (!parsed) {
+    return { kind: "unknown" };
+  }
+  const parts = parsed.rest.split(":");
+  if (normalizeOptionalLowercaseString(parts[0]) !== "slack") {
+    return { kind: "unknown" };
+  }
+  const routeKind = normalizeOptionalLowercaseString(parts[1]);
+  const peerId = parts.length === 3 ? normalizeOptionalString(parts[2]) : undefined;
+  if ((routeKind === "direct" || routeKind === "dm") && peerId) {
+    return { kind: "direct" };
+  }
+  if ((routeKind === "channel" || routeKind === "group") && peerId) {
+    return { kind: "room", channelId: peerId, channelType: routeKind };
+  }
+  return { kind: "unknown" };
+}
+
+function slackChannelIdsMatch(left: string, right: string): boolean {
+  return normalizeOptionalLowercaseString(left) === normalizeOptionalLowercaseString(right);
+}
 
 function readOptionValues(options: unknown): string[] | undefined {
   if (!Array.isArray(options)) {
@@ -530,38 +564,51 @@ async function bindSlackModalBlockActionRequestUserAuthority(params: {
   if (!view) {
     return params.parsed;
   }
+  const hasRequestUserPolicy = Object.values(params.ctx.channelsConfig ?? {}).some(
+    (channel) => channel.requestUsers !== undefined,
+  );
+  if (!hasRequestUserPolicy) {
+    return params.parsed;
+  }
   const metadata = parseSlackModalPrivateMetadata(view.private_metadata);
-  const metadataPolicy = await resolveSlackRoomRequestUserPolicy({
+  const sessionAuthority = resolveSlackModalSessionAuthority(metadata.sessionKey);
+  const sessionRoom = sessionAuthority.kind === "room" ? sessionAuthority : undefined;
+  const channelIds = [metadata.channelId, params.parsed.channelId, sessionRoom?.channelId].filter(
+    (value): value is string => Boolean(value),
+  );
+  const channelsAgree = channelIds.every((channelId) =>
+    slackChannelIdsMatch(channelId, channelIds[0] ?? channelId),
+  );
+  const channelId = metadata.channelId ?? params.parsed.channelId ?? sessionRoom?.channelId;
+  if (!channelsAgree || (!channelId && sessionAuthority.kind !== "direct")) {
+    params.ctx.runtime.log?.(
+      `slack:interaction drop modal action=${params.parsed.actionId} user=${params.parsed.userId} channel=${channelId ?? "unknown"} reason=unresolved-request-user-room`,
+    );
+    await respondEphemeral(params.respond, "You are not authorized to use this control.");
+    return null;
+  }
+  if (!channelId) {
+    return params.parsed;
+  }
+  const requestUserPolicy = await resolveSlackRoomRequestUserPolicy({
     ctx: params.ctx,
-    channelId: metadata.channelId,
-    channelType: metadata.channelType,
+    channelId,
+    channelType: sessionRoom?.channelType ?? metadata.channelType,
   });
-  const bodyPolicy =
-    params.parsed.channelId && params.parsed.channelId !== metadata.channelId
-      ? await resolveSlackRoomRequestUserPolicy({
-          ctx: params.ctx,
-          channelId: params.parsed.channelId,
-        })
-      : metadataPolicy;
-  const requestUserPolicy = metadataPolicy.configured ? metadataPolicy : bodyPolicy;
-  if (!metadataPolicy.configured && !bodyPolicy.configured) {
+  if (!requestUserPolicy.configured) {
     return params.parsed;
   }
   const metadataMatchesActor = Boolean(metadata.userId && metadata.userId === params.parsed.userId);
-  const metadataMatchesChannel = Boolean(
-    metadata.channelId &&
-    (!params.parsed.channelId || params.parsed.channelId === metadata.channelId),
-  );
-  if (!metadataMatchesActor || !metadataMatchesChannel) {
+  if (!metadataMatchesActor) {
     params.ctx.runtime.log?.(
-      `slack:interaction drop modal action=${params.parsed.actionId} user=${params.parsed.userId} channel=${metadata.channelId ?? params.parsed.channelId ?? "unknown"} reason=invalid-private-metadata-authority`,
+      `slack:interaction drop modal action=${params.parsed.actionId} user=${params.parsed.userId} channel=${channelId} reason=invalid-private-metadata-authority`,
     );
     await respondEphemeral(params.respond, "You are not authorized to use this control.");
     return null;
   }
   return {
     ...params.parsed,
-    channelId: metadata.channelId,
+    channelId,
     channelTypeHint: requestUserPolicy.channelType,
     expectedUserId: metadata.userId,
   };

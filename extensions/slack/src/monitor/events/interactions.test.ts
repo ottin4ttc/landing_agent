@@ -2035,6 +2035,114 @@ describe("registerSlackInteractionEvents", () => {
     });
   });
 
+  it.each([
+    {
+      name: "plugin",
+      action: {
+        type: "button",
+        action_id: "plugin.modal:submit",
+        value: "confirm",
+      },
+    },
+    {
+      name: "approval",
+      action: {
+        type: "button",
+        action_id: "openclaw:reply_button",
+        value: "/approve req-modal-session-route allow-once",
+      },
+    },
+  ])(
+    "blocks modal $name dispatch for a global sender outside session-routed requestUsers",
+    async ({ action }) => {
+      const { ctx, getHandler, resolveChannelName } = createContext({
+        allowFrom: ["U_OTHER"],
+        channelsConfig: { C1: { requestUsers: ["U_OWNER"] } },
+        cfg: {
+          channels: {
+            slack: {
+              allowFrom: ["U_OTHER"],
+              execApprovals: {
+                enabled: true,
+                approvers: ["U_OTHER"],
+                target: "both",
+              },
+            },
+          },
+        },
+        resolveChannelName: async () => ({ name: "general", type: "channel" }),
+      });
+      registerSlackInteractionEvents({ ctx: ctx as never });
+      const ack = vi.fn().mockResolvedValue(undefined);
+      const respond = vi.fn().mockResolvedValue(undefined);
+
+      await getHandler()({
+        ack,
+        respond,
+        body: {
+          user: { id: "U_OTHER" },
+          view: {
+            id: "V_SESSION_ROUTE",
+            private_metadata: JSON.stringify({
+              sessionKey: "agent:ops:slack:channel:C1:thread:100.200",
+              userId: "U_OTHER",
+            }),
+          },
+        },
+        action,
+      });
+
+      expect(ack).toHaveBeenCalled();
+      expect(resolveChannelName).toHaveBeenCalledWith("c1");
+      expect(dispatchPluginInteractiveHandlerMock).not.toHaveBeenCalled();
+      expect(resolveApprovalOverGatewayMock).not.toHaveBeenCalled();
+      expect(resolvePluginConversationBindingApprovalMock).not.toHaveBeenCalled();
+      expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledWith({
+        text: "You are not authorized to use this control.",
+        response_type: "ephemeral",
+      });
+    },
+  );
+
+  it("fails closed before modal dispatch when requestUsers has no trusted room route", async () => {
+    const { ctx, getHandler, resolveChannelName } = createContext({
+      allowFrom: ["U_OTHER"],
+      channelsConfig: { C1: { requestUsers: ["U_OWNER"] } },
+    });
+    registerSlackInteractionEvents({ ctx: ctx as never });
+    const respond = vi.fn().mockResolvedValue(undefined);
+
+    await getHandler()({
+      ack: vi.fn().mockResolvedValue(undefined),
+      respond,
+      body: {
+        user: { id: "U_OTHER" },
+        view: {
+          id: "V_MISSING_ROUTE",
+          private_metadata: JSON.stringify({
+            sessionKey: "agent:ops:main",
+            userId: "U_OTHER",
+          }),
+        },
+      },
+      action: {
+        type: "button",
+        action_id: "plugin.modal:submit",
+        value: "confirm",
+      },
+    });
+
+    expect(resolveChannelName).not.toHaveBeenCalled();
+    expect(dispatchPluginInteractiveHandlerMock).not.toHaveBeenCalled();
+    expect(resolveApprovalOverGatewayMock).not.toHaveBeenCalled();
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith({
+      text: "You are not authorized to use this control.",
+      response_type: "ephemeral",
+    });
+  });
+
   it("blocks wildcard global allowFrom from bypassing configured channel users", async () => {
     enqueueSystemEventMock.mockClear();
     const { ctx, app, getHandler } = createContext({
