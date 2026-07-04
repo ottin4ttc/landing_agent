@@ -1037,7 +1037,9 @@ const uiProtocolFreshnessCheck: HealthCheck = {
   },
 };
 
-function createWorkspaceSuggestionsCheck(deps: CoreHealthCheckDeps): HealthCheck {
+function createWorkspaceSuggestionsCheck(
+  deps: CoreHealthCheckDeps,
+): HealthCheck & { readonly defaultEnabled: false } {
   return {
     id: "core/doctor/workspace-suggestions",
     kind: "core",
