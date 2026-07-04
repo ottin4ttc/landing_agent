@@ -480,14 +480,17 @@ All config keys can be set via environment variables instead:
 
 ## Member info action
 
-OpenClaw exposes a Graph-backed `member-info` action for Microsoft Teams so agents and automations can resolve channel member details (display name, email, role) directly from Microsoft Graph.
+OpenClaw exposes a Graph-backed `member-info` action for Microsoft Teams so agents and automations can resolve verified roster details for a configured conversation.
 
 Requirements:
 
-- `Member.Read.Group` RSC permission (already in the recommended manifest)
-- For cross-team lookups: `User.Read.All` Graph Application permission with admin consent
+- `ChannelSettings.Read.Group` and `TeamMember.Read.Group` RSC permissions (already in the recommended manifest)
 
 The action is gated by `channels.msteams.actions.memberInfo` (default: enabled when Graph credentials are available).
+Standard-channel lookups return the matching team-roster identity, display name, email, and roles.
+In the current DM or group chat, the action can return the trusted sender's stable user ID.
+Private/shared-channel and non-current chat member lookups require additional roster permissions
+and are rejected by the default permission baseline.
 
 ## History context
 

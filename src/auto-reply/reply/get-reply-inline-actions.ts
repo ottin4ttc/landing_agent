@@ -356,6 +356,7 @@ export async function handleInlineActions(params: {
           senderE164: ctx.SenderE164,
           originatingTo: ctx.OriginatingTo,
           to: ctx.To,
+          nativeChannelId: ctx.NativeChannelId,
           messageThreadId: ctx.MessageThreadId,
           memberRoleIds: ctx.MemberRoleIds,
         },

@@ -32,7 +32,10 @@ import { normalizeMessagePresentation } from "openclaw/plugin-sdk/interactive-ru
 import { createLazyRuntimeNamedExport } from "openclaw/plugin-sdk/lazy-runtime";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { createComputedAccountStatusAdapter } from "openclaw/plugin-sdk/status-helpers";
-import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { PluginRuntime } from "../runtime-api.js";
 import {
   inspectFeishuCredentials,
@@ -59,6 +62,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   PAIRING_APPROVED_MESSAGE,
 } from "./channel-runtime-api.js";
+import { normalizeFeishuChatType, resolveFeishuChatType } from "./chat-type.js";
 import { isRecord } from "./comment-shared.js";
 import { FeishuConfigSchema } from "./config-schema.js";
 import {
@@ -68,11 +72,23 @@ import {
   parseFeishuDirectConversationId,
   parseFeishuTargetId,
 } from "./conversation-id.js";
-import { listFeishuDirectoryGroups, listFeishuDirectoryPeers } from "./directory.static.js";
+import {
+  listAuthorizedFeishuDirectoryGroups,
+  listAuthorizedFeishuDirectoryPeers,
+  listFeishuDirectoryGroups,
+  listFeishuDirectoryPeers,
+} from "./directory.static.js";
 import { feishuDoctor } from "./doctor.js";
 import { messageActionTargetAliases } from "./message-action-contract.js";
 import { resolveFeishuGroupToolPolicy } from "./policy.js";
 import { buildFeishuPresentationCard } from "./presentation-card.js";
+import {
+  assertFeishuChatReadAllowed,
+  authorizeFeishuChatMemberRead,
+  canEnumerateAllFeishuGroups,
+  canEnumerateAllFeishuPeers,
+  isFeishuGroupReadAllowed,
+} from "./read-policy.js";
 import { collectRuntimeConfigAssignments, secretTargetRegistryEntries } from "./secret-contract.js";
 import { collectFeishuSecurityAuditFindings } from "./security-audit.js";
 import { createFeishuSendReceipt } from "./send-result.js";
@@ -199,6 +215,20 @@ const feishuMessageAdapter = defineChannelMessageAdapter({
 async function createFeishuActionClient(account: ResolvedFeishuAccount) {
   const { createFeishuClient } = await import("./client.js");
   return createFeishuClient(account);
+}
+
+async function resolveFeishuMessageChatType(params: {
+  account: ResolvedFeishuAccount;
+  message: { chatId: string; chatType?: unknown };
+  runtime: Awaited<ReturnType<typeof loadFeishuChannelRuntime>>;
+}) {
+  const knownChatType = normalizeFeishuChatType(params.message.chatType);
+  if (knownChatType) {
+    return knownChatType;
+  }
+  const client = await createFeishuActionClient(params.account);
+  const chat = await params.runtime.getChatInfo(client, params.message.chatId);
+  return resolveFeishuChatType(chat);
 }
 
 const collectFeishuSecurityWarnings = createAllowlistProviderGroupPolicyWarningCollector<{
@@ -622,6 +652,12 @@ function resolveFeishuMemberId(params: Record<string, unknown>): string | undefi
 function resolveFeishuMemberIdType(
   params: Record<string, unknown>,
 ): "open_id" | "user_id" | "union_id" {
+  return resolveRequestedFeishuMemberIdType(params) ?? "open_id";
+}
+
+function resolveRequestedFeishuMemberIdType(
+  params: Record<string, unknown>,
+): "open_id" | "user_id" | "union_id" | undefined {
   const raw = readFirstString(params, [
     "memberIdType",
     "member_id_type",
@@ -643,7 +679,10 @@ function resolveFeishuMemberIdType(
   ) {
     return "union_id";
   }
-  return "open_id";
+  if (readFirstString(params, ["openId", "open_id"])) {
+    return "open_id";
+  }
+  return undefined;
 }
 
 export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResult> =
@@ -848,8 +887,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             if (!messageId) {
               throw new Error("Feishu read requires messageId.");
             }
-            const { getMessageFeishu } = await loadFeishuChannelRuntime();
-            const message = await getMessageFeishu({
+            const runtime = await loadFeishuChannelRuntime();
+            const message = await runtime.getMessageFeishu({
               cfg: ctx.cfg,
               messageId,
               accountId: ctx.accountId ?? undefined,
@@ -868,6 +907,13 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
                 details: { error: `Feishu read failed or message not found: ${messageId}` },
               };
             }
+            assertFeishuChatReadAllowed({
+              cfg: ctx.cfg,
+              account,
+              chatId: message.chatId,
+              chatType: await resolveFeishuMessageChatType({ account, message, runtime }),
+              ctx,
+            });
             return jsonActionResult({ ok: true, channel: "feishu", action: "read", message });
           }
 
@@ -935,7 +981,17 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             if (!chatId) {
               throw new Error("Feishu list-pins requires chatId or channelId.");
             }
-            const { listPinsFeishu } = await loadFeishuChannelRuntime();
+            const runtime = await loadFeishuChannelRuntime();
+            const client = await createFeishuActionClient(account);
+            const chat = await runtime.getChatInfo(client, chatId);
+            assertFeishuChatReadAllowed({
+              cfg: ctx.cfg,
+              account,
+              chatId,
+              chatType: resolveFeishuChatType(chat),
+              ctx,
+            });
+            const { listPinsFeishu } = runtime;
             const result = await listPinsFeishu({
               cfg: ctx.cfg,
               chatId,
@@ -961,9 +1017,17 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             const runtime = await loadFeishuChannelRuntime();
             const client = await createFeishuActionClient(account);
             const channel = await runtime.getChatInfo(client, chatId);
+            const chatType = resolveFeishuChatType(channel);
             const includeMembers =
               ctx.params.includeMembers === true || ctx.params.members === true;
             if (!includeMembers) {
+              assertFeishuChatReadAllowed({
+                cfg: ctx.cfg,
+                account,
+                chatId,
+                chatType,
+                ctx,
+              });
               return jsonActionResult({
                 ok: true,
                 provider: "feishu",
@@ -971,13 +1035,25 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
                 channel,
               });
             }
-            const members = await runtime.getChatMembers(
-              client,
+            const requestedMemberIdType = resolveRequestedFeishuMemberIdType(ctx.params);
+            const authorization = authorizeFeishuChatMemberRead({
+              cfg: ctx.cfg,
+              account,
               chatId,
-              readOptionalPositiveInteger(ctx.params, ["pageSize", "page_size"]),
-              readFirstString(ctx.params, ["pageToken", "page_token"]),
-              resolveFeishuMemberIdType(ctx.params),
-            );
+              chatType,
+              ctx,
+              memberIdType: requestedMemberIdType,
+            });
+            const members =
+              authorization.kind === "direct"
+                ? runtime.buildFeishuDirectChatMembers(authorization)
+                : await runtime.getChatMembers(
+                    client,
+                    chatId,
+                    readOptionalPositiveInteger(ctx.params, ["pageSize", "page_size"]),
+                    readFirstString(ctx.params, ["pageToken", "page_token"]),
+                    resolveFeishuMemberIdType(ctx.params),
+                  );
             return jsonActionResult({
               ok: true,
               provider: "feishu",
@@ -992,10 +1068,38 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             const client = await createFeishuActionClient(account);
             const memberId = resolveFeishuMemberId(ctx.params);
             if (memberId) {
+              const chatId = resolveFeishuChatId(ctx);
+              if (!chatId) {
+                throw new Error(
+                  "Feishu member-info requires chatId or channelId when memberId is provided.",
+                );
+              }
+              const chat = await runtime.getChatInfo(client, chatId);
+              const requestedMemberIdType = resolveRequestedFeishuMemberIdType(ctx.params);
+              const memberIdType = resolveFeishuMemberIdType(ctx.params);
+              const authorization = authorizeFeishuChatMemberRead({
+                cfg: ctx.cfg,
+                account,
+                chatId,
+                chatType: resolveFeishuChatType(chat),
+                ctx,
+                memberId,
+                memberIdType: requestedMemberIdType,
+              });
+              if (authorization.kind === "group") {
+                await runtime.assertFeishuChatMember(client, chatId, memberId, memberIdType);
+                const member = await runtime.getFeishuMemberInfo(client, memberId, memberIdType);
+                return jsonActionResult({
+                  ok: true,
+                  channel: "feishu",
+                  action: "member-info",
+                  member,
+                });
+              }
               const member = await runtime.getFeishuMemberInfo(
                 client,
-                memberId,
-                resolveFeishuMemberIdType(ctx.params),
+                authorization.memberId,
+                authorization.memberIdType,
               );
               return jsonActionResult({
                 ok: true,
@@ -1008,13 +1112,26 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             if (!chatId) {
               throw new Error("Feishu member-info requires memberId or chatId/channelId.");
             }
-            const members = await runtime.getChatMembers(
-              client,
+            const chat = await runtime.getChatInfo(client, chatId);
+            const requestedMemberIdType = resolveRequestedFeishuMemberIdType(ctx.params);
+            const authorization = authorizeFeishuChatMemberRead({
+              cfg: ctx.cfg,
+              account,
               chatId,
-              readOptionalPositiveInteger(ctx.params, ["pageSize", "page_size"]),
-              readFirstString(ctx.params, ["pageToken", "page_token"]),
-              resolveFeishuMemberIdType(ctx.params),
-            );
+              chatType: resolveFeishuChatType(chat),
+              ctx,
+              memberIdType: requestedMemberIdType,
+            });
+            const members =
+              authorization.kind === "direct"
+                ? runtime.buildFeishuDirectChatMembers(authorization)
+                : await runtime.getChatMembers(
+                    client,
+                    chatId,
+                    readOptionalPositiveInteger(ctx.params, ["pageSize", "page_size"]),
+                    readFirstString(ctx.params, ["pageToken", "page_token"]),
+                    resolveFeishuMemberIdType(ctx.params),
+                  );
             return jsonActionResult({
               ok: true,
               channel: "feishu",
@@ -1028,19 +1145,33 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             const query = readFirstString(ctx.params, ["query"]);
             const limit = readOptionalPositiveInteger(ctx.params, ["limit"]);
             const scope = readFirstString(ctx.params, ["scope", "kind"]) ?? "all";
+            const listGroups = canEnumerateAllFeishuGroups(ctx.cfg, account)
+              ? runtime.listFeishuDirectoryGroupsLive
+              : listAuthorizedFeishuDirectoryGroups;
+            const listPeers = canEnumerateAllFeishuPeers(account)
+              ? runtime.listFeishuDirectoryPeersLive
+              : listAuthorizedFeishuDirectoryPeers;
+            const directoryParams = {
+              cfg: ctx.cfg,
+              query,
+              limit,
+              accountId: ctx.accountId ?? undefined,
+              fallbackToStatic: false,
+            };
+            const groupDirectoryParams = {
+              ...directoryParams,
+              filter: canEnumerateAllFeishuGroups(ctx.cfg, account)
+                ? (group: { id: string }) =>
+                    isFeishuGroupReadAllowed(ctx.cfg, account, group.id, false)
+                : undefined,
+            };
             if (
               scope === "groups" ||
               scope === "group" ||
               scope === "channels" ||
               scope === "channel"
             ) {
-              const groups = await runtime.listFeishuDirectoryGroupsLive({
-                cfg: ctx.cfg,
-                query,
-                limit,
-                fallbackToStatic: false,
-                accountId: ctx.accountId ?? undefined,
-              });
+              const groups = await listGroups(groupDirectoryParams);
               return jsonActionResult({
                 ok: true,
                 channel: "feishu",
@@ -1056,13 +1187,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
               scope === "users" ||
               scope === "user"
             ) {
-              const peers = await runtime.listFeishuDirectoryPeersLive({
-                cfg: ctx.cfg,
-                query,
-                limit,
-                fallbackToStatic: false,
-                accountId: ctx.accountId ?? undefined,
-              });
+              const peers = await listPeers(directoryParams);
               return jsonActionResult({
                 ok: true,
                 channel: "feishu",
@@ -1071,20 +1196,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
               });
             }
             const [groups, peers] = await Promise.all([
-              runtime.listFeishuDirectoryGroupsLive({
-                cfg: ctx.cfg,
-                query,
-                limit,
-                fallbackToStatic: false,
-                accountId: ctx.accountId ?? undefined,
-              }),
-              runtime.listFeishuDirectoryPeersLive({
-                cfg: ctx.cfg,
-                query,
-                limit,
-                fallbackToStatic: false,
-                accountId: ctx.accountId ?? undefined,
-              }),
+              listGroups(groupDirectoryParams),
+              listPeers(directoryParams),
             ]);
             return jsonActionResult({
               ok: true,
@@ -1107,9 +1220,23 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
               if (!emoji) {
                 throw new Error("Emoji is required to remove a Feishu reaction.");
               }
-              const { listReactionsFeishu, removeReactionFeishu } =
-                await loadFeishuChannelRuntime();
-              const matches = await listReactionsFeishu({
+              const runtime = await loadFeishuChannelRuntime();
+              const message = await runtime.getMessageFeishu({
+                cfg: ctx.cfg,
+                messageId,
+                accountId: ctx.accountId ?? undefined,
+              });
+              if (!message) {
+                throw new Error(`Feishu message not found: ${messageId}`);
+              }
+              assertFeishuChatReadAllowed({
+                cfg: ctx.cfg,
+                account,
+                chatId: message.chatId,
+                chatType: await resolveFeishuMessageChatType({ account, message, runtime }),
+                ctx,
+              });
+              const matches = await runtime.listReactionsFeishu({
                 cfg: ctx.cfg,
                 messageId,
                 emojiType: emoji,
@@ -1119,7 +1246,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
               if (!ownReaction) {
                 return jsonActionResult({ ok: true, removed: null });
               }
-              await removeReactionFeishu({
+              await runtime.removeReactionFeishu({
                 cfg: ctx.cfg,
                 messageId,
                 reactionId: ownReaction.reactionId,
@@ -1133,16 +1260,30 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
                   "Emoji is required to add a Feishu reaction. Set clearAll=true to remove all bot reactions.",
                 );
               }
-              const { listReactionsFeishu, removeReactionFeishu } =
-                await loadFeishuChannelRuntime();
-              const reactions = await listReactionsFeishu({
+              const runtime = await loadFeishuChannelRuntime();
+              const message = await runtime.getMessageFeishu({
+                cfg: ctx.cfg,
+                messageId,
+                accountId: ctx.accountId ?? undefined,
+              });
+              if (!message) {
+                throw new Error(`Feishu message not found: ${messageId}`);
+              }
+              assertFeishuChatReadAllowed({
+                cfg: ctx.cfg,
+                account,
+                chatId: message.chatId,
+                chatType: await resolveFeishuMessageChatType({ account, message, runtime }),
+                ctx,
+              });
+              const reactions = await runtime.listReactionsFeishu({
                 cfg: ctx.cfg,
                 messageId,
                 accountId: ctx.accountId ?? undefined,
               });
               let removed = 0;
               for (const reaction of reactions.filter((entry) => entry.operatorType === "app")) {
-                await removeReactionFeishu({
+                await runtime.removeReactionFeishu({
                   cfg: ctx.cfg,
                   messageId,
                   reactionId: reaction.reactionId,
@@ -1167,8 +1308,23 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
             if (!messageId) {
               throw new Error("Feishu reactions lookup requires messageId.");
             }
-            const { listReactionsFeishu } = await loadFeishuChannelRuntime();
-            const reactions = await listReactionsFeishu({
+            const runtime = await loadFeishuChannelRuntime();
+            const message = await runtime.getMessageFeishu({
+              cfg: ctx.cfg,
+              messageId,
+              accountId: ctx.accountId ?? undefined,
+            });
+            if (!message) {
+              throw new Error(`Feishu message not found: ${messageId}`);
+            }
+            assertFeishuChatReadAllowed({
+              cfg: ctx.cfg,
+              account,
+              chatId: message.chatId,
+              chatType: await resolveFeishuMessageChatType({ account, message, runtime }),
+              ctx,
+            });
+            const reactions = await runtime.listReactionsFeishu({
               cfg: ctx.cfg,
               messageId,
               accountId: ctx.accountId ?? undefined,
@@ -1361,6 +1517,16 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
           });
         },
       },
+    },
+    threading: {
+      buildToolContext: ({ context, hasRepliedRef }) => ({
+        currentChannelId:
+          normalizeOptionalString(context.NativeChannelId) ?? normalizeOptionalString(context.To),
+        currentMessagingTarget: normalizeOptionalString(context.To),
+        currentThreadTs:
+          context.MessageThreadId != null ? String(context.MessageThreadId) : undefined,
+        hasRepliedRef,
+      }),
     },
     outbound: {
       deliveryMode: "direct",

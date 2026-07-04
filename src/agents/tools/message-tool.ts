@@ -10,7 +10,6 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { sortUniqueStrings, uniqueValues } from "@openclaw/normalization-core/string-normalization";
 import { Type, type TSchema } from "typebox";
-import { createAbortError } from "../../infra/abort-signal.js";
 import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
@@ -20,6 +19,7 @@ import {
   hasInboundMetadataSentinel,
   stripInboundMetadata,
 } from "../../auto-reply/reply/strip-inbound-meta.js";
+import type { ChatType } from "../../channels/chat-type.js";
 import type { InboundEventKind } from "../../channels/inbound-event/kind.js";
 import {
   getChannelPlugin,
@@ -45,6 +45,7 @@ import {
   getBootEchoContextForSession,
   stripBootEchoFromOutboundText,
 } from "../../gateway/boot-echo-guard.js";
+import { createAbortError } from "../../infra/abort-signal.js";
 import {
   parseInteractiveParam,
   parseJsonMessageParam,
@@ -192,6 +193,7 @@ function resolvePollVoteEchoRoute(params: {
   channel?: string | null;
   accountId?: string;
   currentChannelId?: string;
+  currentChatType?: ChatType;
   currentMessagingTarget?: string;
 }): string | undefined {
   const channel = normalizeMessageChannel(params.channel);
@@ -879,6 +881,7 @@ type MessageToolOptions = {
   resolveCommandSecretRefsViaGateway?: typeof resolveCommandSecretRefsViaGateway;
   runMessageAction?: typeof runMessageAction;
   currentChannelId?: string;
+  currentChatType?: ChatType;
   currentMessagingTarget?: string;
   currentChannelProvider?: string;
   currentThreadTs?: string;
@@ -918,6 +921,7 @@ type MessageActionDiscoveryInput = Omit<ChannelMessageActionDiscoveryInput, "cfg
 type InferredSessionDelivery = {
   accountId?: string;
   channel: string;
+  chatType?: ChatType;
   threadId?: string;
   to: string;
 };
@@ -929,6 +933,16 @@ function formatSessionDeliveryTarget(channel: string, peerKind: string, to: stri
     USER_PREFIXED_DIRECT_TARGET_CHANNELS.has(channel)
     ? `user:${to}`
     : to;
+}
+
+function resolveSessionDeliveryChatType(peerKind: string): ChatType | undefined {
+  if (peerKind === "direct" || peerKind === "dm") {
+    return "direct";
+  }
+  if (peerKind === "group" || peerKind === "channel") {
+    return peerKind;
+  }
+  return undefined;
 }
 
 function inferDeliveryFromSessionKey(
@@ -946,6 +960,7 @@ function inferDeliveryFromSessionKey(
   return {
     accountId,
     channel,
+    chatType: resolveSessionDeliveryChatType(route.peerKind),
     threadId: route.threadId,
     to: formatSessionDeliveryTarget(channel, route.peerKind, route.peerId),
   };
@@ -954,6 +969,7 @@ function inferDeliveryFromSessionKey(
 function resolveEffectiveCurrentChannelContext(options?: MessageToolOptions): {
   accountId?: string;
   currentChannelId?: string;
+  currentChatType?: ChatType;
   currentMessagingTarget?: string;
   currentChannelProvider?: string;
   currentThreadTs?: string;
@@ -972,6 +988,7 @@ function resolveEffectiveCurrentChannelContext(options?: MessageToolOptions): {
     return {
       currentChannelProvider,
       currentChannelId,
+      currentChatType: options?.currentChatType,
       currentMessagingTarget: options?.currentMessagingTarget,
     };
   }
@@ -979,6 +996,7 @@ function resolveEffectiveCurrentChannelContext(options?: MessageToolOptions): {
     accountId: sessionDelivery?.accountId,
     currentChannelProvider: sessionDeliveryChannel,
     currentChannelId: sessionDelivery?.to,
+    currentChatType: sessionDelivery?.chatType,
     currentMessagingTarget: sessionDelivery?.to,
     currentThreadTs: sessionDelivery?.threadId,
   };
@@ -1436,6 +1454,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
 
       const toolContext =
         effectiveCurrentChannel.currentChannelId ||
+        effectiveCurrentChannel.currentChatType ||
         effectiveCurrentChannel.currentChannelProvider ||
         effectiveCurrentChannel.currentMessagingTarget ||
         currentThreadTs ||
@@ -1445,6 +1464,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         options?.sameChannelThreadRequired
           ? {
               currentChannelId: effectiveCurrentChannel.currentChannelId,
+              currentChatType: effectiveCurrentChannel.currentChatType,
               currentMessagingTarget: effectiveCurrentChannel.currentMessagingTarget,
               currentChannelProvider: effectiveCurrentChannel.currentChannelProvider,
               currentThreadTs,
