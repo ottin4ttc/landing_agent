@@ -164,6 +164,15 @@ export const page = definePage({
         onQueueRetry: (id) => void state.retryQueuedChatMessage(id),
         onQueueSteer: (id) => void state.steerQueuedChatMessage(id),
         onDismissSideResult: () => (state.chatSideResult = null),
+        replyTarget: state.chatReplyTarget ?? null,
+        onClearReply: () => {
+          state.chatReplyTarget = null;
+          state.requestUpdate?.();
+        },
+        onSetReply: (target) => {
+          state.chatReplyTarget = target;
+          state.requestUpdate?.();
+        },
         onNewSession: () => void createChatSession(state, { source: "user" }),
         onClearHistory: () => void clearChatHistory(state),
         agentsList: state.agentsList,
