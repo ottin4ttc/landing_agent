@@ -118,13 +118,11 @@ export const page = definePage({
   id: "chat",
   path: "/chat",
   loaderDeps: (_context: ChatLoadContext, location) => chatSessionLoaderDeps(location),
-  loader: async ({ host, app }: ChatLoadContext) => {
-    await loadChatPage(host, app);
-  },
-  onEnter: ({ host }: ChatLoadContext, _data, options) => {
+  loader: async ({ host, app }: ChatLoadContext, options) => {
     if (!options.revalidating) {
       host.chatHasAutoScrolled = false;
     }
+    await loadChatPage(host, app);
   },
   onLeave: () => {
     resetChatViewState();
