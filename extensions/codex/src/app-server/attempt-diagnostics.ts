@@ -93,6 +93,17 @@ export function buildCodexPluginThreadConfigEligibilityLogData(params: {
 }
 
 type CodexModelCallFailureKind = "aborted" | "timeout";
+type CodexModelCallTerminalResult = {
+  assistantTexts?: unknown;
+  attemptUsage?: CodexModelCallUsage;
+  lastAssistant?: unknown;
+};
+
+type CodexModelCallErrorFields = {
+  failureKind?: CodexModelCallFailureKind;
+  result?: CodexModelCallTerminalResult;
+  contextOverflowDetected?: boolean;
+};
 
 type CodexModelCallDiagnosticCapture = {
   inputMessages?: boolean;
@@ -124,6 +135,17 @@ function codexModelCallTerminalFields(lastAssistant: unknown) {
             .length,
         }
       : {}),
+  };
+}
+
+function codexModelCallResultFields(
+  result: CodexModelCallTerminalResult | undefined,
+  contextOverflowDetected: boolean | undefined,
+) {
+  return {
+    ...(result?.attemptUsage ? { usage: result.attemptUsage } : {}),
+    ...codexModelCallTerminalFields(result?.lastAssistant),
+    ...(contextOverflowDetected !== undefined ? { contextOverflowDetected } : {}),
   };
 }
 
@@ -177,11 +199,7 @@ export function createCodexModelCallDiagnosticEmitter(params: {
         privateData(buildContent()),
       );
     },
-    emitCompleted(result: {
-      assistantTexts?: unknown;
-      attemptUsage?: CodexModelCallUsage;
-      lastAssistant?: unknown;
-    }): void {
+    emitCompleted(result: CodexModelCallTerminalResult): void {
       if (!started || terminalEmitted) {
         return;
       }
@@ -192,8 +210,7 @@ export function createCodexModelCallDiagnosticEmitter(params: {
           ...params.baseFields,
           durationMs: Math.max(0, now() - startedAt),
           ...requestPayloadBytesField(),
-          ...(result.attemptUsage ? { usage: result.attemptUsage } : {}),
-          ...codexModelCallTerminalFields(result.lastAssistant),
+          ...codexModelCallResultFields(result, false),
         } as TrustedDiagnosticEventInput,
         privateData({
           ...buildContent(),
@@ -207,7 +224,7 @@ export function createCodexModelCallDiagnosticEmitter(params: {
         }),
       );
     },
-    emitError(error: unknown, fields: { failureKind?: CodexModelCallFailureKind } = {}): void {
+    emitError(error: unknown, fields: CodexModelCallErrorFields = {}): void {
       if (!started || terminalEmitted) {
         return;
       }
@@ -220,6 +237,7 @@ export function createCodexModelCallDiagnosticEmitter(params: {
           errorCategory: fields.failureKind ?? "error",
           ...(fields.failureKind ? { failureKind: fields.failureKind } : {}),
           ...requestPayloadBytesField(),
+          ...codexModelCallResultFields(fields.result, fields.contextOverflowDetected),
         } as TrustedDiagnosticEventInput,
         privateData({
           ...buildContent(),
