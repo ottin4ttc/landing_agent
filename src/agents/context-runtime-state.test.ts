@@ -12,11 +12,19 @@ afterEach(() => {
   resetContextWindowCacheForTest();
 });
 
+// Generous budget: the first test spawns a fresh node+tsx process (cold TS
+// transform of the whole import graph) and both starve past the shared 120s
+// ceiling when a CI shard is saturated. Load-sensitivity, not a hang.
+const SPAWN_HEAVY_TIMEOUT_MS = 300_000;
+
 describe("context runtime state", () => {
-  it("normalizes the singleton shape held by a released gateway", () => {
-    const moduleUrl = new URL("./context-runtime-state.ts", import.meta.url).href;
-    const output = execNodeEvalSync(
-      `
+  it(
+    "normalizes the singleton shape held by a released gateway",
+    { timeout: SPAWN_HEAVY_TIMEOUT_MS },
+    () => {
+      const moduleUrl = new URL("./context-runtime-state.ts", import.meta.url).href;
+      const output = execNodeEvalSync(
+        `
         const key = Symbol.for("openclaw.contextWindowRuntimeState");
         const legacyLoadPromise = Promise.resolve();
         globalThis[key] = {
@@ -33,35 +41,40 @@ describe("context runtime state", () => {
           state.loadPromise === legacyLoadPromise,
         ].join(":"));
       `,
-      { imports: ["tsx"] },
-    );
+        { imports: ["tsx"] },
+      );
 
-    expect(output).toBe("0:true:true");
-  });
+      expect(output).toBe("0:true:true");
+    },
+  );
 
-  it("warms fresh caches instead of reusing a pre-generation load promise", async () => {
-    const legacyLoadPromise = Promise.resolve();
-    CONTEXT_WINDOW_RUNTIME_STATE.loadPromise = legacyLoadPromise;
-    CONTEXT_WINDOW_RUNTIME_STATE.loadGeneration = null;
-    CONTEXT_WINDOW_RUNTIME_STATE.configuredConfig = {
-      models: {
-        providers: {
-          "fresh-provider": {
-            baseUrl: "https://example.invalid",
-            models: [{ id: "fresh-model", contextWindow: 123_456 } as never],
+  it(
+    "warms fresh caches instead of reusing a pre-generation load promise",
+    { timeout: SPAWN_HEAVY_TIMEOUT_MS },
+    async () => {
+      const legacyLoadPromise = Promise.resolve();
+      CONTEXT_WINDOW_RUNTIME_STATE.loadPromise = legacyLoadPromise;
+      CONTEXT_WINDOW_RUNTIME_STATE.loadGeneration = null;
+      CONTEXT_WINDOW_RUNTIME_STATE.configuredConfig = {
+        models: {
+          providers: {
+            "fresh-provider": {
+              baseUrl: "https://example.invalid",
+              models: [{ id: "fresh-model", contextWindow: 123_456 } as never],
+            },
           },
         },
-      },
-    } satisfies OpenClawConfig;
+      } satisfies OpenClawConfig;
 
-    await ensureContextWindowCacheLoaded();
+      await ensureContextWindowCacheLoaded();
 
-    expect(
-      lookupCachedContextWindow(providerContextTokenCacheKey("fresh-provider", "fresh-model")),
-    ).toBe(123_456);
-    expect(CONTEXT_WINDOW_RUNTIME_STATE.loadPromise).not.toBe(legacyLoadPromise);
-    expect(CONTEXT_WINDOW_RUNTIME_STATE.loadGeneration).toBe(
-      CONTEXT_WINDOW_RUNTIME_STATE.generation,
-    );
-  });
+      expect(
+        lookupCachedContextWindow(providerContextTokenCacheKey("fresh-provider", "fresh-model")),
+      ).toBe(123_456);
+      expect(CONTEXT_WINDOW_RUNTIME_STATE.loadPromise).not.toBe(legacyLoadPromise);
+      expect(CONTEXT_WINDOW_RUNTIME_STATE.loadGeneration).toBe(
+        CONTEXT_WINDOW_RUNTIME_STATE.generation,
+      );
+    },
+  );
 });

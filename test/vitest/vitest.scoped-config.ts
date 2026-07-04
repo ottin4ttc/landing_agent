@@ -203,6 +203,9 @@ export function createScopedVitestConfig(
     environment?: string;
     exclude?: string[];
     argv?: string[];
+    /** Raise the shared 120s ceilings for projects whose hooks/tests do intrinsically heavy setup. */
+    hookTimeout?: number;
+    testTimeout?: number;
     includeOpenClawRuntimeSetup?: boolean;
     isolate?: boolean;
     name?: string;
@@ -249,6 +252,8 @@ export function createScopedVitestConfig(
       ...(options?.deps ? { deps: options.deps } : {}),
       ...(options?.name ? { name: options.name } : {}),
       ...(options?.environment ? { environment: options.environment } : {}),
+      ...(options?.hookTimeout ? { hookTimeout: options.hookTimeout } : {}),
+      ...(options?.testTimeout ? { testTimeout: options.testTimeout } : {}),
       isolate,
       ...(runner ? { runner } : { runner: undefined }),
       setupFiles,
