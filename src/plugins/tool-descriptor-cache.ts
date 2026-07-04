@@ -113,6 +113,7 @@ function buildDescriptorContextCacheKey(params: {
     nativeChannelId: ctx.nativeChannelId ?? null,
     deliveryContext: ctx.deliveryContext ?? null,
     requesterSenderId: ctx.requesterSenderId ?? null,
+    senderIsOwner: ctx.senderIsOwner ?? null,
     sandboxed: ctx.sandboxed ?? null,
   });
 }
