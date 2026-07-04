@@ -744,7 +744,7 @@ describe("loadSessions", () => {
     expect(state.sessionsResult?.count).toBe(2);
   });
 
-  it.each(["overview", "workboard"])(
+  it.each(["overview", "workboard"] as const)(
     "keeps %s loads active-only after the Sessions archived filter was enabled",
     async (activeRouteId) => {
       const request = vi.fn(async () => ({

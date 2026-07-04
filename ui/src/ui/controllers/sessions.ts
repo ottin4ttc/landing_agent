@@ -1,4 +1,5 @@
 // Control UI controller manages sessions gateway state.
+import type { RouteId } from "../../app-route-id.ts";
 import {
   reconcileChatRunFromCurrentSessionRow,
   reconcileChatRunFromSessionRow,
@@ -43,7 +44,7 @@ type SessionsChatRunState = {
 export type SessionsState = SessionsChatRunState & {
   client: GatewayBrowserClient | null;
   connected: boolean;
-  activeRouteId?: string | null;
+  activeRouteId?: RouteId | null;
   sessionsLoading: boolean;
   sessionsResult: SessionsListResult | null;
   sessionsResultAgentId?: string | null;
