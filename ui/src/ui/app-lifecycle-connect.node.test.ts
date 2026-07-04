@@ -121,7 +121,6 @@ function createApplication(host: unknown) {
       dispose: vi.fn(),
     } as ApplicationContext["routeSnapshot"],
     navigate: vi.fn(),
-    preload: vi.fn(),
     notifyStateChange: vi.fn(),
     dispose: vi.fn(),
   };

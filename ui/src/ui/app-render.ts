@@ -601,7 +601,6 @@ function renderConnectedApp(
                               activeRouteId: renderedRouteId,
                               collapsed: navCollapsed,
                               onNavigate: navigate,
-                              preloadRoute: application.preload,
                             }),
                           )}
                         </div>

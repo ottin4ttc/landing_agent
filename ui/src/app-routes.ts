@@ -41,7 +41,6 @@ export type ApplicationContext = {
   routeLoadContext: RouteLoadContext;
   routeSnapshot: RouterOutletSnapshotStore<RouteId, AppRouteModule, unknown>;
   navigate: (routeId: RouteId) => void;
-  preload: (routeId: RouteId) => Promise<void>;
   notifyStateChange: (state: AppViewState, changed: ReadonlyMap<PropertyKey, unknown>) => void;
   dispose: () => void;
 };
@@ -127,7 +126,6 @@ export function createApplicationContext(
     routeLoadContext: loadContext,
     routeSnapshot,
     navigate,
-    preload: (routeId) => appRouter.preloadRoute(routeId, loadContext),
     notifyStateChange: (state, changed) => {
       const active = routeSnapshot.get().active?.module;
       if (active && "onStateChange" in active && typeof active.onStateChange === "function") {
