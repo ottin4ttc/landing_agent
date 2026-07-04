@@ -19,6 +19,7 @@ import {
 import {
   isAgentRunRestartAbortReason,
   resolveAgentRunAbortLifecycleFields,
+  resolveAgentRunErrorLifecycleFields,
 } from "../../agents/run-termination.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
@@ -435,6 +436,7 @@ async function runCliAgentWithLifecycleInternal(
   if (emitLifecycleStart) {
     emitAgentEvent({
       runId: params.runId,
+      ...(params.runParams.agentId ? { agentId: params.runParams.agentId } : {}),
       ...(params.runParams.sessionKey ? { sessionKey: params.runParams.sessionKey } : {}),
       ...(params.runParams.sessionId ? { sessionId: params.runParams.sessionId } : {}),
       ...(params.lifecycleGeneration ? { lifecycleGeneration: params.lifecycleGeneration } : {}),
@@ -504,6 +506,7 @@ async function runCliAgentWithLifecycleInternal(
     if (emitLifecycleTerminal) {
       emitAgentEvent({
         runId: params.runId,
+        ...(params.runParams.agentId ? { agentId: params.runParams.agentId } : {}),
         ...(params.runParams.sessionKey ? { sessionKey: params.runParams.sessionKey } : {}),
         ...(params.runParams.sessionId ? { sessionId: params.runParams.sessionId } : {}),
         ...(params.lifecycleGeneration ? { lifecycleGeneration: params.lifecycleGeneration } : {}),
@@ -525,6 +528,7 @@ async function runCliAgentWithLifecycleInternal(
     if (emitLifecycleTerminal) {
       emitAgentEvent({
         runId: params.runId,
+        ...(params.runParams.agentId ? { agentId: params.runParams.agentId } : {}),
         ...(params.runParams.sessionKey ? { sessionKey: params.runParams.sessionKey } : {}),
         ...(params.runParams.sessionId ? { sessionId: params.runParams.sessionId } : {}),
         ...(params.lifecycleGeneration ? { lifecycleGeneration: params.lifecycleGeneration } : {}),
@@ -534,7 +538,7 @@ async function runCliAgentWithLifecycleInternal(
           startedAt,
           endedAt: Date.now(),
           error: String(err),
-          ...resolveAgentRunAbortLifecycleFields(params.runParams.abortSignal),
+          ...resolveAgentRunErrorLifecycleFields(err, params.runParams.abortSignal),
         },
       });
       lifecycleTerminalEmitted = true;
@@ -550,6 +554,7 @@ async function runCliAgentWithLifecycleInternal(
     if (emitLifecycleTerminal && !lifecycleTerminalEmitted) {
       emitAgentEvent({
         runId: params.runId,
+        ...(params.runParams.agentId ? { agentId: params.runParams.agentId } : {}),
         ...(params.runParams.sessionKey ? { sessionKey: params.runParams.sessionKey } : {}),
         ...(params.runParams.sessionId ? { sessionId: params.runParams.sessionId } : {}),
         ...(params.lifecycleGeneration ? { lifecycleGeneration: params.lifecycleGeneration } : {}),
