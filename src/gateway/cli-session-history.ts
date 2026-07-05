@@ -16,6 +16,7 @@ import { mergeImportedChatHistoryMessages } from "./cli-session-history.merge.js
 const ANTHROPIC_PROVIDER = "anthropic";
 
 export {
+  CLAUDE_CLI_PROVIDER,
   mergeImportedChatHistoryMessages,
   readClaudeCliFallbackSeed,
   readClaudeCliSessionMessages,

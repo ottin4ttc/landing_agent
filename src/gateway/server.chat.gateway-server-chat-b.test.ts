@@ -1,5 +1,6 @@
 // Gateway chat integration tests cover dashboard chat requests, transcript
 // history limits, model overrides, inbound dispatch, and streaming event fanout.
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -3007,6 +3008,24 @@ describe("gateway server chat", () => {
         const assistantMessage = messages[1] as { role?: string; provider?: string };
         expect(assistantMessage.role).toBe("assistant");
         expect(assistantMessage.provider).toBe("claude-cli");
+
+        const cursorAttempt = await rpcReq<{
+          messages?: unknown[];
+          afterSeq?: number;
+          nextAfterSeq?: number;
+        }>(ws, "chat.history", { sessionKey: "main", afterSeq: 0 });
+        expect(cursorAttempt.ok).toBe(true);
+        expect(cursorAttempt.payload?.messages).toHaveLength(2);
+        expect(cursorAttempt.payload?.afterSeq).toBeUndefined();
+        expect(cursorAttempt.payload?.nextAfterSeq).toBeUndefined();
+
+        const offsetAttempt = await rpcReq<{
+          messages?: unknown[];
+          offset?: number;
+        }>(ws, "chat.history", { sessionKey: "main", offset: 0 });
+        expect(offsetAttempt.ok).toBe(true);
+        expect(offsetAttempt.payload?.messages).toHaveLength(2);
+        expect(offsetAttempt.payload?.offset).toBeUndefined();
       } finally {
         homeEnvSnapshot.restore();
       }
@@ -4308,7 +4327,7 @@ describe("gateway server chat", () => {
     });
   });
 
-  test("chat.history recent tail stamps transcript-global seq for afterSeq baselines", async () => {
+  test("chat.history offset zero stamps transcript-global seq for afterSeq baselines", async () => {
     await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
       const sessionDir = await prepareMainHistoryHarness({ ws, createSessionDir });
       // 45 rows exceed the limit=1 raw tail window (limit*20+20+1 lines), so a
@@ -4331,6 +4350,7 @@ describe("gateway server chat", () => {
       const res = await rpcReq<{ messages?: unknown[] }>(ws, "chat.history", {
         sessionKey: "main",
         limit: 1,
+        offset: 0,
         maxChars: 100,
       });
       expect(res.ok).toBe(true);
@@ -4358,6 +4378,246 @@ describe("gateway server chat", () => {
       });
       expect(combined.ok).toBe(false);
       expect(String(combined.error?.message)).toContain("afterSeq cannot be combined with offset");
+    });
+  });
+
+  test("chat.history afterSeq projects message-tool state across raw page boundaries", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      const sessionDir = await prepareMainHistoryHarness({ ws, createSessionDir });
+      const replyText = "visible message-tool reply";
+      await writeMainSessionTranscript(sessionDir, [
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "call-message-cursor",
+                name: "message",
+                arguments: { action: "send", message: replyText },
+              },
+            ],
+            timestamp: Date.now(),
+          },
+        }),
+        JSON.stringify({
+          message: {
+            role: "toolResult",
+            toolName: "message",
+            toolCallId: "call-message-cursor",
+            content: { ok: true, messageId: "sent-1" },
+            timestamp: Date.now() + 1,
+          },
+        }),
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "NO_REPLY" }],
+            timestamp: Date.now() + 2,
+          },
+        }),
+      ]);
+
+      const first = await rpcReq<{
+        messages?: Array<{
+          __openclaw?: { seq?: number };
+          openclawMessageToolMirror?: unknown;
+        }>;
+        nextAfterSeq?: number;
+        hasMore?: boolean;
+      }>(ws, "chat.history", { sessionKey: "main", limit: 1, afterSeq: 0 });
+      expect(first.ok).toBe(true);
+      expect(first.payload?.messages?.map(readOpenClawSeq)).toEqual([1]);
+      expect(first.payload?.messages?.[0]?.openclawMessageToolMirror).toBeUndefined();
+      expect(first.payload?.nextAfterSeq).toBe(1);
+      expect(first.payload?.hasMore).toBe(true);
+
+      const second = await rpcReq<{
+        messages?: Array<{
+          __openclaw?: { seq?: number };
+          openclawMessageToolMirror?: unknown;
+        }>;
+        nextAfterSeq?: number;
+        hasMore?: boolean;
+      }>(ws, "chat.history", { sessionKey: "main", limit: 1, afterSeq: 1 });
+      expect(second.ok).toBe(true);
+      expect(second.payload?.messages?.map(readOpenClawSeq)).toEqual([2, 2]);
+      expect(second.payload?.messages?.some((message) => message.openclawMessageToolMirror)).toBe(
+        true,
+      );
+      expect(JSON.stringify(second.payload?.messages)).toContain(replyText);
+      expect(second.payload?.nextAfterSeq).toBe(2);
+      expect(second.payload?.hasMore).toBe(true);
+
+      const third = await rpcReq<{ messages?: unknown[]; hasMore?: boolean }>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 1,
+        afterSeq: 2,
+      });
+      expect(third.ok).toBe(true);
+      expect(third.payload?.messages).toEqual([]);
+      expect(third.payload?.hasMore).toBe(false);
+    });
+  });
+
+  test("chat.history afterSeq delivers a delayed TTS supplement at its completion seq", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      const sessionDir = await prepareMainHistoryHarness({ ws, createSessionDir });
+      const visibleText = "spoken answer";
+      const textSha256 = createHash("sha256").update(visibleText).digest("hex");
+      await writeMainSessionTranscript(sessionDir, [
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: visibleText }],
+            timestamp: Date.now(),
+          },
+        }),
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Audio reply" },
+              {
+                type: "attachment",
+                attachment: { url: "/tmp/tts.mp3", kind: "audio", mimeType: "audio/mpeg" },
+              },
+            ],
+            openclawTtsSupplement: { textSha256 },
+            timestamp: Date.now() + 1,
+          },
+        }),
+      ]);
+
+      const page = await rpcReq<{
+        messages?: Array<{ __openclaw?: { seq?: number } }>;
+        nextAfterSeq?: number;
+        hasMore?: boolean;
+      }>(ws, "chat.history", { sessionKey: "main", limit: 1, afterSeq: 1 });
+      expect(page.ok).toBe(true);
+      expect(page.payload?.messages?.map(readOpenClawSeq)).toEqual([2]);
+      expect(JSON.stringify(page.payload?.messages)).toContain("tts.mp3");
+      expect(page.payload?.nextAfterSeq).toBe(2);
+      expect(page.payload?.hasMore).toBe(false);
+    });
+  });
+
+  test("chat.history afterSeq orders restamped TTS after intervening rows before byte capping", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      const sessionDir = await prepareMainHistoryHarness({
+        ws,
+        createSessionDir,
+        historyMaxBytes: 350,
+      });
+      const visibleText = "spoken answer ".repeat(4).trim();
+      const textSha256 = createHash("sha256").update(visibleText).digest("hex");
+      await writeMainSessionTranscript(sessionDir, [
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: visibleText }],
+            timestamp: Date.now(),
+          },
+        }),
+        JSON.stringify({
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "intervening question" }],
+            timestamp: Date.now() + 1,
+          },
+        }),
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "Audio reply" },
+              {
+                type: "attachment",
+                attachment: { url: "/tmp/tts.mp3", kind: "audio", mimeType: "audio/mpeg" },
+              },
+            ],
+            openclawTtsSupplement: { textSha256 },
+            timestamp: Date.now() + 2,
+          },
+        }),
+      ]);
+
+      type CursorPage = {
+        messages?: Array<{ __openclaw?: { seq?: number } }>;
+        nextAfterSeq?: number;
+        hasMore?: boolean;
+      };
+      const first = await rpcReq<CursorPage>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 3,
+        afterSeq: 0,
+      });
+      expect(first.ok).toBe(true);
+      expect(first.payload?.messages?.map(readOpenClawSeq)).toEqual([2]);
+      expect(first.payload?.nextAfterSeq).toBe(2);
+      expect(first.payload?.hasMore).toBe(true);
+
+      const second = await rpcReq<CursorPage>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 3,
+        afterSeq: 2,
+      });
+      expect(second.ok).toBe(true);
+      expect(second.payload?.messages?.map(readOpenClawSeq)).toEqual([3]);
+      expect(JSON.stringify(second.payload?.messages)).toContain("tts.mp3");
+      expect(second.payload?.nextAfterSeq).toBe(3);
+      expect(second.payload?.hasMore).toBe(false);
+    });
+  });
+
+  test("chat.history afterSeq never leaks stale announce replies split by the raw limit", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+      const sessionDir = await createSessionDir();
+      const sessionStartedAt = Date.parse("2026-05-23T04:02:30.000Z");
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: "sess-main",
+            updatedAt: Date.now(),
+            sessionStartedAt,
+          },
+        },
+      });
+      await writeMainSessionTranscript(sessionDir, [
+        JSON.stringify({
+          timestamp: "2026-05-16T16:00:31.000Z",
+          message: {
+            role: "user",
+            content:
+              "[Inter-session message] sourceSession=agent:main:subagent:child sourceChannel=internal sourceTool=subagent_announce",
+            provenance: {
+              kind: "inter_session",
+              sourceSessionKey: "agent:main:subagent:child",
+              sourceTool: "subagent_announce",
+            },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-05-16T16:00:33.000Z",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "stale announce reply" }],
+          },
+        }),
+      ]);
+
+      for (const afterSeq of [0, 1]) {
+        const page = await rpcReq<{ messages?: unknown[]; nextAfterSeq?: number }>(
+          ws,
+          "chat.history",
+          { sessionKey: "main", limit: 1, afterSeq },
+        );
+        expect(page.ok).toBe(true);
+        expect(page.payload?.messages).toEqual([]);
+        expect(page.payload?.nextAfterSeq).toBe(afterSeq + 1);
+        expect(JSON.stringify(page.payload)).not.toContain("stale announce reply");
+      }
     });
   });
 

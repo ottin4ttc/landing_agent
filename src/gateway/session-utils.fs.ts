@@ -200,9 +200,7 @@ export type ReadSessionMessagesPageOptions = {
   allowResetArchiveFallback?: boolean;
 };
 
-export type ReadSessionMessagesAfterSeqOptions = {
-  afterSeq: number;
-  maxMessages: number;
+export type ReadSessionMessagesWithStatsOptions = {
   allowResetArchiveFallback?: boolean;
 };
 
@@ -862,11 +860,11 @@ export async function readSessionMessagesPageWithStatsAsync(
   };
 }
 
-export async function readSessionMessagesAfterSeqWithStatsAsync(
+export async function readSessionMessagesWithStatsAsync(
   sessionId: string,
   storePath: string | undefined,
   sessionFile: string | undefined,
-  opts: ReadSessionMessagesAfterSeqOptions,
+  opts: ReadSessionMessagesWithStatsOptions,
   agentId?: string,
 ): Promise<ReadRecentSessionMessagesResult> {
   const filePath =
@@ -881,14 +879,8 @@ export async function readSessionMessagesAfterSeqWithStatsAsync(
     return { messages: [], totalMessages: 0, transcriptPath: filePath };
   }
   const totalMessages = index.entries.length;
-  // Index entries carry contiguous 1-based seq over visible records, so
-  // "seq > afterSeq" is a plain slice; oldest-first keeps catch-up ordered.
-  const start = Math.min(resolveNonNegativeIntegerOption(opts.afterSeq, 0), totalMessages);
-  const maxMessages = resolveNonNegativeIntegerOption(opts.maxMessages, 0);
   return {
-    messages: index.entries
-      .slice(start, start + maxMessages)
-      .flatMap((entry) => indexedTranscriptEntryToMessages(entry)),
+    messages: index.entries.flatMap((entry) => indexedTranscriptEntryToMessages(entry)),
     totalMessages,
     transcriptPath: filePath,
   };

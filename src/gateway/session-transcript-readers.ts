@@ -15,7 +15,7 @@ import {
   readRecentSessionMessagesWithStats as readRecentSessionMessagesWithStatsFile,
   readRecentSessionMessagesWithStatsAsync as readRecentSessionMessagesWithStatsAsyncFile,
   readRecentSessionTranscriptLines as readRecentSessionTranscriptLinesFile,
-  readSessionMessagesAfterSeqWithStatsAsync as readSessionMessagesAfterSeqWithStatsAsyncFile,
+  readSessionMessagesWithStatsAsync as readSessionMessagesWithStatsAsyncFile,
   readSessionMessagesPageWithStatsAsync as readSessionMessagesPageWithStatsAsyncFile,
   readRecentSessionUsageFromTranscript as readRecentSessionUsageFromTranscriptFile,
   readRecentSessionUsageFromTranscriptAsync as readRecentSessionUsageFromTranscriptAsyncFile,
@@ -274,13 +274,13 @@ export async function readSessionMessagesPageWithStatsAsync(
   );
 }
 
-/** Reads the oldest-first catch-up page after a transcript seq cursor through the reader seam. */
-export async function readSessionMessagesAfterSeqWithStatsAsync(
+/** Reads the active transcript with total-count metadata through the reader seam. */
+export async function readSessionMessagesWithStatsAsync(
   scope: SessionTranscriptReadScope,
-  opts: { afterSeq: number; maxMessages: number; allowResetArchiveFallback?: boolean },
+  opts: { allowResetArchiveFallback?: boolean },
 ): Promise<ReadRecentSessionMessagesResult> {
   const target = resolveFileBackedReadScope(scope);
-  return await readSessionMessagesAfterSeqWithStatsAsyncFile(
+  return await readSessionMessagesWithStatsAsyncFile(
     target.sessionId,
     target.storePath,
     target.sessionFile,

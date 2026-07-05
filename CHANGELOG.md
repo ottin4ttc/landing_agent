@@ -6,6 +6,8 @@ Docs: https://docs.openclaw.ai
 
 ### Changes
 
+- **Gateway chat reconnect recovery:** add session-scoped `chat.history` sequence cursors so mobile clients can fetch only missed projected transcript rows after reconnecting, with lossless pagination and older-Gateway fallback. (#100197, #100267)
+
 ### Fixes
 
 - **iMessage group warnings:** suppress the false drop-all startup warning when an effective group sender allowlist can admit groups, and point true empty-allowlist configurations at the correct remedy. (#100046)

@@ -69,6 +69,7 @@ import {
   resolveSessionWorkStartError,
   updateSessionStoreEntry,
 } from "../../config/sessions.js";
+import { getCliSessionBinding } from "../../config/sessions/cli-session-binding.js";
 import { resolveMirroredTranscriptText } from "../../config/sessions/transcript-mirror.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -167,7 +168,10 @@ import {
   type QueuedChatTurnMap,
 } from "../chat-queued-turns.js";
 import { stripEnvelopeFromMessage } from "../chat-sanitize.js";
-import { augmentChatHistoryWithCliSessionImports } from "../cli-session-history.js";
+import {
+  augmentChatHistoryWithCliSessionImports,
+  CLAUDE_CLI_PROVIDER,
+} from "../cli-session-history.js";
 import { isSuppressedControlReplyText } from "../control-reply-text.js";
 import {
   isDashboardSessionTitleCandidate,
@@ -195,11 +199,12 @@ import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.
 import { readSessionTranscriptIndex } from "../session-transcript-index.fs.js";
 import {
   capArrayByJsonBytes,
+  readRecentSessionMessagesAsync,
   readRecentSessionMessagesWithStatsAsync,
   readSessionMessageByIdAsync,
-  readSessionMessagesAfterSeqWithStatsAsync,
   readSessionMessagesPageWithStatsAsync,
   readSessionMessagesAsync,
+  readSessionMessagesWithStatsAsync,
 } from "../session-transcript-readers.js";
 import {
   buildGatewaySessionInfo,
@@ -1782,12 +1787,10 @@ export function capCursorChatHistoryMessagesKeepOldest(params: {
     // raw entry and permanently drop its undelivered mirror rows.
     const firstSeq = readChatHistoryMessageSeq(messages[0]);
     end = 1;
-    while (
-      end < messages.length &&
-      firstSeq !== undefined &&
-      readChatHistoryMessageSeq(messages[end]) === firstSeq
-    ) {
-      end++;
+    if (firstSeq !== undefined) {
+      while (end < messages.length && readChatHistoryMessageSeq(messages[end]) === firstSeq) {
+        end++;
+      }
     }
   }
   return { messages: messages.slice(0, end) };
@@ -2898,6 +2901,23 @@ function lastChatHistoryMessageSeq(messages: unknown[]): number | undefined {
   return undefined;
 }
 
+function selectChatHistorySeqRange(
+  messages: unknown[],
+  params: { afterSeq: number; throughSeq: number },
+): unknown[] {
+  const selected = messages.filter((message) => {
+    const seq = readChatHistoryMessageSeq(message);
+    return seq !== undefined && seq > params.afterSeq && seq <= params.throughSeq;
+  });
+  // Projection can restamp an earlier row to a later contributor seq. Stable
+  // ordering keeps byte trimming from advancing past an intervening raw row.
+  return selected.toSorted((left, right) => {
+    const leftSeq = readChatHistoryMessageSeq(left) ?? 0;
+    const rightSeq = readChatHistoryMessageSeq(right) ?? 0;
+    return leftSeq - rightSeq;
+  });
+}
+
 function resolveChatHistoryNextOffset(params: {
   messages: unknown[];
   totalMessages: number;
@@ -3014,31 +3034,35 @@ async function readChatHistoryPage(params: {
     sessionKey: canonicalKey,
     storePath,
   };
-  if (afterSeq !== undefined) {
-    const readPage = await readSessionMessagesAfterSeqWithStatsAsync(readScope, {
-      afterSeq,
-      maxMessages: max,
+  const hasImportedCliHistory = Boolean(getCliSessionBinding(entry, CLAUDE_CLI_PROVIDER));
+  if (afterSeq !== undefined && !hasImportedCliHistory) {
+    const readPage = await readSessionMessagesWithStatsAsync(readScope, {
       allowResetArchiveFallback: true,
     });
-    // The cursor advances over raw transcript entries (contiguous 1-based seq),
-    // not surviving projected rows, so a fully filtered page still terminates
-    // the client's catch-up loop instead of re-requesting the same range.
     const start = Math.min(afterSeq, readPage.totalMessages);
     const nextAfterSeq = Math.min(start + max, readPage.totalMessages);
+    // Display projection is transcript-stateful: message-tool mirrors, TTS
+    // supplements, and adjacent hidden pairs can span a raw page boundary.
+    // Project the active branch once, then select this raw-seq window so a
+    // page cannot advance past display output that needs earlier context.
     const recencyFilteredMessages = dropPreSessionStartAnnouncePairs(
       readPage.messages,
       typeof entry?.sessionStartedAt === "number" ? entry.sessionStartedAt : undefined,
     );
+    const projected = augmentChatHistoryWithCanvasBlocks(
+      projectChatDisplayMessages(recencyFilteredMessages, { maxChars: effectiveMaxChars }),
+    );
     return {
-      messages: augmentChatHistoryWithCanvasBlocks(
-        projectChatDisplayMessages(recencyFilteredMessages, { maxChars: effectiveMaxChars }),
-      ),
+      messages: selectChatHistorySeqRange(projected, {
+        afterSeq,
+        throughSeq: nextAfterSeq,
+      }),
       afterSeq,
       nextAfterSeq,
       totalMessages: readPage.totalMessages,
     };
   }
-  if (offset !== undefined) {
+  if (offset !== undefined && !hasImportedCliHistory) {
     const rawHistoryWindow = resolveSessionHistoryTailReadOptions(max);
     const readPage =
       offset === 0
@@ -3111,16 +3135,13 @@ async function readChatHistoryPage(params: {
     maxMessages: rawHistoryWindow.maxMessages + 1,
     maxLines: rawHistoryWindow.maxLines + 1,
   };
-  // Stats variant restamps transcript-GLOBAL `__openclaw.seq` on each row.
-  // The plain tail reader numbers rows within its byte window, and clients
-  // seed the afterSeq reconnect cursor from this page's highest seq; a
-  // window-local seq would silently re-fetch or skip catch-up entries.
-  const localReadPage = await readRecentSessionMessagesWithStatsAsync(readScope, {
+  // Keep ordinary history reads bounded. Cursor-aware clients opt into the
+  // existing offset=0 path when they need transcript-global seq metadata.
+  const localMessages = await readRecentSessionMessagesAsync(readScope, {
     ...localHistoryReadOptions,
     maxBytes: Math.max(maxHistoryBytes * 2, 1024 * 1024),
     allowResetArchiveFallback: true,
   });
-  const localMessages = localReadPage.messages;
   const overreadContextMessage =
     localMessages.length > rawHistoryWindow.maxMessages ? localMessages[0] : undefined;
   const localMessagesWithBoundaryFilter = dropLocalHistoryOverreadContextMessage(

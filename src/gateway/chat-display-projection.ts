@@ -26,6 +26,33 @@ import { isSuppressedControlReplyText } from "./control-reply-text.js";
 
 export const DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS = 8_000;
 
+function advanceProjectedTranscriptSeq(
+  target: Record<string, unknown>,
+  contributor: Record<string, unknown>,
+): Record<string, unknown> {
+  const targetMeta = readRecord(target["__openclaw"]);
+  const contributorMeta = readRecord(contributor["__openclaw"]);
+  const targetSeq = asFiniteNumber(targetMeta?.seq);
+  const contributorSeq = asFiniteNumber(contributorMeta?.seq);
+  if (
+    contributorSeq === undefined ||
+    !Number.isSafeInteger(contributorSeq) ||
+    contributorSeq <= 0 ||
+    (targetSeq !== undefined && targetSeq >= contributorSeq)
+  ) {
+    return target;
+  }
+  // The projected row changed only after this later transcript entry arrived.
+  // Advance its cursor seq while preserving the target row's stable identity.
+  return {
+    ...target,
+    __openclaw: {
+      ...targetMeta,
+      seq: contributorSeq,
+    },
+  };
+}
+
 type RoleContentMessage = {
   role: string;
   content?: unknown;
@@ -108,6 +135,7 @@ function appendCanvasBlockToAssistantHistoryMessage(params: {
   message: unknown;
   preview: ReturnType<typeof extractCanvasFromText>;
   rawText: string | null;
+  contributor: Record<string, unknown>;
 }): unknown {
   const preview = params.preview;
   if (!preview || !params.message || typeof params.message !== "object") {
@@ -143,10 +171,13 @@ function appendCanvasBlockToAssistantHistoryMessage(params: {
       rawText: params.rawText,
     });
   }
-  return {
-    ...entry,
-    content: baseContent,
-  };
+  return advanceProjectedTranscriptSeq(
+    {
+      ...entry,
+      content: baseContent,
+    },
+    params.contributor,
+  );
 }
 
 function messageContainsToolHistoryContent(message: unknown): boolean {
@@ -184,6 +215,7 @@ export function augmentChatHistoryWithCanvasBlocks(messages: unknown[]): unknown
   const pending: Array<{
     preview: NonNullable<ReturnType<typeof extractCanvasFromText>>;
     rawText: string | null;
+    contributor: Record<string, unknown>;
   }> = [];
   for (let index = 0; index < next.length; index++) {
     const message = next[index];
@@ -203,6 +235,7 @@ export function augmentChatHistoryWithCanvasBlocks(messages: unknown[]): unknown
               message: target,
               preview: item.preview,
               rawText: item.rawText,
+              contributor: item.contributor,
             });
           }
           next[index] = target;
@@ -229,6 +262,7 @@ export function augmentChatHistoryWithCanvasBlocks(messages: unknown[]): unknown
     pending.push({
       preview,
       rawText: text ?? null,
+      contributor: entry,
     });
   }
   if (pending.length > 0) {
@@ -241,6 +275,7 @@ export function augmentChatHistoryWithCanvasBlocks(messages: unknown[]): unknown
           message: target,
           preview: item.preview,
           rawText: item.rawText,
+          contributor: item.contributor,
         });
       }
       next[targetIndex] = target;
@@ -1293,13 +1328,19 @@ function mergeTtsSupplementContent(
   }
   const targetContent = target.content;
   if (Array.isArray(targetContent)) {
-    return { ...target, content: [...targetContent, ...supplementBlocks] };
+    return advanceProjectedTranscriptSeq(
+      { ...target, content: [...targetContent, ...supplementBlocks] },
+      supplement,
+    );
   }
   const targetText = extractProjectedText(targetContent ?? target.text).trim();
-  return {
-    ...target,
-    content: [...(targetText ? [{ type: "text", text: targetText }] : []), ...supplementBlocks],
-  };
+  return advanceProjectedTranscriptSeq(
+    {
+      ...target,
+      content: [...(targetText ? [{ type: "text", text: targetText }] : []), ...supplementBlocks],
+    },
+    supplement,
+  );
 }
 
 function mergeTtsSupplementMessages(
