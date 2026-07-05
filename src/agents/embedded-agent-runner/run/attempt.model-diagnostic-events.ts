@@ -869,7 +869,9 @@ export function wrapStreamFnWithDiagnosticModelCallEvents(
     const state: ModelCallObservationState = {
       responseStreamBytes: 0,
       modelContent,
-      contextWindowTokens: eventBase.contextWindowReferenceTokens ?? eventBase.contextTokenBudget,
+      // AgentSession classifies overflow against the configured effective model
+      // window, not the uncapped catalog reference window.
+      contextWindowTokens: eventBase.contextTokenBudget ?? eventBase.contextWindowReferenceTokens,
       contentCapture: ctx.contentCapture,
     };
     const propagatedOptions = withDiagnosticTraceparentHeader(options, trace, state);
