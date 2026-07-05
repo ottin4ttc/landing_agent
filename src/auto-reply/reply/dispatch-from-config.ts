@@ -899,6 +899,13 @@ function captureSuppressedTranscriptMirror(params: {
   if (!payloadMetadata.assistantTranscriptOwned && !payloadMetadata.sourceReplyTranscriptMirror) {
     return undefined;
   }
+  const payloadMirror = payloadMetadata.sourceReplyTranscriptMirror;
+  const payloadMirrorMatchesCapture =
+    payloadMirror?.idempotencyKey === params.metadata.idempotencyKey &&
+    payloadMirror?.sessionKey === params.metadata.sessionKey;
+  if (!payloadMetadata.assistantTranscriptOwned && !payloadMirrorMatchesCapture) {
+    return undefined;
+  }
   const sourceMessageId =
     normalizeOptionalString(params.metadata.deliveryMirror?.sourceMessageId) ??
     normalizeOptionalString(params.metadata.idempotencyKey);
@@ -946,6 +953,8 @@ function captureDeliveredTranscriptMirror(params: {
     observedFinal = true;
     const payloadMetadata = getReplyPayloadMetadata(payload);
     const payloadMirror = payloadMetadata?.sourceReplyTranscriptMirror;
+    // Payload metadata may only carry threading/tool-warning flags; suppress the
+    // ownerless mirror only for source mirrors or prepared transcript owners.
     if (
       payloadMirror &&
       payloadMirror.idempotencyKey === idempotencyKey &&
@@ -959,7 +968,11 @@ function captureDeliveredTranscriptMirror(params: {
         },
         payload,
       );
-    } else if (!payloadMetadata && (!idempotencyKey || metadata.deliveryMirror)) {
+    } else if (
+      !payloadMirror &&
+      !metadata.transcriptOwner &&
+      (!idempotencyKey || metadata.deliveryMirror)
+    ) {
       deliveredMetadata = transcriptMirrorForDeliveredPayload(metadata, payload);
     }
     return payload;

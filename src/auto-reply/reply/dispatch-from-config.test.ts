@@ -1430,6 +1430,71 @@ describe("dispatchReplyFromConfig", () => {
     });
   });
 
+  it("mirrors ownerless Slack finals with unrelated payload metadata but not transcript-owned finals", async () => {
+    setNoAbort();
+    const ctx = buildTestCtx({
+      Provider: "slack",
+      Surface: "slack",
+      OriginatingChannel: "slack",
+      OriginatingTo: "channel:C123",
+      ChatType: "group",
+      SessionKey: "agent:main:slack:channel:C123",
+      MessageSid: "slack-message-threaded",
+    });
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    const ownerlessDispatcher = createDispatcher();
+    const ownerlessResult = await dispatchReplyFromConfig({
+      ctx,
+      cfg: emptyConfig,
+      dispatcher: ownerlessDispatcher,
+      replyResolver: async () =>
+        setReplyPayloadMetadata(
+          { text: "Threaded Slack command reply" },
+          { replyToIdExplicit: true },
+        ),
+    });
+    await settleReplyDispatcher({ dispatcher: ownerlessDispatcher });
+
+    expect(ownerlessResult.queuedFinal).toBe(true);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledTimes(1);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Threaded Slack command reply",
+        idempotencyKey: "channel-final:slack-message-threaded:0",
+        deliveryMirror: {
+          kind: "channel-final",
+          sourceMessageId: "slack-message-threaded",
+        },
+      }),
+    );
+
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+    const transcriptOwnedDispatcher = createDispatcher();
+    const transcriptOwnedResult = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "slack",
+        Surface: "slack",
+        OriginatingChannel: "slack",
+        OriginatingTo: "channel:C123",
+        ChatType: "group",
+        SessionKey: "agent:main:slack:channel:C123",
+        MessageSid: "slack-message-owned",
+      }),
+      cfg: emptyConfig,
+      dispatcher: transcriptOwnedDispatcher,
+      replyResolver: async () =>
+        setReplyPayloadMetadata(
+          { text: "Runtime-owned Slack command reply" },
+          { assistantTranscriptOwned: true, replyToIdExplicit: true },
+        ),
+    });
+    await settleReplyDispatcher({ dispatcher: transcriptOwnedDispatcher });
+
+    expect(transcriptOwnedResult.queuedFinal).toBe(true);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+  });
+
   it("mirrors reset acknowledgements into the canonically prepared Slack session", async () => {
     setNoAbort();
     hookMocks.runner.hasHooks.mockReturnValue(false);
@@ -11846,6 +11911,59 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       config: emptyConfig,
       beforeMessageWrite: expect.any(Function),
     });
+  });
+
+  it("skips stale-foreground suppressed source mirrors when cancellation metadata is for another final", async () => {
+    setNoAbort();
+    sessionStoreMocks.currentEntry = {
+      sessionId: "s1",
+      updatedAt: 0,
+      sendPolicy: "allow",
+    };
+    const dispatcher = createDispatcher();
+    dispatcher.appendBeforeDeliver?.((payload, info) => {
+      if (info.kind !== "final") {
+        return payload;
+      }
+      setReplyPayloadMetadata(payload, {
+        ...(getReplyPayloadMetadata(payload) ?? {}),
+        foregroundDeliverySuppression: { reason: "stale-foreground" },
+        sourceReplyTranscriptMirror: {
+          sessionKey: "agent:other",
+          agentId: "main",
+          text: "other final text",
+          idempotencyKey: "run-2:internal-source-reply:0",
+        },
+      });
+      return null;
+    });
+    const sourceReply = setReplyPayloadMetadata(
+      { text: "source mirror answer" },
+      {
+        deliverDespiteSourceReplySuppression: true,
+        sourceReplyTranscriptMirror: {
+          sessionKey: "agent:main",
+          agentId: "main",
+          text: "source mirror answer",
+          idempotencyKey: "run-1:internal-source-reply:0",
+        },
+      },
+    );
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({ Provider: "webchat", Surface: "webchat", SessionKey: "agent:main" }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async () => sourceReply satisfies ReplyPayload,
+      replyOptions: {
+        sourceReplyDeliveryMode: "message_tool_only",
+      },
+    });
+    await settleReplyDispatcher({ dispatcher });
+
+    expect(result.queuedFinal).toBe(true);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
   });
 
   it("lets a queued same-session turn finish before mirroring delivered source replies", async () => {
