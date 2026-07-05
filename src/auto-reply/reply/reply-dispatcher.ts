@@ -13,6 +13,7 @@ import { registerDispatcher } from "./dispatcher-registry.js";
 import { normalizeReplyPayload, type NormalizeReplySkipReason } from "./normalize-reply.js";
 import type {
   ReplyDispatchBeforeDeliver,
+  ReplyDispatchBeforeDeliverCancelled,
   ReplyDispatchKind,
   ReplyDispatchRuntimeInfo,
   ReplyDispatcher,
@@ -33,17 +34,14 @@ type ReplyDispatchSkipHandler = (
   info: ReplyDispatchRuntimeInfo & { reason: NormalizeReplySkipReason },
 ) => void;
 
-type ReplyDispatchCancelHandler = (
-  payload: ReplyPayload,
-  info: ReplyDispatchRuntimeInfo,
-) => Promise<void> | void;
+type ReplyDispatchCancelHandler = ReplyDispatchBeforeDeliverCancelled;
 
 type ReplyDispatchDeliverer = (
   payload: ReplyPayload,
   info: ReplyDispatchRuntimeInfo,
 ) => Promise<unknown>;
 
-export type { ReplyDispatchBeforeDeliver };
+export type { ReplyDispatchBeforeDeliver, ReplyDispatchBeforeDeliverCancelled };
 
 const DEFAULT_HUMAN_DELAY_MIN_MS = 800;
 const DEFAULT_HUMAN_DELAY_MAX_MS = 2500;
@@ -168,6 +166,7 @@ function normalizeReplyPayloadInternal(
 
 export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDispatcher {
   let beforeDeliver = options.beforeDeliver;
+  const beforeDeliverCancelledHooks: ReplyDispatchCancelHandler[] = [];
   let sendChain: Promise<void> = Promise.resolve();
   // Track in-flight deliveries so we can emit a reliable "idle" signal.
   // Start with pending=1 as a "reservation" to prevent premature gateway restart.
@@ -198,6 +197,27 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
     pending: () => pending,
     waitForIdle: () => sendChain,
   });
+
+  const reportObserverError = (err: unknown, info: ReplyDispatchRuntimeInfo) => {
+    void Promise.resolve(options.onError?.(err, info)).catch(() => undefined);
+  };
+
+  const notifyBeforeDeliverCancelled = async (
+    payload: ReplyPayload,
+    info: ReplyDispatchRuntimeInfo,
+  ) => {
+    const observers = [
+      ...(options.onBeforeDeliverCancelled ? [options.onBeforeDeliverCancelled] : []),
+      ...beforeDeliverCancelledHooks,
+    ];
+    for (const observer of observers) {
+      try {
+        await observer(payload, info);
+      } catch (err: unknown) {
+        reportObserverError(err, info);
+      }
+    }
+  };
 
   const enqueue = (kind: ReplyDispatchKind, payload: ReplyPayload) => {
     const originalWasExactSilent = isSilentReplyText(payload.text, SILENT_REPLY_TOKEN);
@@ -247,20 +267,12 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
           try {
             deliverPayload = await beforeDeliver(normalized, dispatchInfo);
           } catch (err: unknown) {
-            try {
-              await options.onBeforeDeliverCancelled?.(normalized, dispatchInfo);
-            } catch (cancelErr: unknown) {
-              void options.onError?.(cancelErr, dispatchInfo);
-            }
+            await notifyBeforeDeliverCancelled(normalized, dispatchInfo);
             throw err;
           }
           if (!deliverPayload) {
             cancelledCounts[kind] += 1;
-            try {
-              await options.onBeforeDeliverCancelled?.(normalized, dispatchInfo);
-            } catch (err: unknown) {
-              void options.onError?.(err, dispatchInfo);
-            }
+            await notifyBeforeDeliverCancelled(normalized, dispatchInfo);
             return;
           }
           deliverPayload = copyReplyPayloadMetadata(normalized, deliverPayload);
@@ -276,7 +288,7 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
         try {
           options.onDeliverySettled?.(dispatchInfo);
         } catch (err: unknown) {
-          void options.onError?.(err, dispatchInfo);
+          reportObserverError(err, dispatchInfo);
         }
         pending -= 1;
         // Clear reservation if:
@@ -329,6 +341,9 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
               : null;
           }
         : hook;
+    },
+    appendBeforeDeliverCancelled: (hook) => {
+      beforeDeliverCancelledHooks.push(hook);
     },
     waitForIdle: () => sendChain,
     getQueuedCounts: () => ({ ...queuedCounts }),

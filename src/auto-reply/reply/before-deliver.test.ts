@@ -60,6 +60,49 @@ describe("beforeDeliver in reply dispatcher", () => {
     expect(dispatcher.getCancelledCounts?.()).toEqual({ tool: 0, block: 0, final: 1 });
   });
 
+  it("notifies appended cancellation observers when beforeDeliver returns null", async () => {
+    const delivered: string[] = [];
+    const cancelled: string[] = [];
+    const errors: string[] = [];
+
+    const dispatcher = createReplyDispatcher({
+      deliver: async (payload) => {
+        delivered.push(payload.text ?? "");
+      },
+      beforeDeliver: () => null,
+      onBeforeDeliverCancelled: (payload) => {
+        cancelled.push(`constructed:${payload.text ?? ""}`);
+      },
+      onError: (err) => {
+        errors.push(err instanceof Error ? err.message : String(err));
+      },
+    });
+    dispatcher.appendBeforeDeliverCancelled?.((payload) => {
+      cancelled.push(`appended-a:${payload.text ?? ""}`);
+    });
+    dispatcher.appendBeforeDeliverCancelled?.(() => {
+      throw new Error("observer failed");
+    });
+    dispatcher.appendBeforeDeliverCancelled?.((payload) => {
+      cancelled.push(`appended-b:${payload.text ?? ""}`);
+    });
+
+    dispatcher.sendFinalReply({ text: "blocked reply" });
+    dispatcher.markComplete();
+    await dispatcher.waitForIdle();
+
+    expect(delivered).toEqual([]);
+    expect(cancelled).toEqual([
+      "constructed:blocked reply",
+      "appended-a:blocked reply",
+      "appended-b:blocked reply",
+    ]);
+    expect(errors).toEqual(["observer failed"]);
+    expect(dispatcher.getQueuedCounts()).toEqual({ tool: 0, block: 0, final: 1 });
+    expect(dispatcher.getCancelledCounts?.()).toEqual({ tool: 0, block: 0, final: 1 });
+    expect(dispatcher.getFailedCounts?.()).toEqual({ tool: 0, block: 0, final: 0 });
+  });
+
   it("notifies cancellation when beforeDeliver throws before delivery", async () => {
     const delivered: string[] = [];
     const cancelled: Array<{
@@ -110,6 +153,44 @@ describe("beforeDeliver in reply dispatcher", () => {
     expect(dispatcher.getQueuedCounts()).toEqual({ tool: 0, block: 1, final: 0 });
     expect(dispatcher.getCancelledCounts?.()).toEqual({ tool: 0, block: 0, final: 0 });
     expect(dispatcher.getFailedCounts?.()).toEqual({ tool: 0, block: 1, final: 0 });
+  });
+
+  it("notifies appended cancellation observers when beforeDeliver throws", async () => {
+    const delivered: string[] = [];
+    const cancelled: string[] = [];
+    const errors: string[] = [];
+
+    const dispatcher = createReplyDispatcher({
+      deliver: async (payload) => {
+        delivered.push(payload.text ?? "");
+      },
+      beforeDeliver: () => {
+        throw new Error("pre-delivery failed");
+      },
+      onBeforeDeliverCancelled: (payload) => {
+        cancelled.push(`constructed:${payload.text ?? ""}`);
+      },
+      onError: (err) => {
+        errors.push(err instanceof Error ? err.message : String(err));
+      },
+    });
+    dispatcher.appendBeforeDeliverCancelled?.(() => {
+      throw new Error("observer failed");
+    });
+    dispatcher.appendBeforeDeliverCancelled?.((payload) => {
+      cancelled.push(`appended:${payload.text ?? ""}`);
+    });
+
+    dispatcher.sendFinalReply({ text: "failed reply" });
+    dispatcher.markComplete();
+    await dispatcher.waitForIdle();
+
+    expect(delivered).toEqual([]);
+    expect(cancelled).toEqual(["constructed:failed reply", "appended:failed reply"]);
+    expect(errors).toEqual(["observer failed", "pre-delivery failed"]);
+    expect(dispatcher.getQueuedCounts()).toEqual({ tool: 0, block: 0, final: 1 });
+    expect(dispatcher.getCancelledCounts?.()).toEqual({ tool: 0, block: 0, final: 0 });
+    expect(dispatcher.getFailedCounts?.()).toEqual({ tool: 0, block: 0, final: 1 });
   });
 
   it("allows modifying payload in beforeDeliver", async () => {

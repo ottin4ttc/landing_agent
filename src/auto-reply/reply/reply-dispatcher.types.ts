@@ -20,11 +20,17 @@ export type ReplyDispatchBeforeDeliver = (
   info: ReplyDispatchRuntimeInfo,
 ) => Promise<ReplyPayload | null> | ReplyPayload | null;
 
+export type ReplyDispatchBeforeDeliverCancelled = (
+  payload: ReplyPayload,
+  info: ReplyDispatchRuntimeInfo,
+) => Promise<void> | void;
+
 export type ReplyDispatcher = {
   sendToolResult: (payload: ReplyPayload) => boolean;
   sendBlockReply: (payload: ReplyPayload) => boolean;
   sendFinalReply: (payload: ReplyPayload) => boolean;
   appendBeforeDeliver?: (hook: ReplyDispatchBeforeDeliver) => void;
+  appendBeforeDeliverCancelled?: (hook: ReplyDispatchBeforeDeliverCancelled) => void;
   waitForIdle: () => Promise<void>;
   getQueuedCounts: () => Record<ReplyDispatchKind, number>;
   getCancelledCounts?: () => Record<ReplyDispatchKind, number>;

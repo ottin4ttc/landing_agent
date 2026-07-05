@@ -48,6 +48,7 @@ import { PROVIDER_CONVERSATION_STATE_ERROR_USER_MESSAGE } from "./provider-reque
 import {
   createReplyDispatcher,
   type ReplyDispatchBeforeDeliver,
+  type ReplyDispatchBeforeDeliverCancelled,
   type ReplyDispatcher,
 } from "./reply-dispatcher.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
@@ -692,12 +693,26 @@ beforeAll(async () => {
 
 function createDispatcher(): ReplyDispatcher {
   let beforeDeliver: ReplyDispatchBeforeDeliver | undefined;
+  const beforeDeliverCancelledHooks: ReplyDispatchBeforeDeliverCancelled[] = [];
   const beforeDeliverTasks: Promise<unknown>[] = [];
+  const cancelledCounts = { tool: 0, block: 0, final: 0 };
   const runBeforeDeliver = (kind: "tool" | "block" | "final", payload: ReplyPayload): void => {
     if (!beforeDeliver) {
       return;
     }
-    beforeDeliverTasks.push(Promise.resolve(beforeDeliver(payload, { kind })));
+    beforeDeliverTasks.push(
+      Promise.resolve()
+        .then(async () => beforeDeliver?.(payload, { kind }))
+        .then(async (result) => {
+          if (result !== null) {
+            return;
+          }
+          cancelledCounts[kind] += 1;
+          for (const hook of beforeDeliverCancelledHooks) {
+            await hook(payload, { kind });
+          }
+        }),
+    );
   };
   return {
     sendToolResult: vi.fn((payload) => {
@@ -721,10 +736,14 @@ function createDispatcher(): ReplyDispatcher {
           }
         : hook;
     }),
+    appendBeforeDeliverCancelled: vi.fn((hook) => {
+      beforeDeliverCancelledHooks.push(hook);
+    }),
     waitForIdle: vi.fn(async () => {
       await Promise.all(beforeDeliverTasks);
     }),
     getQueuedCounts: vi.fn(() => ({ tool: 0, block: 0, final: 0 })),
+    getCancelledCounts: vi.fn(() => ({ ...cancelledCounts })),
     getFailedCounts: vi.fn(() => ({ tool: 0, block: 0, final: 0 })),
     markComplete: vi.fn(),
   };
@@ -1489,6 +1508,66 @@ describe("dispatchReplyFromConfig", () => {
 
     expect(result.queuedFinal).toBe(true);
     expect(transcriptMocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+  });
+
+  it("records stale-foreground suppressed CLI-owned finals without duplicating answer text", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    dispatcher.appendBeforeDeliver?.((payload, info) => {
+      if (info.kind !== "final") {
+        return payload;
+      }
+      setReplyPayloadMetadata(payload, {
+        foregroundDeliverySuppression: { reason: "stale-foreground" },
+      });
+      return null;
+    });
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "slack",
+        Surface: "slack",
+        OriginatingChannel: "slack",
+        OriginatingTo: "channel:C123",
+        SessionKey: "agent:main:slack:channel:C123",
+        MessageSid: "slack-message-cli",
+      }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async (_ctx, opts) => {
+        opts?.onSessionPrepared?.({
+          sessionKey: "agent:main:slack:channel:c123",
+          sessionId: "prepared-session",
+          storePath: "/tmp/prepared-sessions.json",
+        });
+        return setReplyPayloadMetadata(
+          { text: "The CLI answer already lives in the transcript." },
+          { assistantTranscriptOwned: true },
+        );
+      },
+    });
+    await settleReplyDispatcher({ dispatcher });
+
+    expect(result.queuedFinal).toBe(true);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledTimes(1);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith({
+      sessionKey: "agent:main:slack:channel:C123",
+      agentId: "main",
+      expectedSessionId: "prepared-session",
+      text: "Channel final suppressed before delivery: stale foreground",
+      mediaUrls: undefined,
+      idempotencyKey: "channel-final-suppressed:slack-message-cli:0",
+      deliveryMirror: {
+        kind: "channel-final-suppressed",
+        reason: "stale-foreground",
+        sourceMessageId: "slack-message-cli",
+      },
+      storePath: "/tmp/prepared-sessions.json",
+      updateMode: "inline",
+      config: emptyConfig,
+      beforeMessageWrite: expect.any(Function),
+    });
   });
 
   it("disables routed delivery mirrors for CLI-owned finals", async () => {
@@ -11696,6 +11775,71 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       text: "redacted hook reply",
       mediaUrls: ["https://example.com/redacted.png"],
       idempotencyKey: "run-1:internal-source-reply:rewritten",
+      expectedSessionId: "s1",
+      storePath: "/tmp/mock-sessions.json",
+      updateMode: "inline",
+      config: emptyConfig,
+      beforeMessageWrite: expect.any(Function),
+    });
+  });
+
+  it("records stale-foreground suppressed source mirrors with a prefixed excerpt", async () => {
+    setNoAbort();
+    sessionStoreMocks.currentEntry = {
+      sessionId: "s1",
+      updatedAt: 0,
+      sendPolicy: "allow",
+    };
+    const dispatcher = createDispatcher();
+    dispatcher.appendBeforeDeliver?.((payload, info) => {
+      if (info.kind !== "final") {
+        return payload;
+      }
+      setReplyPayloadMetadata(payload, {
+        foregroundDeliverySuppression: { reason: "stale-foreground" },
+      });
+      return null;
+    });
+    const sourceReply = setReplyPayloadMetadata(
+      { text: "source mirror answer that would otherwise disappear" },
+      {
+        deliverDespiteSourceReplySuppression: true,
+        sourceReplyTranscriptMirror: {
+          sessionKey: "agent:main",
+          agentId: "main",
+          text: "source mirror answer that would otherwise disappear",
+          idempotencyKey: "run-1:internal-source-reply:0",
+        },
+      },
+    );
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({ Provider: "webchat", Surface: "webchat", SessionKey: "agent:main" }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async () => sourceReply satisfies ReplyPayload,
+      replyOptions: {
+        sourceReplyDeliveryMode: "message_tool_only",
+      },
+    });
+    await settleReplyDispatcher({ dispatcher });
+
+    expect(result.queuedFinal).toBe(true);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledTimes(1);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith({
+      sessionKey: "agent:main",
+      agentId: "main",
+      text:
+        "Channel final suppressed before delivery: stale foreground\n" +
+        "source mirror answer that would otherwise disappear",
+      mediaUrls: undefined,
+      idempotencyKey: "channel-final-suppressed:run-1:internal-source-reply:0:0",
+      deliveryMirror: {
+        kind: "channel-final-suppressed",
+        reason: "stale-foreground",
+        sourceMessageId: "run-1:internal-source-reply:0",
+      },
       expectedSessionId: "s1",
       storePath: "/tmp/mock-sessions.json",
       updateMode: "inline",
