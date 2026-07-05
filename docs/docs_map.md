@@ -7559,6 +7559,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Non-interactive setup
   - H2: Reasoning behavior
   - H2: Pricing
+  - H2: Self-hosted LongCat-2.0
   - H2: Troubleshooting
   - H2: Related
 

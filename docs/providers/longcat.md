@@ -71,6 +71,16 @@ tokens: $0.75 uncached input, $0.015 cached input, and $2.95 output. LongCat may
 offer temporary discounts; the [pricing page](https://longcat.chat/platform/docs/Pricing/LongCat-2.0.html)
 and your billing records are authoritative.
 
+## Self-hosted LongCat-2.0
+
+The `longcat` provider targets LongCat's hosted API. For the open weights on
+[Hugging Face](https://huggingface.co/meituan-longcat/LongCat-2.0), serve the
+model through an OpenAI-compatible runtime and use OpenClaw's existing
+[vLLM](/providers/vllm) or [SGLang](/providers/sglang) provider instead.
+
+Keep the runtime's exact model identifier in the self-hosted provider catalog;
+do not route a local deployment through `longcat/LongCat-2.0`.
+
 ## Troubleshooting
 
 <AccordionGroup>
