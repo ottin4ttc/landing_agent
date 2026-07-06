@@ -191,8 +191,38 @@ describeControlUiE2e("Control UI session management mocked Gateway E2E", () => {
       await expect.poll(() => actionOpacity(sidebarResearchPin)).toBe("1");
       await captureUiProof(page, "sidebar-sessions.png");
 
+      await sidebarReleasePin.click();
+      const pinPatch = await waitForPatch(
+        gateway,
+        (params) => params.key === "agent:main:release" && params.pinned === false,
+      );
+      expect(requireRecord(pinPatch.params)).toMatchObject({
+        key: "agent:main:release",
+        pinned: false,
+      });
+
+      // Archive stays disabled for rows with an active run; the idle row archives.
+      const sidebarMigrationArchive = sidebarMigration.getByRole("button", {
+        name: "Archive session",
+      });
+      await expect.poll(() => sidebarMigrationArchive.isDisabled()).toBe(true);
+      const sidebarResearchArchive = sidebarResearch.getByRole("button", {
+        name: "Archive session",
+      });
+      await sidebarResearch.hover();
+      await sidebarResearchArchive.click();
+      const archivePatch = await waitForPatch(
+        gateway,
+        (params) => params.key === "agent:main:research" && params.archived === true,
+      );
+      expect(requireRecord(archivePatch.params)).toMatchObject({
+        archived: true,
+        key: "agent:main:research",
+      });
+
       // Selecting a visible row must not reshuffle the list: the highlight
-      // moves while every row keeps its slot.
+      // moves while every row keeps its slot. (The mocked gateway keeps
+      // returning the same list, so the archived row stays visible here.)
       const researchLink = sidebarResearch.locator("a").first();
       await researchLink.click();
       await expect.poll(() => page.url()).toContain("session=agent%3Amain%3Aresearch");
@@ -205,30 +235,6 @@ describeControlUiE2e("Control UI session management mocked Gateway E2E", () => {
             .evaluate((row) => row.classList.contains("sidebar-recent-session--active")),
         )
         .toBe(true);
-
-      await sidebarReleasePin.click();
-      const pinPatch = await waitForPatch(
-        gateway,
-        (params) => params.key === "agent:main:release" && params.pinned === false,
-      );
-      expect(requireRecord(pinPatch.params)).toMatchObject({
-        key: "agent:main:release",
-        pinned: false,
-      });
-
-      const sidebarMigrationArchive = sidebarMigration.getByRole("button", {
-        name: "Archive session",
-      });
-      await sidebarMigration.hover();
-      await sidebarMigrationArchive.click();
-      const archivePatch = await waitForPatch(
-        gateway,
-        (params) => params.key === "agent:main:migration" && params.archived === true,
-      );
-      expect(requireRecord(archivePatch.params)).toMatchObject({
-        archived: true,
-        key: "agent:main:migration",
-      });
 
       // Command palette is the single search surface: querying lists matching
       // chats from the gateway and selecting one navigates to it.
