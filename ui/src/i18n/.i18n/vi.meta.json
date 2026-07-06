@@ -1,11 +1,21 @@
 {
-  "fallbackKeys": [],
-  "generatedAt": "2026-07-06T05:57:42.132Z",
+  "fallbackKeys": [
+    "usage.providerUsage.cacheTokens",
+    "usage.providerUsage.costCategories",
+    "usage.providerUsage.dailyCost",
+    "usage.providerUsage.inputTokens",
+    "usage.providerUsage.last7Days",
+    "usage.providerUsage.lastDays",
+    "usage.providerUsage.outputTokens",
+    "usage.providerUsage.requests",
+    "usage.providerUsage.topModels"
+  ],
+  "generatedAt": "2026-07-06T05:01:43.144Z",
   "locale": "vi",
-  "model": "claude-opus-4-8",
-  "provider": "anthropic",
-  "sourceHash": "ba2004b1da3674d7661ed644cca9e05e80613f3f65a66cc46ef082aa3c128fee",
-  "totalKeys": 1562,
-  "translatedKeys": 1562,
+  "model": "gpt-5.5",
+  "provider": "openai",
+  "sourceHash": "a89a80b41d38e757eedaf621ec0d6b7bdb9fa0125f45a5b927a21ba1e15a4bf5",
+  "totalKeys": 1572,
+  "translatedKeys": 1563,
   "workflow": 1
 }
