@@ -218,6 +218,11 @@ export type ReplyPayloadMetadata = {
   /** Foreground freshness prevented a visible final after transcript persistence. */
   foregroundDeliverySuppression?: {
     reason: "stale-foreground";
+    /**
+     * Hook-transformed payload when the stale fence fired after configured hooks ran.
+     * Suppressed transcript markers excerpt from it so hook redaction is not bypassed.
+     */
+    deliverPayload?: ReplyPayload;
   };
   /** replyToId existed before reply threading could inject an implicit target. */
   replyToIdExplicit?: boolean;

@@ -630,7 +630,10 @@ export async function dispatchInboundMessageWithBufferedDispatcher(params: {
           }
           if (await shouldCancelForegroundReplyDelivery(foregroundReplyFence)) {
             setReplyPayloadMetadata(payload, {
-              foregroundDeliverySuppression: { reason: "stale-foreground" },
+              foregroundDeliverySuppression: {
+                reason: "stale-foreground",
+                deliverPayload,
+              },
             });
             return null;
           }

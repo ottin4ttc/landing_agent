@@ -11848,6 +11848,136 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     });
   });
 
+  it("records stale-foreground suppressed source mirrors from post-hook redacted payloads", async () => {
+    setNoAbort();
+    sessionStoreMocks.currentEntry = {
+      sessionId: "s1",
+      updatedAt: 0,
+      sendPolicy: "allow",
+    };
+    const dispatcher = createDispatcher();
+    dispatcher.appendBeforeDeliver?.((payload, info) => {
+      if (info.kind !== "final") {
+        return payload;
+      }
+      const deliverPayload = setReplyPayloadMetadata(
+        {
+          ...payload,
+          text: "redacted hook reply",
+          mediaUrl: undefined,
+          mediaUrls: ["https://example.com/redacted.png"],
+        },
+        getReplyPayloadMetadata(payload) ?? {},
+      );
+      setReplyPayloadMetadata(payload, {
+        foregroundDeliverySuppression: {
+          reason: "stale-foreground",
+          deliverPayload,
+        },
+      });
+      return null;
+    });
+    const sourceReply = setReplyPayloadMetadata(
+      { text: "secret message tool reply", mediaUrl: "https://example.com/secret.png" },
+      {
+        deliverDespiteSourceReplySuppression: true,
+        sourceReplyTranscriptMirror: {
+          sessionKey: "agent:main",
+          agentId: "main",
+          text: "secret message tool reply",
+          mediaUrls: ["https://example.com/secret.png"],
+          idempotencyKey: "run-1:internal-source-reply:redacted-stale",
+        },
+      },
+    );
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({ Provider: "webchat", Surface: "webchat", SessionKey: "agent:main" }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async () => sourceReply satisfies ReplyPayload,
+      replyOptions: {
+        sourceReplyDeliveryMode: "message_tool_only",
+      },
+    });
+    await settleReplyDispatcher({ dispatcher });
+
+    expect(result.queuedFinal).toBe(true);
+    const suppressedRows = transcriptMocks.appendAssistantMessageToSessionTranscript.mock.calls
+      .map(([params]) => params as { deliveryMirror?: { kind?: string }; text?: string })
+      .filter((params) => params.deliveryMirror?.kind === "channel-final-suppressed");
+    expect(suppressedRows).toHaveLength(1);
+    expect(suppressedRows[0]?.text).toBe(
+      "Channel final suppressed before delivery: stale foreground\nredacted hook reply",
+    );
+    expect(suppressedRows[0]?.text).not.toContain("secret");
+  });
+
+  it("records stale-foreground suppressed media-only source mirrors from post-hook redacted filenames", async () => {
+    setNoAbort();
+    sessionStoreMocks.currentEntry = {
+      sessionId: "s1",
+      updatedAt: 0,
+      sendPolicy: "allow",
+    };
+    const dispatcher = createDispatcher();
+    dispatcher.appendBeforeDeliver?.((payload, info) => {
+      if (info.kind !== "final") {
+        return payload;
+      }
+      const deliverPayload = setReplyPayloadMetadata(
+        {
+          ...payload,
+          mediaUrl: undefined,
+          mediaUrls: ["https://example.com/redacted.png"],
+        },
+        getReplyPayloadMetadata(payload) ?? {},
+      );
+      setReplyPayloadMetadata(payload, {
+        foregroundDeliverySuppression: {
+          reason: "stale-foreground",
+          deliverPayload,
+        },
+      });
+      return null;
+    });
+    const sourceReply = setReplyPayloadMetadata(
+      { mediaUrl: "https://example.com/secret.png" },
+      {
+        deliverDespiteSourceReplySuppression: true,
+        sourceReplyTranscriptMirror: {
+          sessionKey: "agent:main",
+          agentId: "main",
+          mediaUrls: ["https://example.com/secret.png"],
+          idempotencyKey: "run-1:internal-source-reply:redacted-media-stale",
+        },
+      },
+    );
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({ Provider: "webchat", Surface: "webchat", SessionKey: "agent:main" }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async () => sourceReply satisfies ReplyPayload,
+      replyOptions: {
+        sourceReplyDeliveryMode: "message_tool_only",
+      },
+    });
+    await settleReplyDispatcher({ dispatcher });
+
+    expect(result.queuedFinal).toBe(true);
+    const suppressedRows = transcriptMocks.appendAssistantMessageToSessionTranscript.mock.calls
+      .map(([params]) => params as { deliveryMirror?: { kind?: string }; text?: string })
+      .filter((params) => params.deliveryMirror?.kind === "channel-final-suppressed");
+    expect(suppressedRows).toHaveLength(1);
+    expect(suppressedRows[0]?.text).toBe(
+      "Channel final suppressed before delivery: stale foreground\nredacted.png",
+    );
+    expect(suppressedRows[0]?.text).not.toContain("secret");
+  });
+
   it("records stale-foreground suppressed source mirrors with a prefixed excerpt", async () => {
     setNoAbort();
     sessionStoreMocks.currentEntry = {

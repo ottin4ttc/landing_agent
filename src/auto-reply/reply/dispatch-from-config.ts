@@ -897,7 +897,8 @@ function captureSuppressedTranscriptMirror(params: {
   deliveryId?: string | number;
 }): TranscriptMirror | undefined {
   const payloadMetadata = getReplyPayloadMetadata(params.payload);
-  if (payloadMetadata?.foregroundDeliverySuppression?.reason !== "stale-foreground") {
+  const foregroundDeliverySuppression = payloadMetadata?.foregroundDeliverySuppression;
+  if (foregroundDeliverySuppression?.reason !== "stale-foreground") {
     return undefined;
   }
   if (!payloadMetadata.assistantTranscriptOwned && !payloadMetadata.sourceReplyTranscriptMirror) {
@@ -917,7 +918,7 @@ function captureSuppressedTranscriptMirror(params: {
     return undefined;
   }
   const text = buildSuppressedFinalTranscriptText({
-    payload: params.payload,
+    payload: foregroundDeliverySuppression.deliverPayload ?? params.payload,
     assistantTranscriptOwned: payloadMetadata.assistantTranscriptOwned === true,
   });
   if (!text) {

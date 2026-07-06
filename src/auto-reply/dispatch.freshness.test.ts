@@ -96,7 +96,9 @@ describe("foreground reply freshness", () => {
 
   it("suppresses an older foreground final after a newer inbound event starts for the same session target", async () => {
     const deliveries: Delivery[] = [];
-    const cancellationReasons: Array<string | undefined> = [];
+    const cancellationSuppressions: Array<
+      NonNullable<ReturnType<typeof getReplyPayloadMetadata>>["foregroundDeliverySuppression"]
+    > = [];
     const olderStarted = createDeferred<void>();
     const releaseOlderFinal = createDeferred<void>();
 
@@ -121,8 +123,8 @@ describe("foreground reply freshness", () => {
       deliveries,
       {
         onBeforeDeliverCancelled: (payload) => {
-          cancellationReasons.push(
-            getReplyPayloadMetadata(payload)?.foregroundDeliverySuppression?.reason,
+          cancellationSuppressions.push(
+            getReplyPayloadMetadata(payload)?.foregroundDeliverySuppression,
           );
         },
       },
@@ -146,7 +148,73 @@ describe("foreground reply freshness", () => {
       counts: { tool: 0, block: 0, final: 0 },
     });
     expect(deliveries).toEqual([{ kind: "final", text: "new final" }]);
-    expect(cancellationReasons).toEqual(["stale-foreground"]);
+    expect(cancellationSuppressions).toEqual([{ reason: "stale-foreground" }]);
+  });
+
+  it("carries the hook-transformed payload when post-hook stale suppression cancels", async () => {
+    const deliveries: Delivery[] = [];
+    const beforeDeliverStarted = createDeferred<void>();
+    const releaseBeforeDeliver = createDeferred<ReplyPayload>();
+    const cancellationSuppressions: Array<
+      NonNullable<ReturnType<typeof getReplyPayloadMetadata>>["foregroundDeliverySuppression"]
+    > = [];
+    const beforeDeliver = vi.fn((_payload: ReplyPayload) => {
+      beforeDeliverStarted.resolve();
+      return releaseBeforeDeliver.promise;
+    });
+
+    hoisted.dispatchReplyFromConfigMock.mockImplementation(
+      async (params: DispatchReplyFromConfigParams) => {
+        if (params.ctx.MessageSid === "old-message") {
+          params.dispatcher.sendFinalReply({ text: "secret old final" });
+          return queuedFinalResult();
+        }
+        if (params.ctx.MessageSid === "new-message") {
+          params.dispatcher.sendFinalReply({ text: "new final" });
+          return queuedFinalResult();
+        }
+        throw new Error(`unexpected test message ${params.ctx.MessageSid ?? "<missing>"}`);
+      },
+    );
+
+    const olderDispatch = dispatchWithDeliveries(
+      buildForegroundCtx({ MessageSid: "old-message" }),
+      deliveries,
+      {
+        beforeDeliver,
+        onBeforeDeliverCancelled: (payload) => {
+          cancellationSuppressions.push(
+            getReplyPayloadMetadata(payload)?.foregroundDeliverySuppression,
+          );
+        },
+      },
+    );
+    await beforeDeliverStarted.promise;
+
+    const newerResult = await dispatchWithDeliveries(
+      buildForegroundCtx({ MessageSid: "new-message" }),
+      deliveries,
+    );
+
+    releaseBeforeDeliver.resolve({ text: "redacted old final" });
+    const olderResult = await olderDispatch;
+
+    expect(beforeDeliver).toHaveBeenCalledTimes(1);
+    expect(newerResult).toEqual({
+      queuedFinal: true,
+      counts: { tool: 0, block: 0, final: 1 },
+    });
+    expect(olderResult).toEqual({
+      queuedFinal: false,
+      counts: { tool: 0, block: 0, final: 0 },
+    });
+    expect(deliveries).toEqual([{ kind: "final", text: "new final" }]);
+    expect(cancellationSuppressions).toEqual([
+      {
+        reason: "stale-foreground",
+        deliverPayload: { text: "redacted old final" },
+      },
+    ]);
   });
 
   it("leaves configured beforeDeliver cancellations untagged", async () => {
