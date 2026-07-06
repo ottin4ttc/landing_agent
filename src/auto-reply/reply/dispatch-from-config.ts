@@ -47,6 +47,7 @@ import { shouldSuppressLocalExecApprovalPrompt } from "../../channels/plugins/ex
 import { applyMergePatch } from "../../config/merge-patch.js";
 import { normalizeExplicitSessionKey } from "../../config/sessions/explicit-session-key-normalization.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
+import { resolveMirroredTranscriptText } from "../../config/sessions/transcript-mirror.js";
 import {
   appendAssistantMessageToSessionTranscript,
   type SessionTranscriptDeliveryMirror,
@@ -881,10 +882,13 @@ function buildSuppressedFinalTranscriptText(params: {
     return STALE_FOREGROUND_SUPPRESSED_FINAL_TEXT;
   }
   const sendable = resolveSendableOutboundReplyParts(params.payload);
-  const text = sendable.trimmedText
-    ? truncateUtf16Safe(sendable.trimmedText, SUPPRESSED_FINAL_EXCERPT_MAX_LENGTH)
+  const rawExcerpt = sendable.trimmedText
+    ? sendable.trimmedText
+    : resolveMirroredTranscriptText({ mediaUrls: sendable.mediaUrls });
+  const excerpt = rawExcerpt
+    ? truncateUtf16Safe(rawExcerpt, SUPPRESSED_FINAL_EXCERPT_MAX_LENGTH)
     : undefined;
-  return text ? `Channel final suppressed before delivery: stale foreground\n${text}` : undefined;
+  return excerpt ? `${STALE_FOREGROUND_SUPPRESSED_FINAL_TEXT}\n${excerpt}` : undefined;
 }
 
 function captureSuppressedTranscriptMirror(params: {

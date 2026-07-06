@@ -11913,6 +11913,69 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     });
   });
 
+  it("records stale-foreground suppressed media-only source mirrors with mirrored filenames", async () => {
+    setNoAbort();
+    sessionStoreMocks.currentEntry = {
+      sessionId: "s1",
+      updatedAt: 0,
+      sendPolicy: "allow",
+    };
+    const dispatcher = createDispatcher();
+    dispatcher.appendBeforeDeliver?.((payload, info) => {
+      if (info.kind !== "final") {
+        return payload;
+      }
+      setReplyPayloadMetadata(payload, {
+        foregroundDeliverySuppression: { reason: "stale-foreground" },
+      });
+      return null;
+    });
+    const sourceReply = setReplyPayloadMetadata(
+      { mediaUrls: ["https://example.com/report.pdf?token=secret"] },
+      {
+        deliverDespiteSourceReplySuppression: true,
+        sourceReplyTranscriptMirror: {
+          sessionKey: "agent:main",
+          agentId: "main",
+          mediaUrls: ["https://example.com/report.pdf?token=secret"],
+          idempotencyKey: "run-1:internal-source-reply:media-only",
+        },
+      },
+    );
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({ Provider: "webchat", Surface: "webchat", SessionKey: "agent:main" }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async () => sourceReply satisfies ReplyPayload,
+      replyOptions: {
+        sourceReplyDeliveryMode: "message_tool_only",
+      },
+    });
+    await settleReplyDispatcher({ dispatcher });
+
+    expect(result.queuedFinal).toBe(true);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledTimes(1);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith({
+      sessionKey: "agent:main",
+      agentId: "main",
+      text: "Channel final suppressed before delivery: stale foreground\nreport.pdf",
+      mediaUrls: undefined,
+      idempotencyKey: "channel-final-suppressed:run-1:internal-source-reply:media-only:0",
+      deliveryMirror: {
+        kind: "channel-final-suppressed",
+        reason: "stale-foreground",
+        sourceMessageId: "run-1:internal-source-reply:media-only",
+      },
+      expectedSessionId: "s1",
+      storePath: "/tmp/mock-sessions.json",
+      updateMode: "inline",
+      config: emptyConfig,
+      beforeMessageWrite: expect.any(Function),
+    });
+  });
+
   it("skips stale-foreground suppressed source mirrors when cancellation metadata is for another final", async () => {
     setNoAbort();
     sessionStoreMocks.currentEntry = {
