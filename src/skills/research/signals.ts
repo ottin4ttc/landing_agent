@@ -231,6 +231,9 @@ export function extractDurableInstructionProposals(params: {
     const group = groups.get(topic.skillName);
     if (group) {
       group.instructions.push(instruction);
+      // Re-insert so the recency cap ranks topics by their LATEST correction, not their first.
+      groups.delete(topic.skillName);
+      groups.set(topic.skillName, group);
     } else {
       groups.set(topic.skillName, {
         title: topic.title,

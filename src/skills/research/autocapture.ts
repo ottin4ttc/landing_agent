@@ -1,6 +1,5 @@
 // Research autocapture helpers decide when skill research signals should be captured.
 import fs from "node:fs/promises";
-import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -27,7 +26,6 @@ const log = createSubsystemLogger("skills/research");
 const AUTO_CAPTURE_BLOCKED_TRIGGERS = new Set(["cron", "heartbeat", "memory", "overflow"]);
 const AUTO_CAPTURE_BLOCKED_SESSION_SEGMENTS = new Set(["cron", "hook", "subagent"]);
 const MAX_WORKSPACE_SKILL_SUMMARIES = 200;
-const SKILL_SUMMARY_READ_BYTES = 2048;
 
 // Captured updates append below existing skill text so learned context stays auditable.
 function buildAutoCaptureUpdateContent(existingSkill: string, capturedContent: string): string {
@@ -55,7 +53,8 @@ function isSkillResearchAutoCaptureEligible(ctx: SkillResearchAgentContext): boo
 }
 
 function readFrontmatterField(content: string, field: string): string | undefined {
-  const match = content.match(new RegExp(`^\\s*${field}:\\s*["']?([^"'\\n]+)`, "m"));
+  const frontmatter = content.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
+  const match = frontmatter.match(new RegExp(`^\\s*${field}:\\s*["']?([^"'\\n]+)`, "m"));
   return match?.[1]?.trim() || undefined;
 }
 
@@ -73,18 +72,21 @@ async function listWorkspaceSkillSummaries(workspaceDir: string): Promise<Worksp
   }
   const summaries: WorkspaceSkillSummary[] = [];
   for (const name of entries.slice(0, MAX_WORKSPACE_SKILL_SUMMARIES)) {
-    let handle: FileHandle | undefined;
     try {
-      handle = await fs.open(path.join(skillsDir, name, "SKILL.md"), "r");
-      const buffer = Buffer.alloc(SKILL_SUMMARY_READ_BYTES);
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      const head = buffer.subarray(0, bytesRead).toString("utf8");
-      const description = readFrontmatterField(head, "description");
+      // Reuse the proposal target resolver + safe reader so summary scans obey the same
+      // workspace containment and symlink/hardlink rejection as every other skill read.
+      const target = resolveSkillProposalTarget({ workspaceDir, skillName: name });
+      if (target.skillKey !== name) {
+        continue;
+      }
+      const content = await readWorkspaceSkillFile(target.skillFile);
+      if (content === null) {
+        continue;
+      }
+      const description = readFrontmatterField(content, "description");
       summaries.push(description ? { name, description } : { name });
     } catch {
-      // Directories without a readable SKILL.md are not live skills; skip them.
-    } finally {
-      await handle?.close();
+      // Directories that don't resolve to a safe, readable SKILL.md are not live skills.
     }
   }
   return summaries;

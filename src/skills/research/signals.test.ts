@@ -92,6 +92,25 @@ describe("extractDurableInstructionProposals", () => {
     ]);
   });
 
+  it("keeps a repeated topic when its latest correction is the most recent", () => {
+    const proposals = extractDurableInstructionProposals({
+      messages: [
+        userMessage("From now on, when working on GitHub PRs, always check CI before replying."),
+        userMessage("Remember to always optimize screenshot assets before attaching them."),
+        userMessage("Next time a QA scenario runs, make sure to record the failing seed value."),
+        userMessage("Next time on a GitHub PR, make sure to link the issue in the description."),
+      ],
+      maxProposals: 2,
+    });
+    expect(proposals.map((proposal) => proposal.skillName)).toEqual([
+      "qa-scenario-workflow",
+      "github-pr-workflow",
+    ]);
+    const github = proposals.find((proposal) => proposal.skillName === "github-pr-workflow");
+    expect(github?.content).toContain("always check CI");
+    expect(github?.content).toContain("link the issue");
+  });
+
   it("ignores non-user transcript entries", () => {
     const proposals = extractDurableInstructionProposals({
       messages: [
