@@ -60,6 +60,12 @@ function readFrontmatterField(content: string, field: string): string | undefine
 
 // Summaries let the signal extractor route corrections to the skill they are about instead of
 // piling everything into a generic learned-workflows skill.
+//
+// Deliberately scoped to the flat `skills/<key>/SKILL.md` layout: workshop proposals can only
+// target that layout (resolveSkillProposalTarget), so routing a correction to a grouped/nested
+// skill would produce an update proposal that misses the real file and creates a flat duplicate.
+// Grouped skills keep today's behavior (inferred-topic fallback) until the workshop write path
+// learns grouped targets.
 async function listWorkspaceSkillSummaries(workspaceDir: string): Promise<WorkspaceSkillSummary[]> {
   const skillsDir = path.join(workspaceDir, "skills");
   let entries: string[];
