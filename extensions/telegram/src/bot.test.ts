@@ -2461,6 +2461,7 @@ describe("createTelegramBot", () => {
       const senderId = 202;
       const visibleReply = "Yep - I'm here now.";
       const replyTimestampMs = 1_778_474_700_000;
+      const telegramReplyDate = Math.floor((replyTimestampMs + 5_000) / 1000);
 
       await writeDirectTelegramTranscriptContext({
         cfg: config,
@@ -2482,9 +2483,10 @@ describe("createTelegramBot", () => {
           from: { id: senderId, is_bot: false, first_name: "Kesava" },
           reply_to_message: {
             chat: { id: chatId, type: "private" },
-            date: Math.floor(replyTimestampMs / 1000),
+            date: telegramReplyDate,
             from: { id: 999, is_bot: true, first_name: "OpenClaw" },
             message_id: 736,
+            openclaw_prompt_context_timestamp_ms: replyTimestampMs,
             text: visibleReply,
           },
         },
