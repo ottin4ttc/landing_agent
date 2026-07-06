@@ -29,7 +29,7 @@ run_hosted_prepare_gates() {
 }
 
 compute_pr_patch_id() {
-  git diff --binary "$1" "$2" | git patch-id --stable | awk 'NR == 1 { print $1 }'
+  git diff --binary "$1" "$2" | git patch-id --verbatim | awk 'NR == 1 { print $1 }'
 }
 
 pin_worktree_bundled_plugins_dir() {

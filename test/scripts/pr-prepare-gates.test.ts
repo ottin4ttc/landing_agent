@@ -334,6 +334,44 @@ describe("lease-retry gate stamp refresh", () => {
 });
 
 describe("prepare gate stamp transitions", () => {
+  it("preserves whitespace in the rebase patch fingerprint", () => {
+    const { repoDir, headSha: baseSha } = makeRetryRepo();
+    writeFileSync(join(repoDir, "config.yml"), "root:\n  child: value\n");
+    spawnSync("git", ["add", "config.yml"], { cwd: repoDir });
+    spawnSync(
+      "git",
+      ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "two spaces"],
+      { cwd: repoDir },
+    );
+    const twoSpaceSha = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repoDir,
+      encoding: "utf8",
+    }).stdout.trim();
+    writeFileSync(join(repoDir, "config.yml"), "root:\n    child: value\n");
+    spawnSync("git", ["add", "config.yml"], { cwd: repoDir });
+    spawnSync(
+      "git",
+      ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "four spaces"],
+      { cwd: repoDir },
+    );
+    const fourSpaceSha = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: repoDir,
+      encoding: "utf8",
+    }).stdout.trim();
+
+    const result = runGatesBash(
+      [
+        `compute_pr_patch_id ${baseSha} ${twoSpaceSha}`,
+        `compute_pr_patch_id ${baseSha} ${fourSpaceSha}`,
+      ].join("\n"),
+      { cwd: repoDir },
+    );
+    expect(result.status).toBe(0);
+    const patchIds = result.stdout.trim().split("\n");
+    expect(patchIds).toHaveLength(2);
+    expect(patchIds[0]).not.toBe(patchIds[1]);
+  });
+
   it("uses the hosted pre-sync SHA only when its tree matches the local prep head", () => {
     const { repoDir, headSha } = makeRetryRepo();
     const tree = spawnSync("git", ["rev-parse", "HEAD^{tree}"], {
@@ -461,7 +499,7 @@ describe("prepare gate stamp transitions", () => {
       "bash",
       [
         "-c",
-        "git diff --binary refs/remotes/origin/main HEAD | git patch-id --stable | awk 'NR == 1 { print $1 }'",
+        "git diff --binary refs/remotes/origin/main HEAD | git patch-id --verbatim | awk 'NR == 1 { print $1 }'",
       ],
       { cwd: repoDir, encoding: "utf8" },
     ).stdout.trim();
