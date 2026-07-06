@@ -878,15 +878,18 @@ const STALE_FOREGROUND_SUPPRESSED_FINAL_TEXT =
 const SUPPRESSED_FINAL_EXCERPT_MAX_LENGTH = 240;
 
 function buildSuppressedFinalTranscriptText(params: {
-  payload: ReplyPayload;
-  assistantTranscriptOwned: boolean;
+  excerptPayload?: ReplyPayload;
+  transcriptOwned: boolean;
 }): string | undefined {
-  if (params.assistantTranscriptOwned) {
-    // CLI-owned finals already persist the assistant answer next to this row;
+  if (params.transcriptOwned) {
+    // Transcript-owned finals already persist the assistant answer next to this row;
     // duplicating it would make model replay/history see content twice.
     return STALE_FOREGROUND_SUPPRESSED_FINAL_TEXT;
   }
-  const sendable = resolveSendableOutboundReplyParts(params.payload);
+  if (!params.excerptPayload) {
+    return STALE_FOREGROUND_SUPPRESSED_FINAL_TEXT;
+  }
+  const sendable = resolveSendableOutboundReplyParts(params.excerptPayload);
   const rawExcerpt = sendable.trimmedText
     ? sendable.trimmedText
     : resolveMirroredTranscriptText({ mediaUrls: sendable.mediaUrls });
@@ -902,7 +905,10 @@ function captureSuppressedTranscriptMirror(params: {
   deliveryId?: string | number;
 }): TranscriptMirror | undefined {
   const payloadMetadata = getReplyPayloadMetadata(params.payload);
-  const foregroundDeliverySuppression = payloadMetadata?.foregroundDeliverySuppression;
+  if (!payloadMetadata) {
+    return undefined;
+  }
+  const foregroundDeliverySuppression = payloadMetadata.foregroundDeliverySuppression;
   if (foregroundDeliverySuppression?.reason !== "stale-foreground") {
     return undefined;
   }
@@ -910,10 +916,10 @@ function captureSuppressedTranscriptMirror(params: {
   const payloadMirrorMatchesCapture =
     payloadMirror?.idempotencyKey === params.metadata.idempotencyKey &&
     payloadMirror?.sessionKey === params.metadata.sessionKey;
-  if (
-    !payloadMetadata.assistantTranscriptOwned &&
-    !(payloadMirror && payloadMirrorMatchesCapture)
-  ) {
+  const payloadHasTranscriptOwner =
+    payloadMetadata.assistantTranscriptOwned === true ||
+    payloadMetadata.assistantMessageIndex !== undefined;
+  if (!payloadHasTranscriptOwner && !(payloadMirror && payloadMirrorMatchesCapture)) {
     return undefined;
   }
   const sourceMessageId =
@@ -923,8 +929,8 @@ function captureSuppressedTranscriptMirror(params: {
     return undefined;
   }
   const text = buildSuppressedFinalTranscriptText({
-    payload: foregroundDeliverySuppression.deliverPayload ?? params.payload,
-    assistantTranscriptOwned: payloadMetadata.assistantTranscriptOwned === true,
+    excerptPayload: foregroundDeliverySuppression.deliverPayload,
+    transcriptOwned: payloadHasTranscriptOwner,
   });
   if (!text) {
     return undefined;

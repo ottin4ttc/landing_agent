@@ -1603,7 +1603,15 @@ describe("dispatchReplyFromConfig", () => {
       cfg: emptyConfig,
       dispatcher,
       replyResolver: async (_ctx, opts) => {
-        opts?.onSessionPrepared?.({
+        (
+          opts as GetReplyOptions & {
+            onSessionPrepared?: (binding: {
+              sessionKey?: string;
+              sessionId: string;
+              storePath?: string;
+            }) => void;
+          }
+        ).onSessionPrepared?.({
           sessionKey: "agent:main:slack:channel:c123",
           sessionId: "prepared-session",
           storePath: "/tmp/prepared-sessions.json",
@@ -1635,6 +1643,59 @@ describe("dispatchReplyFromConfig", () => {
       config: emptyConfig,
       beforeMessageWrite: expect.any(Function),
     });
+  });
+
+  it("records stale-foreground suppressed embedded-owned finals without duplicating answer text", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    dispatcher.appendBeforeDeliver?.((payload, info) => {
+      if (info.kind !== "final") {
+        return payload;
+      }
+      setReplyPayloadMetadata(payload, {
+        foregroundDeliverySuppression: { reason: "stale-foreground" },
+      });
+      return null;
+    });
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "slack",
+        Surface: "slack",
+        OriginatingChannel: "slack",
+        OriginatingTo: "channel:C123",
+        SessionKey: "agent:main:slack:channel:C123",
+        MessageSid: "slack-message-embedded",
+      }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async () =>
+        setReplyPayloadMetadata(
+          { text: "The embedded answer already lives in the transcript." },
+          { assistantMessageIndex: 7 },
+        ),
+    });
+    await settleReplyDispatcher({ dispatcher });
+
+    expect(result.queuedFinal).toBe(true);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledTimes(1);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: "agent:main:slack:channel:C123",
+        agentId: "main",
+        text: "Channel final suppressed before delivery: stale foreground",
+        mediaUrls: undefined,
+        idempotencyKey: "channel-final-suppressed:slack-message-embedded:0",
+        deliveryMirror: {
+          kind: "channel-final-suppressed",
+          reason: "stale-foreground",
+          sourceMessageId: "slack-message-embedded",
+        },
+        updateMode: "inline",
+        config: emptyConfig,
+      }),
+    );
   });
 
   it("scopes stale-foreground suppressed final mirrors to the final payload that registered each capture", async () => {
@@ -12054,7 +12115,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     expect(suppressedRows[0]?.text).not.toContain("secret");
   });
 
-  it("records stale-foreground suppressed source mirrors with a prefixed excerpt", async () => {
+  it("records stale-foreground suppressed source mirrors without pre-hook payload excerpts", async () => {
     setNoAbort();
     sessionStoreMocks.currentEntry = {
       sessionId: "s1",
@@ -12101,9 +12162,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith({
       sessionKey: "agent:main",
       agentId: "main",
-      text:
-        "Channel final suppressed before delivery: stale foreground\n" +
-        "source mirror answer that would otherwise disappear",
+      text: "Channel final suppressed before delivery: stale foreground",
       mediaUrls: undefined,
       idempotencyKey: "channel-final-suppressed:run-1:internal-source-reply:0:0",
       deliveryMirror: {
@@ -12117,9 +12176,12 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       config: emptyConfig,
       beforeMessageWrite: expect.any(Function),
     });
+    expect(
+      transcriptMocks.appendAssistantMessageToSessionTranscript.mock.calls[0]?.[0].text,
+    ).not.toContain("source mirror answer");
   });
 
-  it("records stale-foreground suppressed media-only source mirrors with mirrored filenames", async () => {
+  it("records stale-foreground suppressed media-only source mirrors from post-hook filenames", async () => {
     setNoAbort();
     sessionStoreMocks.currentEntry = {
       sessionId: "s1",
@@ -12131,8 +12193,18 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       if (info.kind !== "final") {
         return payload;
       }
+      const deliverPayload = setReplyPayloadMetadata(
+        {
+          ...payload,
+          mediaUrls: ["https://example.com/report.pdf?token=secret"],
+        },
+        getReplyPayloadMetadata(payload) ?? {},
+      );
       setReplyPayloadMetadata(payload, {
-        foregroundDeliverySuppression: { reason: "stale-foreground" },
+        foregroundDeliverySuppression: {
+          reason: "stale-foreground",
+          deliverPayload,
+        },
       });
       return null;
     });
