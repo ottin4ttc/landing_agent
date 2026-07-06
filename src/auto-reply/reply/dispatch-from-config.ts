@@ -124,6 +124,7 @@ import {
   getReplyPayloadMetadata,
   isReplyPayloadStatusNotice,
   markReplyPayloadAsTtsSupplement,
+  setReplyPayloadMetadata,
   type ReplyPayload,
 } from "../reply-payload.js";
 import type { FinalizedMsgContext } from "../templating.js";
@@ -197,6 +198,10 @@ type TranscriptMirror = SourceReplyTranscriptMirror & {
   preferText?: boolean;
   deliveryMirror?: SessionTranscriptDeliveryMirror;
   transcriptOwner?: boolean;
+};
+type TranscriptMirrorCapture = {
+  metadata: () => TranscriptMirror | undefined;
+  observedFinal: () => boolean;
 };
 type InternalReplyResolverOptions = {
   onSessionMetadataChanges?: (changes: CommandSessionMetadataChange[]) => void;
@@ -901,14 +906,14 @@ function captureSuppressedTranscriptMirror(params: {
   if (foregroundDeliverySuppression?.reason !== "stale-foreground") {
     return undefined;
   }
-  if (!payloadMetadata.assistantTranscriptOwned && !payloadMetadata.sourceReplyTranscriptMirror) {
-    return undefined;
-  }
   const payloadMirror = payloadMetadata.sourceReplyTranscriptMirror;
   const payloadMirrorMatchesCapture =
     payloadMirror?.idempotencyKey === params.metadata.idempotencyKey &&
     payloadMirror?.sessionKey === params.metadata.sessionKey;
-  if (!payloadMetadata.assistantTranscriptOwned && !payloadMirrorMatchesCapture) {
+  if (
+    !payloadMetadata.assistantTranscriptOwned &&
+    !(payloadMirror && payloadMirrorMatchesCapture)
+  ) {
     return undefined;
   }
   const sourceMessageId =
@@ -924,8 +929,9 @@ function captureSuppressedTranscriptMirror(params: {
   if (!text) {
     return undefined;
   }
+  const { transcriptOwner: _transcriptOwner, ...metadata } = params.metadata;
   return {
-    ...params.metadata,
+    ...metadata,
     text,
     mediaUrls: undefined,
     preferText: true,
@@ -942,17 +948,27 @@ function captureDeliveredTranscriptMirror(params: {
   dispatcher: ReplyDispatcher;
   metadata?: TranscriptMirror;
   deliveryId?: string | number;
-}): () => TranscriptMirror | undefined {
+  captureToken?: object;
+}): TranscriptMirrorCapture {
   if (!params.metadata || !params.dispatcher.appendBeforeDeliver) {
-    return () => (params.metadata?.transcriptOwner ? undefined : params.metadata);
+    return {
+      metadata: () => (params.metadata?.transcriptOwner ? undefined : params.metadata),
+      observedFinal: () => false,
+    };
   }
   const metadata = params.metadata;
+  const captureToken = params.captureToken;
   let deliveredMetadata: TranscriptMirror | undefined;
   let suppressedMetadata: TranscriptMirror | undefined;
   let observedFinal = false;
   const { idempotencyKey, sessionKey } = metadata;
   params.dispatcher.appendBeforeDeliver((payload, info) => {
     if (info.kind !== "final") {
+      return payload;
+    }
+    // Shared dispatchers fan every final through every capture. The token keeps
+    // each capture's transcript bookkeeping scoped to the payload it owns.
+    if (getReplyPayloadMetadata(payload)?.finalDeliveryCapture !== captureToken) {
       return payload;
     }
     observedFinal = true;
@@ -986,6 +1002,11 @@ function captureDeliveredTranscriptMirror(params: {
     if (info.kind !== "final") {
       return;
     }
+    // Shared dispatchers fan every final through every capture. The token keeps
+    // each capture's transcript bookkeeping scoped to the payload it owns.
+    if (getReplyPayloadMetadata(payload)?.finalDeliveryCapture !== captureToken) {
+      return;
+    }
     observedFinal = true;
     suppressedMetadata = captureSuppressedTranscriptMirror({
       metadata,
@@ -993,18 +1014,22 @@ function captureDeliveredTranscriptMirror(params: {
       deliveryId: params.deliveryId,
     });
   });
-  return () =>
-    observedFinal
-      ? (suppressedMetadata ?? deliveredMetadata)
-      : metadata.transcriptOwner
-        ? undefined
-        : metadata;
+  return {
+    metadata: () =>
+      observedFinal
+        ? (suppressedMetadata ?? deliveredMetadata)
+        : metadata.transcriptOwner
+          ? undefined
+          : metadata,
+    observedFinal: () => observedFinal,
+  };
 }
 
 async function mirrorTranscriptAfterDispatcherSettled(params: {
   dispatcher: ReplyDispatcher;
   before: { cancelled: number; failed: number };
   metadata: () => TranscriptMirror | undefined;
+  observedFinal?: () => boolean;
   cfg: OpenClawConfig;
 }): Promise<void> {
   const after = getDispatcherFinalOutcomeCounts(params.dispatcher);
@@ -1013,9 +1038,11 @@ async function mirrorTranscriptAfterDispatcherSettled(params: {
     return;
   }
   const suppressedFinal = metadata.deliveryMirror?.kind === "channel-final-suppressed";
+  const observedFinal = params.observedFinal?.() === true;
   if (
     !suppressedFinal &&
-    (after.cancelled > params.before.cancelled || after.failed > params.before.failed)
+    ((!observedFinal && after.cancelled > params.before.cancelled) ||
+      after.failed > params.before.failed)
   ) {
     return;
   }
@@ -2859,13 +2886,18 @@ export async function dispatchReplyFromConfig(
       const finalOutcomeBefore = transcriptMirror
         ? getDispatcherFinalOutcomeCounts(dispatcher)
         : undefined;
+      const finalDeliveryCapture = transcriptMirror ? {} : undefined;
       const deliveredTranscriptMirror = transcriptMirror
         ? captureDeliveredTranscriptMirror({
             dispatcher,
             metadata: transcriptMirror,
             deliveryId: options.deliveryId,
+            captureToken: finalDeliveryCapture,
           })
         : undefined;
+      if (finalDeliveryCapture) {
+        setReplyPayloadMetadata(normalizedPayload, { finalDeliveryCapture });
+      }
       const queuedFinal = dispatcher.sendFinalReply(normalizedPayload);
       if (queuedFinal && deliveredTranscriptMirror && finalOutcomeBefore) {
         // The common settle owner runs this after successful delivery or
@@ -2875,7 +2907,8 @@ export async function dispatchReplyFromConfig(
           mirrorTranscriptAfterDispatcherSettled({
             dispatcher,
             before: finalOutcomeBefore,
-            metadata: deliveredTranscriptMirror,
+            metadata: deliveredTranscriptMirror.metadata,
+            observedFinal: deliveredTranscriptMirror.observedFinal,
             cfg,
           }),
         );

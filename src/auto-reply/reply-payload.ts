@@ -252,6 +252,11 @@ export type ReplyPayloadMetadata = {
     mediaUrls?: string[];
     idempotencyKey?: string;
   };
+  /**
+   * Opaque owner for one final-delivery capture so shared-dispatcher observers
+   * only record bookkeeping for the payload that registered them.
+   */
+  finalDeliveryCapture?: object;
   beforeAgentRunBlocked?: boolean;
   /** Warning synthesized from an observed tool error after the run produced assistant output. */
   nonTerminalToolErrorWarning?: boolean;

@@ -40,7 +40,7 @@ import {
 } from "../../test-utils/channel-plugins.js";
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
 import { settleReplyDispatcher } from "../dispatch-dispatcher.js";
-import { getReplyPayloadMetadata } from "../reply-payload.js";
+import { copyReplyPayloadMetadata, getReplyPayloadMetadata } from "../reply-payload.js";
 import type { MsgContext } from "../templating.js";
 import { setReplyPayloadMetadata, type GetReplyOptions, type ReplyPayload } from "../types.js";
 import { markCommandSessionMetadataChanged } from "./command-session-metadata.js";
@@ -732,7 +732,9 @@ function createDispatcher(): ReplyDispatcher {
       beforeDeliver = previousBeforeDeliver
         ? async (payload, info) => {
             const previousPayload = await previousBeforeDeliver(payload, info);
-            return previousPayload ? hook(previousPayload, info) : null;
+            return previousPayload
+              ? hook(copyReplyPayloadMetadata(payload, previousPayload), info)
+              : null;
           }
         : hook;
     }),
@@ -1633,6 +1635,80 @@ describe("dispatchReplyFromConfig", () => {
       config: emptyConfig,
       beforeMessageWrite: expect.any(Function),
     });
+  });
+
+  it("scopes stale-foreground suppressed final mirrors to the final payload that registered each capture", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    dispatcher.appendBeforeDeliver?.((payload, info) => {
+      if (info.kind !== "final" || payload.text !== "The CLI-owned final is stale.") {
+        return payload;
+      }
+      setReplyPayloadMetadata(payload, {
+        foregroundDeliverySuppression: { reason: "stale-foreground" },
+      });
+      return null;
+    });
+    transcriptMocks.appendAssistantMessageToSessionTranscript.mockClear();
+
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "slack",
+        Surface: "slack",
+        OriginatingChannel: "slack",
+        OriginatingTo: "channel:C123",
+        ChatType: "group",
+        SessionKey: "agent:main:slack:channel:C123",
+        MessageSid: "slack-message-cross-capture",
+      }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver: async () => [
+        { text: "Ownerless Slack final delivered." },
+        setReplyPayloadMetadata(
+          { text: "The CLI-owned final is stale." },
+          { assistantTranscriptOwned: true },
+        ),
+      ],
+    });
+    await settleReplyDispatcher({ dispatcher });
+
+    expect(result.queuedFinal).toBe(true);
+    expect(transcriptMocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledTimes(2);
+    const transcriptRows = transcriptMocks.appendAssistantMessageToSessionTranscript.mock.calls.map(
+      ([params]) =>
+        params as {
+          idempotencyKey?: string;
+          text?: string;
+          deliveryMirror?: { kind?: string; sourceMessageId?: string };
+        },
+    );
+    expect(transcriptRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: "Ownerless Slack final delivered.",
+          idempotencyKey: "channel-final:slack-message-cross-capture:0",
+          deliveryMirror: {
+            kind: "channel-final",
+            sourceMessageId: "slack-message-cross-capture",
+          },
+        }),
+        expect.objectContaining({
+          text: "Channel final suppressed before delivery: stale foreground",
+          idempotencyKey: "channel-final-suppressed:slack-message-cross-capture:1",
+          deliveryMirror: {
+            kind: "channel-final-suppressed",
+            reason: "stale-foreground",
+            sourceMessageId: "slack-message-cross-capture",
+          },
+        }),
+      ]),
+    );
+    expect(
+      transcriptRows.some(
+        (row) => row.idempotencyKey === "channel-final-suppressed:slack-message-cross-capture:0",
+      ),
+    ).toBe(false);
   });
 
   it("disables routed delivery mirrors for CLI-owned finals", async () => {
@@ -12245,11 +12321,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       sendPolicy: "allow",
     };
     const dispatcher = createDispatcher();
-    dispatcher.getCancelledCounts = vi
-      .fn()
-      .mockReturnValueOnce({ tool: 0, block: 0, final: 0 })
-      .mockReturnValue({ tool: 0, block: 0, final: 1 });
-    dispatcher.waitForIdle = vi.fn(async () => {});
+    dispatcher.appendBeforeDeliver?.((_payload, info) => (info.kind === "final" ? null : _payload));
     const sourceReply = setReplyPayloadMetadata(
       { text: "message tool reply" },
       {
