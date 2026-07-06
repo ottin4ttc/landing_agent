@@ -920,7 +920,9 @@ class NodeRuntime private constructor(
       if (host.isEmpty() || port !in 1..65535) return null
       return GatewayEndpoint.manual(host = host, port = port).stableId
     }
-    return prefs.lastDiscoveredStableId.value.trim().takeIf { it.isNotEmpty() }
+    return prefs.lastDiscoveredStableId.value
+      .trim()
+      .takeIf { it.isNotEmpty() }
   }
 
   private fun chatCacheScope(): ChatCacheScope? =

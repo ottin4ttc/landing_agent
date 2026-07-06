@@ -105,7 +105,9 @@ private sealed interface RealtimeToolRegistration {
 
   data object AwaitingCompletion : RealtimeToolRegistration
 
-  data class Completed(val dispatch: RealtimeToolCompletionDispatch) : RealtimeToolRegistration
+  data class Completed(
+    val dispatch: RealtimeToolCompletionDispatch,
+  ) : RealtimeToolRegistration
 }
 
 private sealed interface RealtimeToolCompletionDecision {
@@ -113,7 +115,9 @@ private sealed interface RealtimeToolCompletionDecision {
 
   data object Consumed : RealtimeToolCompletionDecision
 
-  data class Dispatch(val completion: RealtimeToolCompletionDispatch) : RealtimeToolCompletionDecision
+  data class Dispatch(
+    val completion: RealtimeToolCompletionDispatch,
+  ) : RealtimeToolCompletionDecision
 }
 
 class TalkModeManager internal constructor(

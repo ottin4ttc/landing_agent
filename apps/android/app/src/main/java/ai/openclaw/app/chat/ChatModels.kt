@@ -57,7 +57,6 @@ data class ChatCommandEntry(
   val acceptsArgs: Boolean = false,
 )
 
-
 /**
  * Run still streaming on the gateway when a chat.history snapshot was captured;
  * [text] is the assistant text buffered so far (may be empty for runs without deltas).
