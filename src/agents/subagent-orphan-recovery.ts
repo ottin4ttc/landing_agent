@@ -157,14 +157,28 @@ async function resumeOrphanedSession(params: {
     if (!remapped) {
       log.warn(
         `resumed orphaned session ${params.sessionKey} but remap failed (old run already removed); treating resume as accepted to avoid duplicate restarts`,
+        undefined,
+        {
+          event: "subagent.interrupted.resume.resumed.orphaned.session.but.remap.failed.old",
+          outcome: "warning",
+          reason: "failed",
+        },
       );
       return { resumed: true };
     }
-    log.info(`resumed orphaned session: ${params.sessionKey}`);
+    log.info(`resumed orphaned session: ${params.sessionKey}`, undefined, {
+      event: "subagent.interrupted.resume.resumed.orphaned.session",
+      outcome: "success",
+      reason: "completed",
+    });
     return { resumed: true };
   } catch (err) {
     const error = formatErrorMessage(err);
-    log.warn(`failed to resume orphaned session ${params.sessionKey}: ${error}`);
+    log.warn(`failed to resume orphaned session ${params.sessionKey}: ${error}`, undefined, {
+      event: "subagent.interrupted.resume.failed.resume.orphaned.session",
+      outcome: "warning",
+      reason: "failed",
+    });
     return { resumed: false, error };
   }
 }
@@ -278,10 +292,25 @@ export async function recoverOrphanedSubagentSessions(params: {
             } catch (err) {
               log.warn(
                 `failed to persist wedged subagent recovery marker for ${childSessionKey}: ${String(err)}`,
+                undefined,
+                {
+                  event:
+                    "subagent.interrupted.resume.failed.persist.wedged.subagent.recovery.marker",
+                  outcome: "warning",
+                  reason: "failed",
+                },
               );
             }
           }
-          log.warn(`skipping orphan recovery for ${childSessionKey}: ${recoveryGate.reason}`);
+          log.warn(
+            `skipping orphan recovery for ${childSessionKey}: ${recoveryGate.reason}`,
+            undefined,
+            {
+              event: "subagent.interrupted.resume.skipping.orphan.recovery",
+              outcome: "warning",
+              reason: "skipped",
+            },
+          );
           result.skipped++;
           result.failedRuns.push({
             runId,
@@ -291,7 +320,11 @@ export async function recoverOrphanedSubagentSessions(params: {
           continue;
         }
 
-        log.info(`found orphaned subagent session: ${childSessionKey} (run=${runId})`);
+        log.info(`found orphaned subagent session: ${childSessionKey} (run=${runId})`, undefined, {
+          event: "subagent.interrupted.resume.found.orphaned.subagent.session.run",
+          outcome: "success",
+          reason: "completed",
+        });
 
         const messages = await readSessionMessagesAsync(
           {
@@ -354,6 +387,13 @@ export async function recoverOrphanedSubagentSessions(params: {
           } catch (err) {
             log.warn(
               `resume succeeded but failed to update session store for ${childSessionKey}: ${String(err)}`,
+              undefined,
+              {
+                event:
+                  "subagent.interrupted.resume.resume.succeeded.but.failed.update.session.store",
+                outcome: "warning",
+                reason: "failed",
+              },
             );
           }
           result.recovered++;
@@ -361,6 +401,13 @@ export async function recoverOrphanedSubagentSessions(params: {
           // Flag stays as abortedLastRun=true so next restart can retry
           log.warn(
             `resume failed for ${childSessionKey}; abortedLastRun flag preserved for retry on next restart`,
+            undefined,
+            {
+              event:
+                "subagent.interrupted.resume.resume.failed.abortedlastrun.flag.preserved.retry.next",
+              outcome: "warning",
+              reason: "failed",
+            },
           );
           result.failed++;
           result.failedRuns.push({
@@ -371,7 +418,11 @@ export async function recoverOrphanedSubagentSessions(params: {
         }
       } catch (err) {
         const error = formatErrorMessage(err);
-        log.warn(`error processing orphaned session ${childSessionKey}: ${error}`);
+        log.warn(`error processing orphaned session ${childSessionKey}: ${error}`, undefined, {
+          event: "subagent.interrupted.resume.error.processing.orphaned.session",
+          outcome: "warning",
+          reason: "warning",
+        });
         result.failed++;
         result.failedRuns.push({
           runId,
@@ -381,7 +432,11 @@ export async function recoverOrphanedSubagentSessions(params: {
       }
     }
   } catch (err) {
-    log.warn(`orphan recovery scan failed: ${String(err)}`);
+    log.warn(`orphan recovery scan failed: ${String(err)}`, undefined, {
+      event: "subagent.interrupted.resume.orphan.recovery.scan.failed",
+      outcome: "warning",
+      reason: "failed",
+    });
     // Ensure retry logic fires for scan-level exceptions.
     if (result.failed === 0) {
       result.failed = 1;
@@ -391,6 +446,12 @@ export async function recoverOrphanedSubagentSessions(params: {
   if (result.recovered > 0 || result.failed > 0) {
     log.info(
       `orphan recovery complete: recovered=${result.recovered} failed=${result.failed} skipped=${result.skipped}`,
+      undefined,
+      {
+        event: "subagent.interrupted.resume.orphan.recovery.complete.recovered.failed.skipped",
+        outcome: result.failed > 0 ? "warning" : "success",
+        reason: result.failed > 0 ? "partial_failure" : "completed",
+      },
     );
   }
 
@@ -439,6 +500,12 @@ export function scheduleOrphanRecovery(params: {
             const nextDelay = delay * RETRY_BACKOFF_MULTIPLIER;
             log.info(
               `orphan recovery had ${result.failed} failure(s); retrying in ${nextDelay}ms (attempt ${attempt + 1}/${maxRetries})`,
+              undefined,
+              {
+                event: "subagent.interrupted.resume.orphan.recovery.had.failure.s.retrying.ms",
+                outcome: "success",
+                reason: "failed",
+              },
             );
             attemptRecovery(attempt + 1, nextDelay);
             return;
@@ -465,11 +532,24 @@ export function scheduleOrphanRecovery(params: {
             const nextDelay = delay * RETRY_BACKOFF_MULTIPLIER;
             log.warn(
               `scheduled orphan recovery failed: ${String(err)}; retrying in ${nextDelay}ms (attempt ${attempt + 1}/${maxRetries})`,
+              undefined,
+              {
+                event:
+                  "subagent.interrupted.resume.scheduled.orphan.recovery.failed.retrying.ms.attempt",
+                outcome: "warning",
+                reason: "failed",
+              },
             );
             attemptRecovery(attempt + 1, nextDelay);
           } else {
             log.warn(
               `scheduled orphan recovery failed after ${maxRetries} retries: ${String(err)}`,
+              undefined,
+              {
+                event: "subagent.interrupted.resume.scheduled.orphan.recovery.failed.after.retries",
+                outcome: "warning",
+                reason: "failed",
+              },
             );
           }
         });

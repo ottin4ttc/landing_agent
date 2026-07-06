@@ -380,7 +380,11 @@ export function writeGatewayRestartHandoffSync(opts: {
     );
     return payload;
   } catch (err) {
-    handoffLog.warn(`failed to write gateway restart handoff: ${String(err)}`);
+    handoffLog.warn(`failed to write gateway restart handoff: ${String(err)}`, undefined, {
+      event: "restart.handoff.failed.write.gateway.restart.handoff",
+      outcome: "warning",
+      reason: "failed",
+    });
     return null;
   }
 }

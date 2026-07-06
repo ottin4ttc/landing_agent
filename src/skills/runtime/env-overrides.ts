@@ -194,10 +194,22 @@ function applySkillConfigEnvOverrides(params: {
   });
 
   if (sanitized.blocked.length > 0) {
-    log.warn(`Blocked skill env overrides for ${skillKey}: ${sanitized.blocked.join(", ")}`);
+    log.warn(
+      `Blocked skill env overrides for ${skillKey}: ${sanitized.blocked.join(", ")}`,
+      undefined,
+      { event: "env.overrides.blocked.skill.env.overrides", outcome: "warning", reason: "blocked" },
+    );
   }
   if (sanitized.warnings.length > 0) {
-    log.warn(`Suspicious skill env overrides for ${skillKey}: ${sanitized.warnings.join(", ")}`);
+    log.warn(
+      `Suspicious skill env overrides for ${skillKey}: ${sanitized.warnings.join(", ")}`,
+      undefined,
+      {
+        event: "env.overrides.suspicious.skill.env.overrides",
+        outcome: "warning",
+        reason: "warning",
+      },
+    );
   }
 
   for (const [envKey, envValue] of Object.entries(sanitized.allowed)) {

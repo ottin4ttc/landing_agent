@@ -31,7 +31,11 @@ function debugSkillCommandOnce(
     return;
   }
   skillCommandDebugOnce.add(messageKey);
-  skillsLogger.debug(message, meta);
+  skillsLogger.debug(message, meta, {
+    event: "skills.debugskillcommandonce",
+    outcome: "success",
+    reason: "completed",
+  });
 }
 
 function traceSkillCommandOnce(
@@ -43,7 +47,11 @@ function traceSkillCommandOnce(
     return;
   }
   skillCommandDebugOnce.add(messageKey);
-  skillsLogger.trace(message, meta);
+  skillsLogger.trace(message, meta, {
+    event: "skills.traceskillcommandonce",
+    outcome: "success",
+    reason: "completed",
+  });
 }
 
 function sanitizeSkillCommandName(raw: string): string {

@@ -100,7 +100,12 @@ export async function runBootOnce(params: {
 }): Promise<BootRunResult> {
   const bootRuntime: RuntimeEnv = {
     log: () => {},
-    error: (message) => log.error(String(message)),
+    error: (message) =>
+      log.error(String(message), undefined, {
+        event: "gateway.boot.error",
+        outcome: "failure",
+        reason: "failed",
+      }),
     exit: defaultRuntime.exit,
   };
   let result: Awaited<ReturnType<typeof loadBootFile>>;
@@ -108,7 +113,11 @@ export async function runBootOnce(params: {
     result = await loadBootFile(params.workspaceDir);
   } catch (err) {
     const message = formatErrorMessage(err);
-    log.error(`boot: failed to read ${BOOT_FILENAME}: ${message}`);
+    log.error(`boot: failed to read ${BOOT_FILENAME}: ${message}`, undefined, {
+      event: "gateway.boot.boot.failed.read",
+      outcome: "failure",
+      reason: "failed",
+    });
     return { status: "failed", reason: message };
   }
 
@@ -150,7 +159,11 @@ export async function runBootOnce(params: {
         return undefined;
       } catch (err) {
         const failure = formatErrorMessage(err);
-        log.error(`boot: agent run failed: ${failure}`);
+        log.error(`boot: agent run failed: ${failure}`, undefined, {
+          event: "gateway.boot.boot.agent.run.failed",
+          outcome: "failure",
+          reason: "failed",
+        });
         return failure;
       } finally {
         clearBootEchoContextForSession(sessionKey);
@@ -159,14 +172,26 @@ export async function runBootOnce(params: {
   );
   const agentFailure = mappingPreservation.result;
   if (mappingPreservation.snapshotFailure) {
-    log.debug("boot: could not snapshot session mapping", {
-      sessionKey,
-      error: mappingPreservation.snapshotFailure,
-    });
+    log.debug(
+      "boot: could not snapshot session mapping",
+      {
+        sessionKey,
+        error: mappingPreservation.snapshotFailure,
+      },
+      {
+        event: "gateway.boot.boot.could.not.snapshot.session.mapping",
+        outcome: "success",
+        reason: "completed",
+      },
+    );
   }
   const mappingRestoreFailure = mappingPreservation.restoreFailure;
   if (mappingRestoreFailure) {
-    log.error(`boot: failed to restore session mapping: ${mappingRestoreFailure}`);
+    log.error(`boot: failed to restore session mapping: ${mappingRestoreFailure}`, undefined, {
+      event: "gateway.boot.boot.failed.restore.session.mapping",
+      outcome: "failure",
+      reason: "failed",
+    });
   }
 
   if (!agentFailure && !mappingRestoreFailure) {

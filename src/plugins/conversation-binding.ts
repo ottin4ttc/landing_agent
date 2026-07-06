@@ -278,7 +278,11 @@ function logPluginBindingLifecycleEvent(params: {
     `account=${params.accountId}`,
     `conversation=${params.conversationId}`,
   ];
-  log.info(parts.join(" "));
+  log.info(parts.join(" "), undefined, {
+    event: "plugins.binding.logpluginbindinglifecycleevent",
+    outcome: "success",
+    reason: "completed",
+  });
 }
 
 function isLegacyPluginBindingRecord(params: {
@@ -362,7 +366,11 @@ function loadApprovalsFromDatabase(): PluginBindingApprovalsState {
       })),
     };
   } catch (error) {
-    log.warn(`plugin binding approvals load failed: ${String(error)}`);
+    log.warn(`plugin binding approvals load failed: ${String(error)}`, undefined, {
+      event: "plugins.binding.plugin.binding.approvals.load.failed",
+      outcome: "warning",
+      reason: "failed",
+    });
     return { approvals: [] };
   }
 }
@@ -963,7 +971,11 @@ function dispatchPluginConversationBindingResolved(params: {
   // Keep platform interaction acks fast even if the plugin does slow post-bind work.
   queueMicrotask(() => {
     void notifyPluginConversationBindingResolved(params).catch((error: unknown) => {
-      log.warn(`plugin binding resolved dispatch failed: ${String(error)}`);
+      log.warn(`plugin binding resolved dispatch failed: ${String(error)}`, undefined, {
+        event: "plugins.binding.plugin.binding.resolved.dispatch.failed",
+        outcome: "warning",
+        reason: "failed",
+      });
     });
   });
 }
@@ -1000,6 +1012,12 @@ async function notifyPluginConversationBindingResolved(params: {
     } catch (error) {
       log.warn(
         `plugin binding resolved callback failed plugin=${registration.pluginId} root=${registration.pluginRoot ?? "<none>"}: ${formatErrorMessage(error)}`,
+        undefined,
+        {
+          event: "plugins.binding.plugin.binding.resolved.callback.failed.plugin.root",
+          outcome: "warning",
+          reason: "failed",
+        },
       );
     }
   }

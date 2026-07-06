@@ -117,8 +117,18 @@ export async function runSkillResearchAutoCapture(params: {
           });
     log.info(
       `skill research auto-capture queued workshop proposal ${result.record.target.skillKey}`,
+      undefined,
+      {
+        event: "skills.research.skill.research.auto.capture.queued.workshop.proposal",
+        outcome: "success",
+        reason: "completed",
+      },
     );
   } catch (error) {
-    log.warn(`skill research auto-capture skipped: ${String(error)}`);
+    log.warn(`skill research auto-capture skipped: ${String(error)}`, undefined, {
+      event: "skills.research.skill.research.auto.capture.skipped",
+      outcome: "warning",
+      reason: "skipped",
+    });
   }
 }

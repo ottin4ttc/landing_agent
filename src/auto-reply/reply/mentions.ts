@@ -68,11 +68,19 @@ function warnRejectedMentionPattern(
     mentionPatternWarningCache.clear();
     mentionPatternWarningCache.add(key);
   }
-  log.warn("Ignoring unsupported group mention pattern", {
-    pattern,
-    flags,
-    reason,
-  });
+  log.warn(
+    "Ignoring unsupported group mention pattern",
+    {
+      pattern,
+      flags,
+      reason,
+    },
+    {
+      event: "mentions.ignoring.unsupported.group.mention.pattern",
+      outcome: "warning",
+      reason: "warning",
+    },
+  );
 }
 
 function cacheMentionRegexes(

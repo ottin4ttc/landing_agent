@@ -454,11 +454,23 @@ export function buildSandboxCreateArgs(params: {
   if (envSanitization.blocked.length > 0) {
     log.warn(
       `Blocked invalid configured sandbox environment variables: ${envSanitization.blocked.join(", ")}`,
+      undefined,
+      {
+        event: "docker.blocked.invalid.configured.sandbox.environment.variables",
+        outcome: "warning",
+        reason: "invalid",
+      },
     );
   }
   if (envSanitization.warnings.length > 0) {
     log.warn(
       `Suspicious configured sandbox environment variables: ${envSanitization.warnings.join(", ")}`,
+      undefined,
+      {
+        event: "docker.suspicious.configured.sandbox.environment.variables",
+        outcome: "warning",
+        reason: "warning",
+      },
     );
   }
   for (const [key, value] of Object.entries(markOpenClawExecEnv(envSanitization.allowed))) {

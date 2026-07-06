@@ -137,6 +137,12 @@ function isExecApprovalFollowupDirectDeliveryStale(params: {
     // risk dropping a real followup, but log it so this rare path is observable.
     log.debug(
       `exec approval followup session-rebind check skipped for ${sessionKey}; delivering: ${formatUnknownError(err)}`,
+      undefined,
+      {
+        event: "agents.exec.approval.followup.exec.approval.followup.session.rebind.check.skipped",
+        outcome: "success",
+        reason: "skipped",
+      },
     );
     return false;
   }
@@ -396,6 +402,13 @@ export async function sendExecApprovalFollowup(
     ) {
       log.info(
         `Dropping stale denied exec approval followup ${params.approvalId}: session ${sessionKey ?? ""} was rebound before the approval resolved`,
+        undefined,
+        {
+          event:
+            "agents.exec.approval.followup.dropping.stale.denied.exec.approval.followup.session",
+          outcome: "success",
+          reason: "denied",
+        },
       );
       return false;
     }
@@ -425,6 +438,13 @@ export async function sendExecApprovalFollowup(
   ) {
     log.info(
       `Dropping stale exec approval followup ${params.approvalId} direct fallback: session ${sessionKey ?? ""} was rebound before the approval resolved`,
+      undefined,
+      {
+        event:
+          "agents.exec.approval.followup.dropping.stale.exec.approval.followup.direct.fallback",
+        outcome: "success",
+        reason: "fallback",
+      },
     );
     return false;
   }

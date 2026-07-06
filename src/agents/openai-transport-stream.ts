@@ -738,6 +738,7 @@ function logResponsesFailedNoDetails(observation: ResponsesFailedNoDetailsObserv
       `api=${observation.api} model=${observation.transportModel} ` +
       summarizeResponsesFailedNoDetailsObservation(observation),
     observation,
+    { event: "openai.transport.logresponsesfailednodetails", outcome: "warning", reason: "failed" },
   );
 }
 
@@ -998,6 +999,12 @@ async function createResponsesStreamWithEncryptedContentRetry(params: {
     log.warn(
       `[responses] retrying without encrypted reasoning content provider=${params.model.provider} ` +
         `api=${params.model.api} model=${params.model.id}`,
+      undefined,
+      {
+        event: "openai.transport.createresponsesstreamwithencryptedcontentretry",
+        outcome: "warning",
+        reason: "retry",
+      },
     );
     return (await params.client.responses.create(
       retryRequest as never,
@@ -1364,6 +1371,11 @@ function resolveOpenAIStrictToolFlagWithDiagnostics(
         model: context.model.id,
         incompatibleToolCount: diagnostics.length,
         sample,
+      },
+      {
+        event: "openai.transport.resolveopenaistricttoolflagwithdiagnostics",
+        outcome: "success",
+        reason: "completed",
       },
     );
   }
@@ -2128,6 +2140,12 @@ export function createOpenAIResponsesTransportStreamFn(): StreamFn {
         log.warn(
           `[responses] error provider=${model.provider} api=${model.api} model=${model.id} ` +
             summarizeOpenAITransportError(error),
+          undefined,
+          {
+            event: "openai.transport.createopenairesponsestransportstreamfn",
+            outcome: "warning",
+            reason: "warning",
+          },
         );
         assignTransportErrorDetails(output, error, options?.signal);
         stream.push({ type: "error", reason: output.stopReason as never, error: output as never });
@@ -2574,6 +2592,12 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
         log.warn(
           `[responses] error provider=${model.provider} api=${model.api} model=${model.id} ` +
             summarizeOpenAITransportError(error),
+          undefined,
+          {
+            event: "openai.transport.createazureopenairesponsestransportstreamfn",
+            outcome: "warning",
+            reason: "warning",
+          },
         );
         assignTransportErrorDetails(output, error, options?.signal);
         stream.push({ type: "error", reason: output.stopReason as never, error: output as never });

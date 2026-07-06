@@ -636,11 +636,20 @@ export async function invokeNativeHookRelay(
       if (!canAcceptNativeHookRelayGenerationMismatch(registration, generation)) {
         throw new Error(NATIVE_HOOK_RELAY_BRIDGE_STALE_REGISTRATION_ERROR);
       }
-      log.debug("native hook relay accepted bootstrap generation mismatch", {
-        relayId,
-        event,
-        runId: registration.runId,
-      });
+      log.debug(
+        "native hook relay accepted bootstrap generation mismatch",
+        {
+          relayId,
+          event,
+          runId: registration.runId,
+        },
+        {
+          event:
+            "agents.harness.native.hook.relay.native.hook.relay.accepted.bootstrap.generation.mismatch",
+          outcome: "success",
+          reason: "completed",
+        },
+      );
     }
   }
   if (!registration.allowedEvents.includes(event)) {
@@ -946,18 +955,34 @@ function registerNativeHookRelayBridge(registration: ActiveNativeHookRelayRegist
           continue;
         }
         rmSync(full, { force: true });
-        log.debug("pruned stale native hook relay bridge file", {
-          file: name,
-          stalePid: rec.pid,
-          currentPid: process.pid,
-          reason: deadPid ? "dead-pid" : "expired",
-        });
+        log.debug(
+          "pruned stale native hook relay bridge file",
+          {
+            file: name,
+            stalePid: rec.pid,
+            currentPid: process.pid,
+            reason: deadPid ? "dead-pid" : "expired",
+          },
+          {
+            event: "agents.harness.native.hook.relay.pruned.stale.native.hook.relay.bridge.file",
+            outcome: "success",
+            reason: "completed",
+          },
+        );
       } catch {
         // ignore unparseable / racing files
       }
     }
   } catch (error) {
-    log.debug("native hook relay bridge dir prune skipped", { error });
+    log.debug(
+      "native hook relay bridge dir prune skipped",
+      { error },
+      {
+        event: "agents.harness.native.hook.relay.native.hook.relay.bridge.dir.prune.skipped",
+        outcome: "success",
+        reason: "skipped",
+      },
+    );
   }
   unregisterNativeHookRelayBridge(registration.relayId, {
     deferRegistryRemovalMs: NATIVE_HOOK_BRIDGE_REPLACEMENT_RECORD_GRACE_MS,
@@ -984,7 +1009,15 @@ function registerNativeHookRelayBridge(registration: ActiveNativeHookRelayRegist
   });
   relayBridges.set(registration.relayId, bridge);
   server.on("error", (error) => {
-    log.debug("native hook relay bridge server error", { error, relayId: registration.relayId });
+    log.debug(
+      "native hook relay bridge server error",
+      { error, relayId: registration.relayId },
+      {
+        event: "agents.harness.native.hook.relay.native.hook.relay.bridge.server.error",
+        outcome: "success",
+        reason: "completed",
+      },
+    );
   });
   server.listen(0, "127.0.0.1", () => {
     if (relayBridges.get(registration.relayId) !== bridge) {
@@ -1004,9 +1037,18 @@ function writeNativeHookRelayBridgeRecordForRegistration(
 ): void {
   const address = bridge.server.address();
   if (!address || typeof address === "string") {
-    log.debug("native hook relay bridge server address unavailable", {
-      relayId: registration.relayId,
-    });
+    log.debug(
+      "native hook relay bridge server address unavailable",
+      {
+        relayId: registration.relayId,
+      },
+      {
+        event:
+          "agents.harness.native.hook.relay.native.hook.relay.bridge.server.address.unavailable",
+        outcome: "success",
+        reason: "unavailable",
+      },
+    );
     return;
   }
   const record: NativeHookRelayBridgeRecord = {
@@ -1166,7 +1208,15 @@ function readNativeHookRelayBridgeRecordIfExists(
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      log.debug("failed to read native hook relay bridge registry", { error, relayId });
+      log.debug(
+        "failed to read native hook relay bridge registry",
+        { error, relayId },
+        {
+          event: "agents.harness.native.hook.relay.failed.read.native.hook.relay.bridge.registry",
+          outcome: "success",
+          reason: "failed",
+        },
+      );
     }
   }
   return undefined;
@@ -1508,6 +1558,13 @@ async function runNativeHookRelayPermissionRequest(params: {
   } catch (error) {
     log.warn(
       `native hook permission approval failed; deferring to provider approval path: ${String(error)}`,
+      undefined,
+      {
+        event:
+          "agents.harness.native.hook.relay.native.hook.permission.approval.failed.deferring.provider",
+        outcome: "warning",
+        reason: "failed",
+      },
     );
   }
   // A PermissionRequest no-op is not an allow decision. Codex interprets it as
@@ -1564,6 +1621,13 @@ async function startNativeHookRelayPermissionApprovalWithBudget(params: {
   if (!consumeNativeHookRelayPermissionBudget(params.registration.relayId)) {
     log.warn(
       `native hook permission approval rate limit exceeded; deferring to provider approval path: relay=${params.registration.relayId} run=${params.registration.runId}`,
+      undefined,
+      {
+        event:
+          "agents.harness.native.hook.relay.native.hook.permission.approval.rate.limit.exceeded",
+        outcome: "warning",
+        reason: "warning",
+      },
     );
     return "defer";
   }

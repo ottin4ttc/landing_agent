@@ -526,6 +526,12 @@ export function createAgentToolResultMiddlewareRunner(
                 event.toolName,
                 120,
               )}`,
+              undefined,
+              {
+                event: "agents.harness.discarded.invalid.tool.result.middleware.output",
+                outcome: "warning",
+                reason: "invalid",
+              },
             );
             return reconcileDeliveredMessagingFailure(
               buildMiddlewareFailureResult(),
@@ -538,6 +544,12 @@ export function createAgentToolResultMiddlewareRunner(
               event.toolName,
               120,
             )}`,
+            undefined,
+            {
+              event: "agents.harness.tool.result.middleware.failed",
+              outcome: "warning",
+              reason: "failed",
+            },
           );
           return reconcileDeliveredMessagingFailure(
             buildMiddlewareFailureResult(),

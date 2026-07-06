@@ -234,11 +234,19 @@ export function createSubagentRunManager(params: {
         }
         void waitForSubagentCompletion(runId, waitTimeoutMs, scheduledEntry, true);
       }, RECOVERABLE_WAIT_RETRY_DELAY_MS).unref?.();
-      log.info(reason, {
-        runId,
-        childSessionKey: entry.childSessionKey,
-        ...(error ? { error } : {}),
-      });
+      log.info(
+        reason,
+        {
+          runId,
+          childSessionKey: entry.childSessionKey,
+          ...(error ? { error } : {}),
+        },
+        {
+          event: "agents.subagent.registry.schedulewaitretry",
+          outcome: "success",
+          reason: "retry",
+        },
+      );
     };
     try {
       const entryBeforeWait = params.runs.get(runId);
@@ -444,11 +452,19 @@ export function createSubagentRunManager(params: {
       await params.completeSubagentRun(completionForRetry);
     } catch (error) {
       const current = params.runs.get(runId);
-      log.warn("failed to complete subagent run; retrying completion", {
-        runId,
-        childSessionKey: current?.childSessionKey ?? expectedEntry?.childSessionKey,
-        error,
-      });
+      log.warn(
+        "failed to complete subagent run; retrying completion",
+        {
+          runId,
+          childSessionKey: current?.childSessionKey ?? expectedEntry?.childSessionKey,
+          error,
+        },
+        {
+          event: "agents.subagent.registry.failed.complete.subagent.run.retrying.completion",
+          outcome: "warning",
+          reason: "failed",
+        },
+      );
       if (
         current &&
         typeof current.endedAt === "number" &&
@@ -460,11 +476,19 @@ export function createSubagentRunManager(params: {
             await params.completeSubagentRun(completionForRetry);
             return;
           } catch (retryError) {
-            log.warn("failed to complete subagent run after retry; retrying ended cleanup", {
-              runId,
-              childSessionKey: current.childSessionKey,
-              error: retryError,
-            });
+            log.warn(
+              "failed to complete subagent run after retry; retrying ended cleanup",
+              {
+                runId,
+                childSessionKey: current.childSessionKey,
+                error: retryError,
+              },
+              {
+                event: "agents.subagent.registry.failed.complete.subagent.run.after.retry.retrying",
+                outcome: "warning",
+                reason: "failed",
+              },
+            );
           }
         }
         current.cleanupHandled = false;
@@ -700,15 +724,31 @@ export function createSubagentRunManager(params: {
         lastEventAt: now,
       });
       if (!task) {
-        log.warn("Failed to persist background task for subagent run", {
-          runId: registerParams.runId,
-        });
+        log.warn(
+          "Failed to persist background task for subagent run",
+          {
+            runId: registerParams.runId,
+          },
+          {
+            event: "agents.subagent.registry.failed.persist.background.task.subagent.run",
+            outcome: "warning",
+            reason: "failed",
+          },
+        );
       }
     } catch (error) {
-      log.warn("Failed to create background task for subagent run", {
-        runId: registerParams.runId,
-        error,
-      });
+      log.warn(
+        "Failed to create background task for subagent run",
+        {
+          runId: registerParams.runId,
+          error,
+        },
+        {
+          event: "agents.subagent.registry.failed.create.background.task.subagent.run",
+          outcome: "warning",
+          reason: "failed",
+        },
+      );
     }
     params.ensureListener();
     params.persist();
@@ -807,11 +847,19 @@ export function createSubagentRunManager(params: {
             persist: () => params.persist(),
           });
         void persistSubagentSessionTiming(entry).catch((err: unknown) => {
-          log.warn("failed to persist killed subagent session timing", {
-            err,
-            runId: entry.runId,
-            childSessionKey: entry.childSessionKey,
-          });
+          log.warn(
+            "failed to persist killed subagent session timing",
+            {
+              err,
+              runId: entry.runId,
+              childSessionKey: entry.childSessionKey,
+            },
+            {
+              event: "agents.subagent.registry.failed.persist.killed.subagent.session.timing",
+              outcome: "warning",
+              reason: "failed",
+            },
+          );
         });
         if (shouldDeleteAttachments(entry)) {
           void safeRemoveAttachmentsDir(entry);

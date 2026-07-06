@@ -1683,6 +1683,12 @@ async function runWithModelFallbackInternal<T>(
       if (notFoundAttempt) {
         log.warn(
           `Model "${sanitizeForLog(notFoundAttempt.provider)}/${sanitizeForLog(notFoundAttempt.model)}" not found. Fell back to "${sanitizeForLog(candidate.provider)}/${sanitizeForLog(candidate.model)}".`,
+          undefined,
+          {
+            event: "model.fallback.model.not.found.fell.back",
+            outcome: "warning",
+            reason: "warning",
+          },
         );
       }
       return attemptRun.success;

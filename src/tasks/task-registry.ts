@@ -256,10 +256,18 @@ function emitTaskRegistryObserverEvent(createEvent: () => TaskRegistryObserverEv
   try {
     observers.onEvent(createEvent());
   } catch (error) {
-    log.warn("Task registry observer failed", {
-      event: "task-registry",
-      error,
-    });
+    log.warn(
+      "Task registry observer failed",
+      {
+        event: "task-registry",
+        error,
+      },
+      {
+        event: "tasks.registry.task.registry.observer.failed",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
   }
 }
 
@@ -271,7 +279,15 @@ function persistTaskRegistry(): boolean {
     });
     return true;
   } catch (error) {
-    log.warn("Failed to persist task registry snapshot", { error });
+    log.warn(
+      "Failed to persist task registry snapshot",
+      { error },
+      {
+        event: "tasks.registry.failed.persist.task.registry.snapshot",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     return false;
   }
 }
@@ -310,12 +326,20 @@ function tryPersistTaskUpsert(
     persistTaskUpsert(task, pendingDeliveryState);
     return true;
   } catch (error) {
-    log.warn("Failed to persist task registry upsert", {
-      operation,
-      taskId: task.taskId,
-      runId: task.runId,
-      error,
-    });
+    log.warn(
+      "Failed to persist task registry upsert",
+      {
+        operation,
+        taskId: task.taskId,
+        runId: task.runId,
+        error,
+      },
+      {
+        event: "tasks.registry.failed.persist.task.registry.upsert",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     return false;
   }
 }
@@ -352,10 +376,18 @@ function tryPersistTaskDelete(taskId: string): boolean {
     persistTaskDelete(taskId);
     return true;
   } catch (error) {
-    log.warn("Failed to persist task registry delete", {
-      taskId,
-      error,
-    });
+    log.warn(
+      "Failed to persist task registry delete",
+      {
+        taskId,
+        error,
+      },
+      {
+        event: "tasks.registry.failed.persist.task.registry.delete",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     return false;
   }
 }
@@ -379,10 +411,18 @@ function tryPersistTaskDeliveryStateUpsert(state: TaskDeliveryState): boolean {
     persistTaskDeliveryStateUpsert(state);
     return true;
   } catch (error) {
-    log.warn("Failed to persist task delivery state", {
-      taskId: state.taskId,
-      error,
-    });
+    log.warn(
+      "Failed to persist task delivery state",
+      {
+        taskId: state.taskId,
+        error,
+      },
+      {
+        event: "tasks.registry.failed.persist.task.delivery.state",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     return false;
   }
 }
@@ -1081,11 +1121,19 @@ function scheduleTaskFlowSyncRetry(task: TaskRecord, operation: string, attempt 
   }
   const delayMs = TASK_FLOW_SYNC_RETRY_DELAYS_MS[attempt];
   if (delayMs == null) {
-    log.warn("Exhausted parent flow sync retries from task", {
-      operation,
-      taskId,
-      flowId: task.parentFlowId,
-    });
+    log.warn(
+      "Exhausted parent flow sync retries from task",
+      {
+        operation,
+        taskId,
+        flowId: task.parentFlowId,
+      },
+      {
+        event: "tasks.registry.exhausted.parent.flow.sync.retries.task",
+        outcome: "warning",
+        reason: "warning",
+      },
+    );
     return;
   }
   const retryTimer = setTimeout(() => {
@@ -1100,12 +1148,20 @@ function scheduleTaskFlowSyncRetry(task: TaskRecord, operation: string, attempt 
     }
     const result = syncFlowFromTaskResult(current);
     if (!result.ok) {
-      log.warn("Failed to retry parent flow sync from task", {
-        operation,
-        taskId,
-        flowId: current.parentFlowId,
-        reason: result.reason,
-      });
+      log.warn(
+        "Failed to retry parent flow sync from task",
+        {
+          operation,
+          taskId,
+          flowId: current.parentFlowId,
+          reason: result.reason,
+        },
+        {
+          event: "tasks.registry.failed.retry.parent.flow.sync.task",
+          outcome: "warning",
+          reason: "failed",
+        },
+      );
       scheduleTaskFlowSyncRetry(current, operation, attempt + 1);
     }
   }, delayMs);
@@ -1118,12 +1174,20 @@ function syncFlowFromTaskAfterTaskMutation(task: TaskRecord, operation: string):
   if (result.ok) {
     return;
   }
-  log.warn("Failed to sync parent flow from task mutation", {
-    operation,
-    taskId: task.taskId,
-    flowId: task.parentFlowId,
-    reason: result.reason,
-  });
+  log.warn(
+    "Failed to sync parent flow from task mutation",
+    {
+      operation,
+      taskId: task.taskId,
+      flowId: task.parentFlowId,
+      reason: result.reason,
+    },
+    {
+      event: "tasks.registry.failed.sync.parent.flow.task.mutation",
+      outcome: "warning",
+      reason: "failed",
+    },
+  );
   scheduleTaskFlowSyncRetry(task, operation);
 }
 
@@ -1159,7 +1223,15 @@ function restoreTaskRegistryOnce() {
       tasks: snapshotTaskRecords(tasks),
     }));
   } catch (error) {
-    log.warn("Failed to restore task registry", { error });
+    log.warn(
+      "Failed to restore task registry",
+      { error },
+      {
+        event: "tasks.registry.failed.restore.task.registry",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
   }
 }
 
@@ -1217,11 +1289,19 @@ function updateTask(taskId: string, patch: Partial<TaskRecord>): TaskRecord | nu
   try {
     syncManagedFlowCancellationFromTask(next);
   } catch (error) {
-    log.warn("Failed to finalize managed flow cancellation from task update", {
-      taskId,
-      flowId: next.parentFlowId,
-      error,
-    });
+    log.warn(
+      "Failed to finalize managed flow cancellation from task update",
+      {
+        taskId,
+        flowId: next.parentFlowId,
+        error,
+      },
+      {
+        event: "tasks.registry.failed.finalize.managed.flow.cancellation.task.update",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
   }
   emitTaskRegistryObserverEvent(() => ({
     kind: "upserted",
@@ -1395,11 +1475,19 @@ export async function maybeDeliverTaskTerminalUpdate(taskId: string): Promise<Ta
           lastEventAt: Date.now(),
         });
       } catch (error) {
-        log.warn("Failed to queue background task session delivery", {
-          taskId,
-          ownerKey: latest.ownerKey,
-          error,
-        });
+        log.warn(
+          "Failed to queue background task session delivery",
+          {
+            taskId,
+            ownerKey: latest.ownerKey,
+            error,
+          },
+          {
+            event: "tasks.registry.failed.queue.background.task.session.delivery",
+            outcome: "warning",
+            reason: "failed",
+          },
+        );
         return updateTask(taskId, {
           deliveryStatus: "failed",
           lastEventAt: Date.now(),
@@ -1432,23 +1520,39 @@ export async function maybeDeliverTaskTerminalUpdate(taskId: string): Promise<Ta
         lastEventAt: Date.now(),
       });
     } catch (error) {
-      log.warn("Failed to deliver background task update", {
-        taskId,
-        ownerKey: ownerSessionKey,
-        requesterOrigin: owner.requesterOrigin,
-        error,
-      });
+      log.warn(
+        "Failed to deliver background task update",
+        {
+          taskId,
+          ownerKey: ownerSessionKey,
+          requesterOrigin: owner.requesterOrigin,
+          error,
+        },
+        {
+          event: "tasks.registry.failed.deliver.background.task.update",
+          outcome: "warning",
+          reason: "failed",
+        },
+      );
       try {
         queueTaskSystemEvent(latest, sessionEventText);
         if (latest.terminalOutcome === "blocked") {
           queueBlockedTaskFollowup(latest);
         }
       } catch (fallbackError) {
-        log.warn("Failed to queue background task fallback event", {
-          taskId,
-          ownerKey: latest.ownerKey,
-          error: fallbackError,
-        });
+        log.warn(
+          "Failed to queue background task fallback event",
+          {
+            taskId,
+            ownerKey: latest.ownerKey,
+            error: fallbackError,
+          },
+          {
+            event: "tasks.registry.failed.queue.background.task.fallback.event",
+            outcome: "warning",
+            reason: "failed",
+          },
+        );
       }
       return updateTask(taskId, {
         deliveryStatus: "failed",
@@ -1527,11 +1631,19 @@ export async function maybeDeliverTaskStateChangeUpdate(
       lastEventAt: Date.now(),
     });
   } catch (error) {
-    log.warn("Failed to deliver background task state change", {
-      taskId,
-      ownerKey: current.ownerKey,
-      error,
-    });
+    log.warn(
+      "Failed to deliver background task state change",
+      {
+        taskId,
+        ownerKey: current.ownerKey,
+        error,
+      },
+      {
+        event: "tasks.registry.failed.deliver.background.task.state.change",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     return cloneTaskRecord(current);
   }
 }
@@ -2321,10 +2433,18 @@ export function listFreshTasksForOwnerKey(ownerKey: string): TaskRecord[] {
         .toSorted(compareTasksNewestFirst)
         .map(({ insertionIndex: _, ...task }) => task);
     } catch (error) {
-      log.warn("Failed to read fresh owner task registry records", {
-        ownerKey: key,
-        error,
-      });
+      log.warn(
+        "Failed to read fresh owner task registry records",
+        {
+          ownerKey: key,
+          error,
+        },
+        {
+          event: "tasks.registry.failed.read.fresh.owner.task.registry.records",
+          outcome: "warning",
+          reason: "failed",
+        },
+      );
     }
   }
 

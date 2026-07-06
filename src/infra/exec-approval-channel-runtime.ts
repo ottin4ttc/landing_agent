@@ -22,6 +22,7 @@ export type {
 
 type ApprovalRequestEvent = ExecApprovalRequest | PluginApprovalRequest;
 type ApprovalResolvedEvent = ExecApprovalResolved | PluginApprovalResolved;
+type ApprovalRuntimeLogOutcome = "failure" | "success" | "warning";
 
 /** Error raised when the gateway pauses approval reconnects after a terminal startup failure. */
 export class ExecApprovalChannelRuntimeTerminalStartError extends Error {
@@ -77,6 +78,19 @@ function readGatewayConnectErrorDetailCode(error: unknown): string | null {
   return readConnectErrorDetailCode((error as { details?: unknown }).details);
 }
 
+function approvalRuntimeLogSemantics(
+  event: string,
+  outcome: ApprovalRuntimeLogOutcome,
+  reason: string,
+) {
+  return {
+    event: `approval.channel.runtime.${event}`,
+    category: "approval.channel.runtime",
+    outcome,
+    reason,
+  };
+}
+
 /** Creates the gateway-backed approval runtime that tracks pending requests and finalization. */
 export function createExecApprovalChannelRuntime<
   TPending,
@@ -100,7 +114,11 @@ export function createExecApprovalChannelRuntime<
   const spawn = (label: string, promise: Promise<void>): void => {
     void promise.catch((err: unknown) => {
       const message = formatErrorMessage(err);
-      log.error(`${label}: ${message}`);
+      log.error(
+        `${label}: ${message}`,
+        undefined,
+        approvalRuntimeLogSemantics("async_task_failed", "failure", "task_failed"),
+      );
     });
   };
 
@@ -132,7 +150,11 @@ export function createExecApprovalChannelRuntime<
     if (!entry) {
       return;
     }
-    log.debug(`expired ${approvalId}`);
+    log.debug(
+      `expired ${approvalId}`,
+      undefined,
+      approvalRuntimeLogSemantics("request_expired", "warning", "expired"),
+    );
     await adapter.finalizeExpired?.({
       request: entry.request,
       entries: entry.entries,
@@ -151,11 +173,19 @@ export function createExecApprovalChannelRuntime<
     }
 
     if (pending.has(request.id)) {
-      log.debug(`ignored duplicate request ${request.id}`);
+      log.debug(
+        `ignored duplicate request ${request.id}`,
+        undefined,
+        approvalRuntimeLogSemantics("duplicate_request_ignored", "success", "duplicate"),
+      );
       return;
     }
 
-    log.debug(`received request ${request.id}`);
+    log.debug(
+      `received request ${request.id}`,
+      undefined,
+      approvalRuntimeLogSemantics("request_received", "success", "received"),
+    );
     const entry: PendingApprovalEntry<TPending, TRequest, TResolved> = {
       request,
       entries: [],
@@ -186,7 +216,11 @@ export function createExecApprovalChannelRuntime<
     if (entry.pendingResolution) {
       // Resolution can arrive while native delivery is still creating entries; finalize after both.
       pending.delete(request.id);
-      log.debug(`resolved ${entry.pendingResolution.id} with ${entry.pendingResolution.decision}`);
+      log.debug(
+        `resolved ${entry.pendingResolution.id} with ${entry.pendingResolution.decision}`,
+        undefined,
+        approvalRuntimeLogSemantics("request_resolved", "success", "resolved"),
+      );
       await adapter.finalizeResolved({
         request: entry.request,
         resolved: entry.pendingResolution,
@@ -216,7 +250,11 @@ export function createExecApprovalChannelRuntime<
     if (!finalizedEntry) {
       return;
     }
-    log.debug(`resolved ${resolved.id} with ${resolved.decision}`);
+    log.debug(
+      `resolved ${resolved.id} with ${resolved.decision}`,
+      undefined,
+      approvalRuntimeLogSemantics("request_resolved", "success", "resolved"),
+    );
     await adapter.finalizeResolved({
       request: finalizedEntry.request,
       resolved,
@@ -277,7 +315,11 @@ export function createExecApprovalChannelRuntime<
     const promise = replayPendingApprovals(client)
       .catch((err: unknown) => {
         const message = formatErrorMessage(err);
-        log.error(`error replaying pending approvals: ${message}`);
+        log.error(
+          `error replaying pending approvals: ${message}`,
+          undefined,
+          approvalRuntimeLogSemantics("replay_failed", "failure", "replay_failed"),
+        );
       })
       .finally(() => {
         if (replayPromise === promise) {
@@ -308,7 +350,11 @@ export function createExecApprovalChannelRuntime<
       shouldRun = true;
       startPromise = (async () => {
         if (!adapter.isConfigured()) {
-          log.debug("disabled");
+          log.debug(
+            "disabled",
+            undefined,
+            approvalRuntimeLogSemantics("disabled", "success", "disabled"),
+          );
           return;
         }
 
@@ -335,11 +381,19 @@ export function createExecApprovalChannelRuntime<
           clientDisplayName: adapter.clientDisplayName,
           onEvent: handleGatewayEvent,
           onHelloOk: () => {
-            log.debug("connected to gateway");
+            log.debug(
+              "connected to gateway",
+              undefined,
+              approvalRuntimeLogSemantics("gateway_connected", "success", "connected"),
+            );
             settleReady(resolveReady);
           },
           onConnectError: (err) => {
-            log.error(`connect error: ${err.message}`);
+            log.error(
+              `connect error: ${err.message}`,
+              undefined,
+              approvalRuntimeLogSemantics("gateway_connect_failed", "failure", "connect_failed"),
+            );
             lastConnectError = err;
             if (readGatewayConnectErrorDetailCode(err)) {
               return;
@@ -352,7 +406,11 @@ export function createExecApprovalChannelRuntime<
             );
           },
           onClose: (code, reason) => {
-            log.debug(`gateway closed: ${code} ${reason}`);
+            log.debug(
+              `gateway closed: ${code} ${reason}`,
+              undefined,
+              approvalRuntimeLogSemantics("gateway_closed", "warning", "closed"),
+            );
             settleReady(() =>
               rejectReady(lastConnectError ?? new Error(`gateway closed: ${code} ${reason}`)),
             );
@@ -418,7 +476,7 @@ export function createExecApprovalChannelRuntime<
       }
       pending.clear();
       await adapter.onStopped?.();
-      log.debug("stopped");
+      log.debug("stopped", undefined, approvalRuntimeLogSemantics("stopped", "success", "stopped"));
     },
 
     handleRequested,

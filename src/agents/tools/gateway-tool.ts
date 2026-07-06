@@ -492,6 +492,12 @@ export function createGatewayTool(opts?: {
         };
         log.info(
           `gateway tool: restart requested (delayMs=${delayMs ?? "default"}, reason=${reason ?? "none"})`,
+          undefined,
+          {
+            event: "gateway.tool.gateway.tool.restart.requested.delayms.reason",
+            outcome: "success",
+            reason: "completed",
+          },
         );
         let sentinelWritten = false;
         const scheduled = scheduleGatewaySigusr1Restart({

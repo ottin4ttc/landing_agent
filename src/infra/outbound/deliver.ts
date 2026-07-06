@@ -274,6 +274,12 @@ async function runChannelMessageSendWithLifecycle<
     } catch (successHookError: unknown) {
       log.warn(
         `channel message send success hook failed after platform send; preserving send result: ${formatErrorMessage(successHookError)}`,
+        undefined,
+        {
+          event: "outbound.deliver.channel.message.send.success.hook.failed.after",
+          outcome: "warning",
+          reason: "failed",
+        },
       );
     }
     return {
@@ -296,6 +302,12 @@ async function runChannelMessageSendWithLifecycle<
     } catch (cleanupError: unknown) {
       log.warn(
         `channel message send failure cleanup failed; preserving original send error: ${formatErrorMessage(cleanupError)}`,
+        undefined,
+        {
+          event: "outbound.deliver.channel.message.send.failure.cleanup.failed.preserving",
+          outcome: "warning",
+          reason: "failed",
+        },
       );
     }
     throw error;
@@ -611,6 +623,12 @@ async function markQueuedPlatformSendAttemptStarted(params: {
     }
     log.warn(
       `failed to mark queued delivery ${params.queueId} as platform-send-attempt-started; continuing best-effort delivery: ${formatErrorMessage(err)}`,
+      undefined,
+      {
+        event: "outbound.deliver.failed.mark.queued.delivery.platform.send.attempt",
+        outcome: "warning",
+        reason: "failed",
+      },
     );
     return false;
   }
@@ -628,6 +646,12 @@ async function markQueuedPlatformOutcomeUnknown(params: {
     }
     log.warn(
       `failed to mark queued delivery ${params.queueId} as platform-outcome-unknown; continuing best-effort delivery: ${formatErrorMessage(err)}`,
+      undefined,
+      {
+        event: "outbound.deliver.failed.mark.queued.delivery.platform.outcome.unknown",
+        outcome: "warning",
+        reason: "failed",
+      },
     );
   }
 }
@@ -921,20 +945,36 @@ async function maybePinDeliveredMessage(params: {
     if (pin.required) {
       throw new Error("Delivery pin requested, but no delivered message id was returned.");
     }
-    log.warn("Delivery pin requested, but no delivered message id was returned.", {
-      channel: params.target.channel,
-      to: params.target.to,
-    });
+    log.warn(
+      "Delivery pin requested, but no delivered message id was returned.",
+      {
+        channel: params.target.channel,
+        to: params.target.to,
+      },
+      {
+        event: "outbound.deliver.delivery.pin.requested.but.no.delivered.message",
+        outcome: "warning",
+        reason: "warning",
+      },
+    );
     return;
   }
   if (!params.handler.pinDeliveredMessage) {
     if (pin.required) {
       throw new Error(`Delivery pin is not supported by channel: ${params.target.channel}`);
     }
-    log.warn("Delivery pin requested, but channel does not support pinning delivered messages.", {
-      channel: params.target.channel,
-      to: params.target.to,
-    });
+    log.warn(
+      "Delivery pin requested, but channel does not support pinning delivered messages.",
+      {
+        channel: params.target.channel,
+        to: params.target.to,
+      },
+      {
+        event: "outbound.deliver.delivery.pin.requested.but.channel.does.not",
+        outcome: "warning",
+        reason: "warning",
+      },
+    );
     return;
   }
   try {
@@ -948,12 +988,20 @@ async function maybePinDeliveredMessage(params: {
     if (pin.required) {
       throw err;
     }
-    log.warn("Delivery pin requested, but channel failed to pin delivered message.", {
-      channel: params.target.channel,
-      to: params.target.to,
-      messageId: params.messageId,
-      error: formatErrorMessage(err),
-    });
+    log.warn(
+      "Delivery pin requested, but channel failed to pin delivered message.",
+      {
+        channel: params.target.channel,
+        to: params.target.to,
+        messageId: params.messageId,
+        error: formatErrorMessage(err),
+      },
+      {
+        event: "outbound.deliver.delivery.pin.requested.but.channel.failed.pin",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
   }
 }
 
@@ -973,11 +1021,19 @@ async function maybeNotifyAfterDeliveredPayload(params: {
       results: params.results,
     });
   } catch (err) {
-    log.warn("Plugin outbound adapter after-delivery hook failed.", {
-      channel: params.target.channel,
-      to: params.target.to,
-      error: formatErrorMessage(err),
-    });
+    log.warn(
+      "Plugin outbound adapter after-delivery hook failed.",
+      {
+        channel: params.target.channel,
+        to: params.target.to,
+        error: formatErrorMessage(err),
+      },
+      {
+        event: "outbound.deliver.plugin.outbound.adapter.after.delivery.hook.failed",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
   }
 }
 
@@ -1054,7 +1110,11 @@ function createMessageSentEmitter(params: {
         ),
         "deliverOutboundPayloads: message_sent plugin hook failed",
         (message) => {
-          log.warn(message);
+          log.warn(message, undefined, {
+            event: "outbound.deliver.emitmessagesent",
+            outcome: "warning",
+            reason: "warning",
+          });
         },
       );
     }
@@ -1072,7 +1132,11 @@ function createMessageSentEmitter(params: {
       ),
       "deliverOutboundPayloads: message:sent internal hook failed",
       (message) => {
-        log.warn(message);
+        log.warn(message, undefined, {
+          event: "outbound.deliver.emitmessagesent",
+          outcome: "warning",
+          reason: "warning",
+        });
       },
     );
   };
@@ -1375,6 +1439,12 @@ async function deliverOutboundPayloadsWithQueueCleanup(
           (err: unknown) => {
             log.warn(
               `failed to mark queued delivery ${queueId} as failed after partial failure; continuing best-effort delivery: ${formatErrorMessage(err)}`,
+              undefined,
+              {
+                event: "outbound.deliver.failed.mark.queued.delivery.failed.after.partial",
+                outcome: "warning",
+                reason: "failed",
+              },
             );
           },
         );
@@ -1393,6 +1463,12 @@ async function deliverOutboundPayloadsWithQueueCleanup(
             }
             log.warn(
               `failed to ack queued delivery ${queueId}; continuing best-effort delivery: ${formatErrorMessage(err)}`,
+              undefined,
+              {
+                event: "outbound.deliver.failed.ack.queued.delivery.continuing.best.effort",
+                outcome: "warning",
+                reason: "failed",
+              },
             );
             return false;
           });
@@ -1416,10 +1492,22 @@ async function deliverOutboundPayloadsWithQueueCleanup(
           }).catch((markErr: unknown) => {
             log.warn(
               `failed to mark queued delivery ${queueId} as platform-outcome-unknown after mid-send error; falling back to fail: ${formatErrorMessage(markErr)}`,
+              undefined,
+              {
+                event: "outbound.deliver.failed.mark.queued.delivery.platform.outcome.unknown",
+                outcome: "warning",
+                reason: "failed",
+              },
             );
             return failDelivery(queueId, formatErrorMessage(err)).catch((failErr: unknown) => {
               log.warn(
                 `failed to mark queued delivery ${queueId} as failed: ${formatErrorMessage(failErr)}`,
+                undefined,
+                {
+                  event: "outbound.deliver.failed.mark.queued.delivery.failed",
+                  outcome: "warning",
+                  reason: "failed",
+                },
               );
             });
           });
@@ -1427,6 +1515,12 @@ async function deliverOutboundPayloadsWithQueueCleanup(
           await failDelivery(queueId, formatErrorMessage(err)).catch((failErr: unknown) => {
             log.warn(
               `failed to mark queued delivery ${queueId} as failed: ${formatErrorMessage(failErr)}`,
+              undefined,
+              {
+                event: "outbound.deliver.failed.mark.queued.delivery.failed",
+                outcome: "warning",
+                reason: "failed",
+              },
             );
           });
         }
@@ -1601,6 +1695,12 @@ async function deliverOutboundPayloadsCore(
         channel,
         to,
         agentId: params.session.agentId,
+      },
+      {
+        event:
+          "outbound.deliver.deliveroutboundpayloads.session.agentid.present.without.session.key",
+        outcome: "warning",
+        reason: "skipped",
       },
     );
   }
@@ -1858,6 +1958,11 @@ async function deliverOutboundPayloadsCore(
             to,
             mediaCount: payloadSummary.mediaUrls.length,
           },
+          {
+            event: "outbound.deliver.plugin.outbound.adapter.does.not.implement.sendmedia",
+            outcome: "warning",
+            reason: "fallback",
+          },
         );
         const fallbackText = payloadSummary.text.trim();
         if (!fallbackText) {
@@ -2025,12 +2130,22 @@ async function deliverOutboundPayloadsCore(
           log.warn(
             `failed to mirror outbound delivery into session transcript; channel send already succeeded: ${mirrorResult.reason}`,
             { channel, to, sessionKey: params.mirror.sessionKey },
+            {
+              event: "outbound.deliver.failed.mirror.outbound.delivery.into.session.transcript",
+              outcome: "warning",
+              reason: "failed",
+            },
           );
         }
       } catch (err) {
         log.warn(
           `failed to mirror outbound delivery into session transcript; channel send already succeeded: ${formatErrorMessage(err)}`,
           { channel, to, sessionKey: params.mirror.sessionKey },
+          {
+            event: "outbound.deliver.failed.mirror.outbound.delivery.into.session.transcript",
+            outcome: "warning",
+            reason: "failed",
+          },
         );
       }
     }

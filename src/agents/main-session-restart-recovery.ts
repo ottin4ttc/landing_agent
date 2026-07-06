@@ -184,7 +184,16 @@ export async function markRestartAbortedMainSessions(params: {
         storePaths.add(path.resolve(target.storePath));
       }
     } catch (err) {
-      log.warn(`failed to resolve configured session stores for restart marker: ${String(err)}`);
+      log.warn(
+        `failed to resolve configured session stores for restart marker: ${String(err)}`,
+        undefined,
+        {
+          event:
+            "main.session.restart.recovery.failed.resolve.configured.session.stores.restart.marker",
+          outcome: "warning",
+          reason: "failed",
+        },
+      );
     }
     for (const sessionKey of sessionKeys) {
       try {
@@ -202,6 +211,12 @@ export async function markRestartAbortedMainSessions(params: {
       } catch (err) {
         log.warn(
           `failed to resolve session store for restart marker ${sessionKey}: ${String(err)}`,
+          undefined,
+          {
+            event: "main.session.restart.recovery.failed.resolve.session.store.restart.marker",
+            outcome: "warning",
+            reason: "failed",
+          },
         );
       }
     }
@@ -303,6 +318,12 @@ export async function markRestartAbortedMainSessions(params: {
       `marked ${result.marked} interrupted main session(s) for restart recovery${
         params.reason ? ` (${params.reason})` : ""
       }`,
+      undefined,
+      {
+        event: "main.session.restart.recovery.marked.interrupted.main.session.s.restart.recovery",
+        outcome: "warning",
+        reason: "warning",
+      },
     );
   }
   return result;
@@ -373,7 +394,15 @@ export async function markStartupOrphanedMainSessionsForRecovery(params: {
   }
 
   if (result.marked > 0) {
-    log.warn(`marked ${result.marked} startup-orphaned main session(s) for restart recovery`);
+    log.warn(
+      `marked ${result.marked} startup-orphaned main session(s) for restart recovery`,
+      undefined,
+      {
+        event: "main.session.restart.recovery.marked.startup.orphaned.main.session.s.restart",
+        outcome: "warning",
+        reason: "warning",
+      },
+    );
   }
   return result;
 }
@@ -468,7 +497,15 @@ async function markSessionFailed(params: {
       };
     },
   });
-  log.warn(`marked interrupted main session failed: ${params.sessionKey} (${params.reason})`);
+  log.warn(
+    `marked interrupted main session failed: ${params.sessionKey} (${params.reason})`,
+    undefined,
+    {
+      event: "main.session.restart.recovery.marked.interrupted.main.session.failed",
+      outcome: "warning",
+      reason: "failed",
+    },
+  );
 }
 
 async function sendUnresumableSessionNotice(params: {
@@ -516,11 +553,23 @@ async function sendUnresumableSessionNotice(params: {
     });
     log.info(
       `sent interrupted main session recovery notice: ${params.sessionKey} (${params.reason})`,
+      undefined,
+      {
+        event: "main.session.restart.recovery.sent.interrupted.main.session.recovery.notice",
+        outcome: "success",
+        reason: "completed",
+      },
     );
     return true;
   } catch (err) {
     log.warn(
       `failed to send interrupted main session recovery notice ${params.sessionKey}: ${String(err)}`,
+      undefined,
+      {
+        event: "main.session.restart.recovery.failed.send.interrupted.main.session.recovery.notice",
+        outcome: "warning",
+        reason: "failed",
+      },
     );
     return false;
   }
@@ -638,10 +687,24 @@ async function resumeMainSession(params: {
       `resumed interrupted main session: ${params.sessionKey}${
         sanitizedPendingText ? " (with pending payload)" : ""
       }`,
+      undefined,
+      {
+        event: "main.session.restart.recovery.resumed.interrupted.main.session",
+        outcome: "success",
+        reason: "completed",
+      },
     );
     return true;
   } catch (err) {
-    log.warn(`failed to resume interrupted main session ${params.sessionKey}: ${String(err)}`);
+    log.warn(
+      `failed to resume interrupted main session ${params.sessionKey}: ${String(err)}`,
+      undefined,
+      {
+        event: "main.session.restart.recovery.failed.resume.interrupted.main.session",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     return false;
   }
 }
@@ -690,7 +753,15 @@ export async function markRestartAbortedMainSessionsFromLocks(params: {
   result.skipped += storeResult.skipped;
 
   if (result.marked > 0) {
-    log.warn(`marked ${result.marked} interrupted main session(s) from stale transcript locks`);
+    log.warn(
+      `marked ${result.marked} interrupted main session(s) from stale transcript locks`,
+      undefined,
+      {
+        event: "main.session.restart.recovery.marked.interrupted.main.session.s.stale.transcript",
+        outcome: "warning",
+        reason: "warning",
+      },
+    );
   }
   return result;
 }
@@ -713,7 +784,15 @@ function isRoutableRecoveryStore(params: {
     });
     return path.resolve(target.storePath) === path.resolve(params.storePath);
   } catch (err) {
-    log.warn(`failed to resolve recovery store for ${params.sessionKey}: ${String(err)}`);
+    log.warn(
+      `failed to resolve recovery store for ${params.sessionKey}: ${String(err)}`,
+      undefined,
+      {
+        event: "main.session.restart.recovery.failed.resolve.recovery.store",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     return false;
   }
 }
@@ -740,7 +819,11 @@ async function recoverStore(params: {
   try {
     store = loadSessionStore(params.storePath);
   } catch (err) {
-    log.warn(`failed to load session store ${params.storePath}: ${String(err)}`);
+    log.warn(`failed to load session store ${params.storePath}: ${String(err)}`, undefined, {
+      event: "main.session.restart.recovery.failed.load.session.store",
+      outcome: "warning",
+      reason: "failed",
+    });
     result.failed++;
     return result;
   }
@@ -816,7 +899,11 @@ async function recoverStore(params: {
         },
       );
     } catch (err) {
-      log.warn(`failed to read transcript for ${sessionKey}: ${String(err)}`);
+      log.warn(`failed to read transcript for ${sessionKey}: ${String(err)}`, undefined, {
+        event: "main.session.restart.recovery.failed.read.transcript",
+        outcome: "warning",
+        reason: "failed",
+      });
       result.failed++;
       continue;
     }
@@ -902,6 +989,13 @@ export async function recoverRestartAbortedMainSessions(
   if (result.recovered > 0 || result.failed > 0) {
     log.info(
       `main-session restart recovery complete: recovered=${result.recovered} failed=${result.failed} skipped=${result.skipped}`,
+      undefined,
+      {
+        event:
+          "main.session.restart.recovery.main.session.restart.recovery.complete.recovered.failed",
+        outcome: result.failed > 0 ? "warning" : "success",
+        reason: result.failed > 0 ? "partial_failure" : "completed",
+      },
     );
   }
   return result;
@@ -969,10 +1063,18 @@ export function scheduleRestartAbortedMainSessionRecovery(
       })
       .catch((err: unknown) => {
         if (attempt < maxRetries) {
-          log.warn(`main-session restart recovery failed: ${String(err)}`);
+          log.warn(`main-session restart recovery failed: ${String(err)}`, undefined, {
+            event: "main.session.restart.recovery.main.session.restart.recovery.failed",
+            outcome: "warning",
+            reason: "failed",
+          });
           scheduleAttempt(attempt + 1, delay * RETRY_BACKOFF_MULTIPLIER);
         } else {
-          log.warn(`main-session restart recovery gave up: ${String(err)}`);
+          log.warn(`main-session restart recovery gave up: ${String(err)}`, undefined, {
+            event: "main.session.restart.recovery.main.session.restart.recovery.gave.up",
+            outcome: "warning",
+            reason: "warning",
+          });
         }
       });
   };

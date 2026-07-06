@@ -391,12 +391,20 @@ export async function runAgentHarnessAttempt(
   try {
     return await runWithDiagnosticTraceContext(harnessTrace, runAttempt);
   } catch (error) {
-    log.warn(`${harness.label} failed; not falling back to embedded OpenClaw backend`, {
-      harnessId: harness.id,
-      provider: params.provider,
-      modelId: params.modelId,
-      error: formatErrorMessage(error),
-    });
+    log.warn(
+      `${harness.label} failed; not falling back to embedded OpenClaw backend`,
+      {
+        harnessId: harness.id,
+        provider: params.provider,
+        modelId: params.modelId,
+        error: formatErrorMessage(error),
+      },
+      {
+        event: "agents.harness.failed.not.falling.back.embedded.openclaw.backend",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     throw error;
   }
 }
@@ -634,16 +642,20 @@ function logAgentHarnessSelection(
   if (!log.isEnabled("debug")) {
     return;
   }
-  log.debug("agent harness selected", {
-    provider: params.provider,
-    modelId: params.modelId,
-    sessionKey: params.sessionKey,
-    agentId: params.agentId,
-    selectedHarnessId: selection.selectedHarnessId,
-    selectedReason: selection.selectedReason,
-    runtime: selection.policy.runtime,
-    candidates: selection.candidates,
-  });
+  log.debug(
+    "agent harness selected",
+    {
+      provider: params.provider,
+      modelId: params.modelId,
+      sessionKey: params.sessionKey,
+      agentId: params.agentId,
+      selectedHarnessId: selection.selectedHarnessId,
+      selectedReason: selection.selectedReason,
+      runtime: selection.policy.runtime,
+      candidates: selection.candidates,
+    },
+    { event: "agents.harness.agent.harness.selected", outcome: "success", reason: "completed" },
+  );
 }
 
 function formatProviderModel(params: { provider: string; modelId?: string }): string {

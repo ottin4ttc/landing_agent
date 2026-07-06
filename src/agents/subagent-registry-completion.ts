@@ -131,6 +131,12 @@ export async function emitSubagentEndedHookOnce(params: {
   } catch (err) {
     log.warn(
       `failed to emit subagent_ended hook for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
+      undefined,
+      {
+        event: "agents.subagent.registry.completion.failed.emit.subagent.ended.hook.run",
+        outcome: "warning",
+        reason: "failed",
+      },
     );
     return false;
   } finally {

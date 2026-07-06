@@ -305,6 +305,12 @@ function maybeWarnZeroCountVisibleDispatch<TDispatchResult>(
       `messageId=${params.messageId ?? "unknown"} sessionKey=${
         params.ctxPayload.SessionKey ?? params.routeSessionKey
       }`,
+    undefined,
+    {
+      event: "channels.turn.kernel.maybewarnzerocountvisibledispatch",
+      outcome: "warning",
+      reason: "warning",
+    },
   );
   emit({
     ...params,

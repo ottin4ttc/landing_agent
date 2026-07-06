@@ -114,6 +114,11 @@ function resolveResponsesStrictToolFlag(
           incompatibleToolCount: diagnostics.length,
           sample,
         },
+        {
+          event: "llm.openai.responses.resolveresponsesstricttoolflag",
+          outcome: "success",
+          reason: "completed",
+        },
       );
     }
   }

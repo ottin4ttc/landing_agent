@@ -256,11 +256,19 @@ async function startAndWaitForLocalService(params: {
     return;
   }
   if (managed.process && !hasLocalServiceProcessExited(managed.process)) {
-    log.info(`restarting unhealthy ${provider} local service`);
+    log.info(`restarting unhealthy ${provider} local service`, undefined, {
+      event: "provider.local.service.restarting.unhealthy.local.service",
+      outcome: "success",
+      reason: "started",
+    });
     await stopManagedProcessForRestart(managed, signal);
   }
 
-  log.info(`starting ${provider} local service: ${service.command}`);
+  log.info(`starting ${provider} local service: ${service.command}`, undefined, {
+    event: "provider.local.service.starting.local.service",
+    outcome: "success",
+    reason: "started",
+  });
   managed.process = spawn(service.command, service.args ?? [], {
     cwd: service.cwd,
     env: service.env ? { ...process.env, ...service.env } : process.env,
@@ -273,6 +281,12 @@ async function startAndWaitForLocalService(params: {
   child.once("exit", (code, signalLocal) => {
     log.info(
       `${provider} local service exited: ${signalLocal ? `signal=${signalLocal}` : `code=${code ?? 0}`}`,
+      undefined,
+      {
+        event: "provider.local.service.local.service.exited",
+        outcome: "success",
+        reason: "completed",
+      },
     );
     if (managed.process === child) {
       managed.lastExit = { code, signal: signalLocal };
@@ -291,7 +305,11 @@ async function startAndWaitForLocalService(params: {
   const deadline = Date.now() + readyTimeoutMs;
   for (;;) {
     if (await probeHealth(healthUrl, healthHeaders, signal)) {
-      log.info(`${provider} local service ready`);
+      log.info(`${provider} local service ready`, undefined, {
+        event: "provider.local.service.local.service.ready",
+        outcome: "success",
+        reason: "ready",
+      });
       return;
     }
     if (managed.lastExit) {
@@ -351,7 +369,11 @@ function stopManagedService(key: string, managed: ManagedLocalService, reason: s
   managed.lastExit = undefined;
   services.delete(key);
   if (child && !hasLocalServiceProcessExited(child)) {
-    log.info(`stopping local model service: reason=${reason}`);
+    log.info(`stopping local model service: reason=${reason}`, undefined, {
+      event: "provider.local.service.stopping.local.model.service.reason",
+      outcome: "success",
+      reason: "completed",
+    });
     signalChildProcessTree(child, "SIGTERM");
   }
 }

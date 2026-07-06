@@ -208,7 +208,15 @@ export async function loadPreferredProviderPickerCatalog(params: {
           ...(params.workspaceDir !== undefined ? { workspaceDir: params.workspaceDir } : {}),
         });
       } catch (error) {
-        log.warn(`provider catalog failed for ${provider.id}: ${formatErrorMessage(error)}`);
+        log.warn(
+          `provider catalog failed for ${provider.id}: ${formatErrorMessage(error)}`,
+          undefined,
+          {
+            event: "model.picker.provider.catalog.provider.catalog.failed",
+            outcome: "warning",
+            reason: "failed",
+          },
+        );
         continue;
       }
 

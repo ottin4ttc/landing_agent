@@ -623,6 +623,12 @@ async function persistAcpSpawnSessionFileBestEffort(params: {
   } catch (error) {
     log.warn(
       `ACP session-file persistence failed during ${params.stage} for ${params.sessionKey}: ${summarizeError(error)}`,
+      undefined,
+      {
+        event: "agents.acp.spawn.acp.session.file.persistence.failed.during",
+        outcome: "warning",
+        reason: "failed",
+      },
     );
     return params.sessionEntry;
   }
@@ -1654,17 +1660,33 @@ export async function spawnAcpDirect(
         startedAt: Date.now(),
       });
       if (!task) {
-        log.warn("Failed to persist background task for ACP spawn", {
-          sessionKey,
-          runId: childRunId,
-        });
+        log.warn(
+          "Failed to persist background task for ACP spawn",
+          {
+            sessionKey,
+            runId: childRunId,
+          },
+          {
+            event: "agents.acp.spawn.failed.persist.background.task.acp.spawn",
+            outcome: "warning",
+            reason: "failed",
+          },
+        );
       }
     } catch (error) {
-      log.warn("Failed to create background task for ACP spawn", {
-        sessionKey,
-        runId: childRunId,
-        error,
-      });
+      log.warn(
+        "Failed to create background task for ACP spawn",
+        {
+          sessionKey,
+          runId: childRunId,
+          error,
+        },
+        {
+          event: "agents.acp.spawn.failed.create.background.task.acp.spawn",
+          outcome: "warning",
+          reason: "failed",
+        },
+      );
     }
     return {
       status: "accepted",
@@ -1695,17 +1717,33 @@ export async function spawnAcpDirect(
       startedAt: Date.now(),
     });
     if (!task) {
-      log.warn("Failed to persist background task for ACP spawn", {
-        sessionKey,
-        runId: childRunId,
-      });
+      log.warn(
+        "Failed to persist background task for ACP spawn",
+        {
+          sessionKey,
+          runId: childRunId,
+        },
+        {
+          event: "agents.acp.spawn.failed.persist.background.task.acp.spawn",
+          outcome: "warning",
+          reason: "failed",
+        },
+      );
     }
   } catch (error) {
-    log.warn("Failed to create background task for ACP spawn", {
-      sessionKey,
-      runId: childRunId,
-      error,
-    });
+    log.warn(
+      "Failed to create background task for ACP spawn",
+      {
+        sessionKey,
+        runId: childRunId,
+        error,
+      },
+      {
+        event: "agents.acp.spawn.failed.create.background.task.acp.spawn",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
   }
 
   return {

@@ -1,5 +1,6 @@
 // Talk logging helpers write voice session logs and diagnostic entries.
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { attachDiagnosticLogSemantics } from "../logging/diagnostic-log-internal.js";
 import { getChildLogger } from "../logging/logger.js";
 import { firstFiniteTalkEventNumber } from "./event-metrics.js";
 import type { TalkEvent, TalkEventType } from "./talk-events.js";
@@ -27,8 +28,6 @@ const OMITTED_TALK_LOG_EVENT_TYPES = new Set<TalkEventType>([
   "transcript.delta",
   "tool.progress",
 ]);
-
-const TALK_LOGGER_BINDINGS = Object.freeze({ subsystem: "talk" });
 
 /**
  * Converts high-level Talk events into compact structured log records, skipping noisy deltas.
@@ -80,12 +79,26 @@ export function recordTalkLogEvent(event: TalkEvent): void {
   }
 
   try {
-    const logger = getChildLogger(TALK_LOGGER_BINDINGS);
+    const logger = getChildLogger({ subsystem: "talk" });
     if (record.level === "warn") {
-      logger.warn(record.attributes, record.message);
+      logger.warn(
+        attachDiagnosticLogSemantics(record.attributes, {
+          event: `talk.${event.type}`,
+          outcome: "failure",
+          reason: event.type,
+        }),
+        record.message,
+      );
       return;
     }
-    logger.info(record.attributes, record.message);
+    logger.info(
+      attachDiagnosticLogSemantics(record.attributes, {
+        event: `talk.${event.type}`,
+        outcome: "success",
+        reason: event.type,
+      }),
+      record.message,
+    );
   } catch {
     // logging must never block the realtime Talk path
   }

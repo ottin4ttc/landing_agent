@@ -58,7 +58,15 @@ export async function runAgentHarnessAfterToolCallHook(params: {
       },
     );
   } catch (error) {
-    log.warn(`after_tool_call hook failed: tool=${params.toolName} error=${String(error)}`);
+    log.warn(
+      `after_tool_call hook failed: tool=${params.toolName} error=${String(error)}`,
+      undefined,
+      {
+        event: "agents.harness.after.tool.call.hook.failed.tool.error",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
   }
 }
 

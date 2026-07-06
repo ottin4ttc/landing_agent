@@ -203,12 +203,21 @@ function createMediaGenerationTaskRun(params: {
     touchMediaGenerationTaskRunContext(handle);
     return handle;
   } catch (error) {
-    log.warn("Failed to create media generation task ledger record", {
-      sessionKey,
-      toolName: params.toolName,
-      providerId: params.providerId,
-      error,
-    });
+    log.warn(
+      "Failed to create media generation task ledger record",
+      {
+        sessionKey,
+        toolName: params.toolName,
+        providerId: params.providerId,
+        error,
+      },
+      {
+        event:
+          "agents.tools.media.generate.background.shared.failed.create.media.generation.task.ledger.record",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     return null;
   }
 }
@@ -608,12 +617,21 @@ async function wakeMediaGenerationTaskCompletion(params: {
     return true;
   }
   if (delivery.terminal) {
-    log.warn("Media generation completion delivery stopped after terminal fallback", {
-      taskId: params.handle.taskId,
-      runId: params.handle.runId,
-      toolName: params.toolName,
-      error: delivery.error,
-    });
+    log.warn(
+      "Media generation completion delivery stopped after terminal fallback",
+      {
+        taskId: params.handle.taskId,
+        runId: params.handle.runId,
+        toolName: params.toolName,
+        error: delivery.error,
+      },
+      {
+        event:
+          "agents.tools.media.generate.background.shared.media.generation.completion.delivery.stopped.after.terminal",
+        outcome: "warning",
+        reason: "fallback",
+      },
+    );
     return true;
   }
   const canTryDirectCompletionFallback =
@@ -650,12 +668,21 @@ async function wakeMediaGenerationTaskCompletion(params: {
     }
   }
   if (delivery.error) {
-    log.error("Media generation completion wake failed; requester session was not woken", {
-      taskId: params.handle.taskId,
-      runId: params.handle.runId,
-      toolName: params.toolName,
-      error: delivery.error,
-    });
+    log.error(
+      "Media generation completion wake failed; requester session was not woken",
+      {
+        taskId: params.handle.taskId,
+        runId: params.handle.runId,
+        toolName: params.toolName,
+        error: delivery.error,
+      },
+      {
+        event:
+          "agents.tools.media.generate.background.shared.media.generation.completion.wake.failed.requester.session",
+        outcome: "failure",
+        reason: "failed",
+      },
+    );
   }
   return false;
 }
@@ -695,12 +722,21 @@ async function tryDeliverMediaGenerationDirect(params: {
     });
     return true;
   } catch (error) {
-    log.warn("Direct media generation failure delivery failed; falling back to agent wake", {
-      taskId: params.handle.taskId,
-      runId: params.handle.runId,
-      toolName: params.toolName,
-      error,
-    });
+    log.warn(
+      "Direct media generation failure delivery failed; falling back to agent wake",
+      {
+        taskId: params.handle.taskId,
+        runId: params.handle.runId,
+        toolName: params.toolName,
+        error,
+      },
+      {
+        event:
+          "agents.tools.media.generate.background.shared.direct.media.generation.failure.delivery.failed.falling",
+        outcome: "warning",
+        reason: "failed",
+      },
+    );
     return false;
   }
 }

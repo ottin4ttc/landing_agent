@@ -286,6 +286,12 @@ function createAgentTurnTimingTracker(options: { profilerEnabled?: boolean } = {
           totalMs: summary.totalMs,
           spans: summary.spans,
         },
+        {
+          event:
+            "auto.reply.agent.turn.timing.agent.turn.timings.runid.sessionid.sessionkey.outcome",
+          outcome: "warning",
+          reason: "warning",
+        },
       );
     },
     logMilestoneIfSlow(params) {
@@ -309,6 +315,12 @@ function createAgentTurnTimingTracker(options: { profilerEnabled?: boolean } = {
           milestone: params.milestone,
           totalMs: summary.totalMs,
           spans: summary.spans,
+        },
+        {
+          event:
+            "auto.reply.agent.turn.timing.agent.turn.milestone.runid.sessionid.sessionkey.milestone",
+          outcome: "warning",
+          reason: "warning",
         },
       );
     },
@@ -2848,6 +2860,12 @@ export async function runAgentTurnWithFallback(params: {
                                   itemId: readStringValue(evt.data.itemId),
                                   compactionCount: attemptCompactionCount,
                                   consoleMessage,
+                                },
+                                {
+                                  event:
+                                    "auto.reply.compaction.codex.app.server.auto.compaction.succeeded",
+                                  outcome: "success",
+                                  reason: "completed",
                                 },
                               );
                             }
