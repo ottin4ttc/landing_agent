@@ -1,13 +1,16 @@
 // Research autocapture helpers decide when skill research signals should be captured.
-import fs from "node:fs/promises";
-import path from "node:path";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { readWorkspaceSkillFile } from "../lifecycle/workspace-skill-write.js";
 import { resolveSkillWorkshopConfig } from "../workshop/config.js";
-import { listSkillProposals, proposeCreateSkill, proposeUpdateSkill } from "../workshop/service.js";
+import {
+  listSkillProposals,
+  listWritableWorkspaceSkillSummaries,
+  proposeCreateSkill,
+  proposeUpdateSkill,
+} from "../workshop/service.js";
 import { resolveSkillProposalTarget } from "../workshop/store.js";
-import { extractDurableInstructionProposals, type WorkspaceSkillSummary } from "./signals.js";
+import { extractDurableInstructionProposals } from "./signals.js";
 
 type SkillResearchAgentEndEvent = {
   messages: unknown[];
@@ -25,7 +28,6 @@ type SkillResearchAgentContext = {
 const log = createSubsystemLogger("skills/research");
 const AUTO_CAPTURE_BLOCKED_TRIGGERS = new Set(["cron", "heartbeat", "memory", "overflow"]);
 const AUTO_CAPTURE_BLOCKED_SESSION_SEGMENTS = new Set(["cron", "hook", "subagent"]);
-const MAX_WORKSPACE_SKILL_SUMMARIES = 200;
 
 // Captured updates append below existing skill text so learned context stays auditable.
 function buildAutoCaptureUpdateContent(existingSkill: string, capturedContent: string): string {
@@ -52,52 +54,6 @@ function isSkillResearchAutoCaptureEligible(ctx: SkillResearchAgentContext): boo
     .some((segment) => AUTO_CAPTURE_BLOCKED_SESSION_SEGMENTS.has(segment));
 }
 
-function readFrontmatterField(content: string, field: string): string | undefined {
-  const frontmatter = content.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
-  const match = frontmatter.match(new RegExp(`^\\s*${field}:\\s*["']?([^"'\\n]+)`, "m"));
-  return match?.[1]?.trim() || undefined;
-}
-
-// Summaries let the signal extractor route corrections to the skill they are about instead of
-// piling everything into a generic learned-workflows skill.
-//
-// Deliberately scoped to the flat `skills/<key>/SKILL.md` layout: workshop proposals can only
-// target that layout (resolveSkillProposalTarget), so routing a correction to a grouped/nested
-// skill would produce an update proposal that misses the real file and creates a flat duplicate.
-// Grouped skills keep today's behavior (inferred-topic fallback) until the workshop write path
-// learns grouped targets.
-async function listWorkspaceSkillSummaries(workspaceDir: string): Promise<WorkspaceSkillSummary[]> {
-  const skillsDir = path.join(workspaceDir, "skills");
-  let entries: string[];
-  try {
-    entries = (await fs.readdir(skillsDir, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  } catch {
-    return [];
-  }
-  const summaries: WorkspaceSkillSummary[] = [];
-  for (const name of entries.slice(0, MAX_WORKSPACE_SKILL_SUMMARIES)) {
-    try {
-      // Reuse the proposal target resolver + safe reader so summary scans obey the same
-      // workspace containment and symlink/hardlink rejection as every other skill read.
-      const target = resolveSkillProposalTarget({ workspaceDir, skillName: name });
-      if (target.skillKey !== name) {
-        continue;
-      }
-      const content = await readWorkspaceSkillFile(target.skillFile);
-      if (content === null) {
-        continue;
-      }
-      const description = readFrontmatterField(content, "description");
-      summaries.push(description ? { name, description } : { name });
-    } catch {
-      // Directories that don't resolve to a safe, readable SKILL.md are not live skills.
-    }
-  }
-  return summaries;
-}
-
 /**
  * Captures durable skill research signals from a session transcript when enabled.
  *
@@ -122,7 +78,12 @@ export async function runSkillResearchAutoCapture(params: {
     return;
   }
 
-  const existingSkills = await listWorkspaceSkillSummaries(workspaceDir);
+  // Same status discovery as proposeUpdateSkill, so a routed correction always lands on a
+  // skill an update proposal can actually write (including .agents/skills project skills).
+  const existingSkills = listWritableWorkspaceSkillSummaries(workspaceDir, {
+    config: params.config,
+    agentId: params.ctx.agentId,
+  });
   const proposals = extractDurableInstructionProposals({
     messages: params.event.messages,
     existingSkills,
@@ -144,11 +105,13 @@ export async function runSkillResearchAutoCapture(params: {
     }
 
     try {
-      const target = resolveSkillProposalTarget({
-        workspaceDir,
-        skillName: proposal.skillName,
-      });
-      const existingSkill = await readWorkspaceSkillFile(target.skillFile);
+      // A routed proposal matches a writable skill summary; its filePath is the live SKILL.md.
+      // Inferred-topic proposals fall back to the flat layout the workshop uses for creates.
+      const matched = existingSkills.find((entry) => entry.name === proposal.skillName);
+      const skillFile =
+        matched?.filePath ??
+        resolveSkillProposalTarget({ workspaceDir, skillName: proposal.skillName }).skillFile;
+      const existingSkill = await readWorkspaceSkillFile(skillFile);
       const result =
         existingSkill === null
           ? await proposeCreateSkill({

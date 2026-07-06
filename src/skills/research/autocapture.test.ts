@@ -314,6 +314,63 @@ describe("skill research auto-capture", () => {
     expect(updatedSkill).toContain("capture real market signals with quoted evidence");
   });
 
+  it("routes a correction to a writable project agent skill under .agents/skills", async () => {
+    const workspaceDir = await makeWorkspace();
+    const skillFile = path.join(workspaceDir, ".agents", "skills", "signal-scout", "SKILL.md");
+    await fs.mkdir(path.dirname(skillFile), { recursive: true });
+    await fs.writeFile(
+      skillFile,
+      [
+        "---",
+        'name: "signal-scout"',
+        'description: "Mine the market for signals and validate them before drafting."',
+        "---",
+        "",
+        "# Signal Scout",
+        "",
+        "- Capture first, score later.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await runSkillResearchAutoCapture({
+      event: {
+        success: true,
+        messages: [
+          {
+            role: "user",
+            content:
+              "I thought we were working on listening — capture real market signals with quoted evidence before scoring anything.",
+          },
+        ],
+      },
+      ctx: { workspaceDir, agentId: "main" },
+      config: {
+        skills: {
+          workshop: {
+            autonomous: {
+              enabled: true,
+            },
+          },
+        },
+      },
+    });
+
+    const proposals = await listSkillProposals({ workspaceDir });
+    expect(proposals.proposals).toHaveLength(1);
+    expect(proposals.proposals[0]).toMatchObject({
+      kind: "update",
+      status: "pending",
+      skillKey: "signal-scout",
+    });
+
+    await applySkillProposal({ workspaceDir, proposalId: proposals.proposals[0].id });
+    const updatedSkill = await fs.readFile(skillFile, "utf8");
+    expect(updatedSkill).toContain("Capture first, score later.");
+    expect(updatedSkill).toContain("capture real market signals with quoted evidence");
+  });
+
   it("captures corrections from failed runs", async () => {
     const workspaceDir = await makeWorkspace();
 
