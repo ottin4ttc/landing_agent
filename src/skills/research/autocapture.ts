@@ -1,11 +1,14 @@
 // Research autocapture helpers decide when skill research signals should be captured.
+import fs from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
+import path from "node:path";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { readWorkspaceSkillFile } from "../lifecycle/workspace-skill-write.js";
 import { resolveSkillWorkshopConfig } from "../workshop/config.js";
 import { listSkillProposals, proposeCreateSkill, proposeUpdateSkill } from "../workshop/service.js";
 import { resolveSkillProposalTarget } from "../workshop/store.js";
-import { extractDurableInstructionProposal } from "./signals.js";
+import { extractDurableInstructionProposals, type WorkspaceSkillSummary } from "./signals.js";
 
 type SkillResearchAgentEndEvent = {
   messages: unknown[];
@@ -23,6 +26,8 @@ type SkillResearchAgentContext = {
 const log = createSubsystemLogger("skills/research");
 const AUTO_CAPTURE_BLOCKED_TRIGGERS = new Set(["cron", "heartbeat", "memory", "overflow"]);
 const AUTO_CAPTURE_BLOCKED_SESSION_SEGMENTS = new Set(["cron", "hook", "subagent"]);
+const MAX_WORKSPACE_SKILL_SUMMARIES = 200;
+const SKILL_SUMMARY_READ_BYTES = 2048;
 
 // Captured updates append below existing skill text so learned context stays auditable.
 function buildAutoCaptureUpdateContent(existingSkill: string, capturedContent: string): string {
@@ -49,7 +54,49 @@ function isSkillResearchAutoCaptureEligible(ctx: SkillResearchAgentContext): boo
     .some((segment) => AUTO_CAPTURE_BLOCKED_SESSION_SEGMENTS.has(segment));
 }
 
-/** Captures durable skill research signals from a session transcript when enabled. */
+function readFrontmatterField(content: string, field: string): string | undefined {
+  const match = content.match(new RegExp(`^\\s*${field}:\\s*["']?([^"'\\n]+)`, "m"));
+  return match?.[1]?.trim() || undefined;
+}
+
+// Summaries let the signal extractor route corrections to the skill they are about instead of
+// piling everything into a generic learned-workflows skill.
+async function listWorkspaceSkillSummaries(workspaceDir: string): Promise<WorkspaceSkillSummary[]> {
+  const skillsDir = path.join(workspaceDir, "skills");
+  let entries: string[];
+  try {
+    entries = (await fs.readdir(skillsDir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+  const summaries: WorkspaceSkillSummary[] = [];
+  for (const name of entries.slice(0, MAX_WORKSPACE_SKILL_SUMMARIES)) {
+    let handle: FileHandle | undefined;
+    try {
+      handle = await fs.open(path.join(skillsDir, name, "SKILL.md"), "r");
+      const buffer = Buffer.alloc(SKILL_SUMMARY_READ_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const head = buffer.subarray(0, bytesRead).toString("utf8");
+      const description = readFrontmatterField(head, "description");
+      summaries.push(description ? { name, description } : { name });
+    } catch {
+      // Directories without a readable SKILL.md are not live skills; skip them.
+    } finally {
+      await handle?.close();
+    }
+  }
+  return summaries;
+}
+
+/**
+ * Captures durable skill research signals from a session transcript when enabled.
+ *
+ * Runs regardless of the turn's success flag: the extracted signals are the user's own words,
+ * which stay valid when a run fails — corrections given in a failed or timed-out turn are the
+ * ones most worth keeping.
+ */
 export async function runSkillResearchAutoCapture(params: {
   event: SkillResearchAgentEndEvent;
   ctx: SkillResearchAgentContext;
@@ -57,9 +104,6 @@ export async function runSkillResearchAutoCapture(params: {
 }): Promise<void> {
   const workshopConfig = resolveSkillWorkshopConfig(params.config);
   if (!workshopConfig.autonomous.enabled) {
-    return;
-  }
-  if (params.event.success === false) {
     return;
   }
   const workspaceDir = params.ctx.workspaceDir;
@@ -70,55 +114,61 @@ export async function runSkillResearchAutoCapture(params: {
     return;
   }
 
-  const proposal = extractDurableInstructionProposal({ messages: params.event.messages });
-  if (!proposal) {
+  const existingSkills = await listWorkspaceSkillSummaries(workspaceDir);
+  const proposals = extractDurableInstructionProposals({
+    messages: params.event.messages,
+    existingSkills,
+  });
+  if (proposals.length === 0) {
     return;
   }
 
   const manifest = await listSkillProposals({ workspaceDir });
-  if (
-    manifest.proposals.some(
-      (entry) =>
-        (entry.status === "pending" || entry.status === "quarantined") &&
-        entry.skillKey === proposal.skillName,
-    )
-  ) {
-    return;
-  }
+  for (const proposal of proposals) {
+    if (
+      manifest.proposals.some(
+        (entry) =>
+          (entry.status === "pending" || entry.status === "quarantined") &&
+          entry.skillKey === proposal.skillName,
+      )
+    ) {
+      continue;
+    }
 
-  try {
-    const target = resolveSkillProposalTarget({
-      workspaceDir,
-      skillName: proposal.skillName,
-    });
-    const existingSkill = await readWorkspaceSkillFile(target.skillFile);
-    const result =
-      existingSkill === null
-        ? await proposeCreateSkill({
-            workspaceDir,
-            config: params.config,
-            name: proposal.skillName,
-            description: proposal.description,
-            content: proposal.content,
-            createdBy: "skill-workshop",
-            goal: proposal.goal,
-            evidence: proposal.evidence,
-          })
-        : await proposeUpdateSkill({
-            workspaceDir,
-            config: params.config,
-            agentId: params.ctx.agentId,
-            skillName: proposal.skillName,
-            description: proposal.description,
-            content: buildAutoCaptureUpdateContent(existingSkill, proposal.content),
-            createdBy: "skill-workshop",
-            goal: proposal.goal,
-            evidence: proposal.evidence,
-          });
-    log.info(
-      `skill research auto-capture queued workshop proposal ${result.record.target.skillKey}`,
-    );
-  } catch (error) {
-    log.warn(`skill research auto-capture skipped: ${String(error)}`);
+    try {
+      const target = resolveSkillProposalTarget({
+        workspaceDir,
+        skillName: proposal.skillName,
+      });
+      const existingSkill = await readWorkspaceSkillFile(target.skillFile);
+      const result =
+        existingSkill === null
+          ? await proposeCreateSkill({
+              workspaceDir,
+              config: params.config,
+              name: proposal.skillName,
+              description: proposal.description,
+              content: proposal.content,
+              createdBy: "skill-workshop",
+              goal: proposal.goal,
+              evidence: proposal.evidence,
+            })
+          : await proposeUpdateSkill({
+              workspaceDir,
+              config: params.config,
+              agentId: params.ctx.agentId,
+              skillName: proposal.skillName,
+              description: proposal.description,
+              content: buildAutoCaptureUpdateContent(existingSkill, proposal.content),
+              createdBy: "skill-workshop",
+              goal: proposal.goal,
+              evidence: proposal.evidence,
+            });
+      log.info(
+        `skill research auto-capture queued workshop proposal ${result.record.target.skillKey}`,
+      );
+    } catch (error) {
+      log.warn(`skill research auto-capture skipped ${proposal.skillName}: ${String(error)}`);
+    }
   }
 }

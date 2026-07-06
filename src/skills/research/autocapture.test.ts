@@ -219,4 +219,168 @@ describe("skill research auto-capture", () => {
     expect(updatedSkill).toContain("Preserve this original review checklist.");
     expect(updatedSkill).toContain("always check CI before final response");
   });
+
+  it("queues a proposal from a reactive correction, not just prospective phrasing", async () => {
+    const workspaceDir = await makeWorkspace();
+
+    await runSkillResearchAutoCapture({
+      event: {
+        success: true,
+        messages: [
+          {
+            role: "user",
+            content:
+              "You're still using the transcripts as tone references — they should not be included as voice material at all.",
+          },
+        ],
+      },
+      ctx: { workspaceDir, agentId: "main" },
+      config: {
+        skills: {
+          workshop: {
+            autonomous: {
+              enabled: true,
+            },
+          },
+        },
+      },
+    });
+
+    const proposals = await listSkillProposals({ workspaceDir });
+    expect(proposals.proposals).toHaveLength(1);
+    expect(proposals.proposals[0]).toMatchObject({
+      kind: "create",
+      status: "pending",
+      skillKey: "learned-workflows",
+    });
+    const proposal = await inspectSkillProposal(proposals.proposals[0].id, { workspaceDir });
+    expect(proposal?.content).toContain("should not be included as voice material");
+  });
+
+  it("routes a correction to the existing workspace skill it is about", async () => {
+    const workspaceDir = await makeWorkspace();
+    const skillFile = path.join(workspaceDir, "skills", "signal-scout", "SKILL.md");
+    await fs.mkdir(path.dirname(skillFile), { recursive: true });
+    await fs.writeFile(
+      skillFile,
+      [
+        "---",
+        'name: "signal-scout"',
+        'description: "Mine the market for signals and validate them before drafting."',
+        "---",
+        "",
+        "# Signal Scout",
+        "",
+        "- Capture first, score later.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await runSkillResearchAutoCapture({
+      event: {
+        success: true,
+        messages: [
+          {
+            role: "user",
+            content:
+              "I thought we were working on listening — capture real market signals with quoted evidence before scoring anything.",
+          },
+        ],
+      },
+      ctx: { workspaceDir, agentId: "main" },
+      config: {
+        skills: {
+          workshop: {
+            autonomous: {
+              enabled: true,
+            },
+          },
+        },
+      },
+    });
+
+    const proposals = await listSkillProposals({ workspaceDir });
+    expect(proposals.proposals).toHaveLength(1);
+    expect(proposals.proposals[0]).toMatchObject({
+      kind: "update",
+      status: "pending",
+      skillKey: "signal-scout",
+    });
+
+    await applySkillProposal({ workspaceDir, proposalId: proposals.proposals[0].id });
+    const updatedSkill = await fs.readFile(skillFile, "utf8");
+    expect(updatedSkill).toContain("Capture first, score later.");
+    expect(updatedSkill).toContain("capture real market signals with quoted evidence");
+  });
+
+  it("captures corrections from failed runs", async () => {
+    const workspaceDir = await makeWorkspace();
+
+    await runSkillResearchAutoCapture({
+      event: {
+        success: false,
+        messages: [
+          {
+            role: "user",
+            content:
+              "From now on, when working on GitHub PRs, always check CI before final response.",
+          },
+        ],
+      },
+      ctx: { workspaceDir, agentId: "main" },
+      config: {
+        skills: {
+          workshop: {
+            autonomous: {
+              enabled: true,
+            },
+          },
+        },
+      },
+    });
+
+    const proposals = await listSkillProposals({ workspaceDir });
+    expect(proposals.proposals).toHaveLength(1);
+    expect(proposals.proposals[0]).toMatchObject({
+      kind: "create",
+      status: "pending",
+      skillKey: "github-pr-workflow",
+    });
+  });
+
+  it("queues one proposal per distinct topic when a session has several corrections", async () => {
+    const workspaceDir = await makeWorkspace();
+
+    await runSkillResearchAutoCapture({
+      event: {
+        success: true,
+        messages: [
+          {
+            role: "user",
+            content:
+              "From now on, when working on GitHub PRs, always check CI before final response.",
+          },
+          {
+            role: "user",
+            content: "Remember to always optimize screenshot assets before attaching them.",
+          },
+        ],
+      },
+      ctx: { workspaceDir, agentId: "main" },
+      config: {
+        skills: {
+          workshop: {
+            autonomous: {
+              enabled: true,
+            },
+          },
+        },
+      },
+    });
+
+    const proposals = await listSkillProposals({ workspaceDir });
+    const skillKeys = proposals.proposals.map((entry) => entry.skillKey).sort();
+    expect(skillKeys).toEqual(["github-pr-workflow", "screenshot-asset-workflow"]);
+  });
 });
