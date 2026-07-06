@@ -23,7 +23,9 @@ type PaletteItem = {
 
 const SESSION_ACTION_PREFIX = "session:";
 const SESSION_SEARCH_DEBOUNCE_MS = 250;
+/** Rows shown in the palette; the request over-fetches so hidden rows cannot starve visible matches. */
 const SESSION_SEARCH_LIMIT = 10;
+const SESSION_SEARCH_PAGE_SIZE = 50;
 
 export const COMMAND_PALETTE_TARGET_EVENT = "openclaw-command-palette-target";
 
@@ -517,14 +519,22 @@ export class CommandPalette extends LitElement {
     }
     const requestId = ++this.sessionSearchId;
     try {
-      // No agentId: the palette searches chats across every agent.
-      const result = await sessions.list({ search, limit: SESSION_SEARCH_LIMIT });
+      // No agentId: the palette searches chats across every agent. Global and
+      // unknown rows are excluded server-side and a full page is fetched so
+      // cron/subagent rows filtered below cannot starve visible matches; the
+      // All Sessions page stays the exhaustive search surface.
+      const result = await sessions.list({
+        search,
+        limit: SESSION_SEARCH_PAGE_SIZE,
+        includeGlobal: false,
+        includeUnknown: false,
+      });
       if (requestId !== this.sessionSearchId || !this.open) {
         return;
       }
-      // Same hidden-row rules as the sidebar list (archived/global/unknown/
-      // cron/subagent rows stay hidden); the agent-tie filter stays off, so
-      // the scope ids are unused.
+      // Same hidden-row rules as the sidebar list (archived/cron/subagent
+      // rows stay hidden); the agent-tie filter stays off, so the scope ids
+      // are unused.
       const rows = getVisibleSessionRows(result ?? null, {
         agentId: "",
         defaultAgentId: "",
