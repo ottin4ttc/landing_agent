@@ -20243,7 +20243,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 425,
+      "line": 439,
       "path": "apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatView.swift",
       "source": "Jump to latest",
       "surface": "apple",
@@ -20251,7 +20251,7 @@
     },
     {
       "kind": "ui-modifier",
-      "line": 436,
+      "line": 450,
       "path": "apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatView.swift",
       "source": "Jump to latest reply",
       "surface": "apple",
@@ -20259,7 +20259,7 @@
     },
     {
       "kind": "ui-named-argument",
-      "line": 456,
+      "line": 470,
       "path": "apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatView.swift",
       "source": "Refresh",
       "surface": "apple",
@@ -20267,7 +20267,7 @@
     },
     {
       "kind": "ui-call",
-      "line": 881,
+      "line": 895,
       "path": "apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatView.swift",
       "source": "Loading chat",
       "surface": "apple",
@@ -20275,7 +20275,7 @@
     },
     {
       "kind": "ui-modifier",
-      "line": 961,
+      "line": 975,
       "path": "apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatView.swift",
       "source": "Dismiss",
       "surface": "apple",
