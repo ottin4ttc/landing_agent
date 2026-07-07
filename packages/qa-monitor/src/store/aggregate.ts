@@ -33,9 +33,11 @@ export type DashboardData = {
   daily: Array<{ date: string; sessions: number; tokens: number }>;
 };
 
-function whereClause(f: QaFilters): { sql: string; params: Record<string, unknown> } {
+type SqlParams = Record<string, string | number>;
+
+function whereClause(f: QaFilters): { sql: string; params: SqlParams } {
   const conds: string[] = ["last_interaction_at IS NOT NULL"];
-  const params: Record<string, unknown> = {};
+  const params: SqlParams = {};
   if (f.from != null) {
     conds.push("last_interaction_at >= @from");
     params.from = f.from;
