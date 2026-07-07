@@ -3,10 +3,10 @@ import type { FeishuToolsConfig } from "./types.js";
 
 /**
  * Default tool configuration.
- * - doc, chat, wiki, drive, scopes, bitable/base: enabled by default
+ * - doc, chat, wiki, drive, scopes, bitable/base, search: enabled by default
  * - perm: disabled by default (sensitive operation)
  */
-const DEFAULT_TOOLS_CONFIG: Required<FeishuToolsConfig> = {
+export const DEFAULT_TOOLS_CONFIG: Required<FeishuToolsConfig> = {
   doc: true,
   chat: true,
   wiki: true,
@@ -15,6 +15,7 @@ const DEFAULT_TOOLS_CONFIG: Required<FeishuToolsConfig> = {
   scopes: true,
   bitable: true,
   base: true,
+  search: true,
 };
 
 /**

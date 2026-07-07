@@ -1,7 +1,7 @@
 // Feishu tests cover tools config plugin behavior.
 import { describe, expect, it } from "vitest";
 import { FeishuConfigSchema } from "./config-schema.js";
-import { resolveToolsConfig } from "./tools-config.js";
+import { DEFAULT_TOOLS_CONFIG, resolveToolsConfig } from "./tools-config.js";
 
 describe("feishu tools config", () => {
   it("enables chat tool by default", () => {
@@ -48,5 +48,13 @@ describe("feishu tools config", () => {
     const resolved = resolveToolsConfig({ bitable: true, base: false });
     expect(resolved.bitable).toBe(true);
     expect(resolved.base).toBe(true);
+  });
+});
+
+describe("tools-config search family", () => {
+  it("search defaults to true", () => {
+    expect(DEFAULT_TOOLS_CONFIG.search).toBe(true);
+    expect(resolveToolsConfig(undefined).search).toBe(true);
+    expect(resolveToolsConfig({ search: false }).search).toBe(false);
   });
 });

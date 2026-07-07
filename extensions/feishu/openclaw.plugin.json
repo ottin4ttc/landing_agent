@@ -21,6 +21,7 @@
       "feishu_doc",
       "feishu_drive",
       "feishu_perm",
+      "feishu_search",
       "feishu_wiki"
     ]
   },
@@ -98,6 +99,12 @@
       ]
     },
     "feishu_perm": {
+      "configSignals": [
+        { "rootPath": "channels.feishu", "required": ["appId", "appSecret"] },
+        { "rootPath": "channels.feishu", "overlayMapPath": "accounts", "required": ["appId", "appSecret"] }
+      ]
+    },
+    "feishu_search": {
       "configSignals": [
         { "rootPath": "channels.feishu", "required": ["appId", "appSecret"] },
         { "rootPath": "channels.feishu", "overlayMapPath": "accounts", "required": ["appId", "appSecret"] }

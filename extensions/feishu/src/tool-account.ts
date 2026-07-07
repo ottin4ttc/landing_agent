@@ -112,6 +112,7 @@ export function resolveAnyEnabledFeishuToolsConfig(
     scopes: false,
     bitable: false,
     base: false,
+    search: false,
   };
   for (const account of accounts) {
     const cfg = resolveToolsConfig(account.config.tools);
@@ -123,6 +124,7 @@ export function resolveAnyEnabledFeishuToolsConfig(
     merged.scopes = merged.scopes || cfg.scopes;
     merged.bitable = merged.bitable || cfg.bitable;
     merged.base = merged.base || cfg.base;
+    merged.search = merged.search || cfg.search;
   }
   return merged;
 }

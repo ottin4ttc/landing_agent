@@ -30,6 +30,14 @@ function registerFeishuWikiTools(api: OpenClawPluginApi) {
   register(api);
 }
 
+function registerFeishuSearchTools(api: OpenClawPluginApi) {
+  const register = loadBundledEntryExportSync<(api: OpenClawPluginApi) => void>(import.meta.url, {
+    specifier: "./api.js",
+    exportName: "registerFeishuSearchTools",
+  });
+  register(api);
+}
+
 function registerFeishuDriveTools(api: OpenClawPluginApi) {
   const register = loadBundledEntryExportSync<(api: OpenClawPluginApi) => void>(import.meta.url, {
     specifier: "./api.js",
@@ -76,6 +84,7 @@ export default defineBundledChannelEntry({
     registerFeishuDocTools(api);
     registerFeishuChatTools(api);
     registerFeishuWikiTools(api);
+    registerFeishuSearchTools(api);
     registerFeishuDriveTools(api);
     registerFeishuPermTools(api);
     registerFeishuBitableTools(api);
