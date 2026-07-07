@@ -3,6 +3,7 @@ export { feishuPlugin } from "./src/channel.js";
 export { registerFeishuDocTools } from "./src/docx.js";
 export { registerFeishuChatTools } from "./src/chat.js";
 export { registerFeishuWikiTools } from "./src/wiki.js";
+export { registerFeishuSearchTools } from "./src/search.js";
 export { registerFeishuDriveTools } from "./src/drive.js";
 export { registerFeishuPermTools } from "./src/perm.js";
 export { registerFeishuBitableTools } from "./src/bitable.js";

@@ -1,5 +1,11 @@
 // Feishu plugin module implements content search behavior (doc_wiki/search).
 import type * as Lark from "@larksuiteoapi/node-sdk";
+import { jsonResult } from "openclaw/plugin-sdk/tool-results";
+import type { OpenClawPluginApi } from "../runtime-api.js";
+import { listEnabledFeishuAccounts } from "./accounts.js";
+import { FeishuSearchSchema } from "./search-schema.js";
+import { createFeishuToolClient, resolveAnyEnabledFeishuToolsConfig } from "./tool-account.js";
+import { toolExecutionErrorResult } from "./tool-result.js";
 
 export type FeishuSearchResultItem = {
   type: string;
@@ -83,4 +89,40 @@ export async function searchDocs(
   });
 
   return { query, total: res.data?.total ?? results.length, results };
+}
+
+export function registerFeishuSearchTools(api: OpenClawPluginApi): void {
+  if (!api.config) return;
+  const accounts = listEnabledFeishuAccounts(api.config);
+  if (accounts.length === 0) return;
+  const toolsCfg = resolveAnyEnabledFeishuToolsConfig(accounts);
+  if (!toolsCfg.search) return;
+
+  api.registerTool(
+    (ctx) => {
+      const defaultAccountId = ctx.agentAccountId;
+      return {
+        name: "feishu_search",
+        label: "Feishu Search",
+        description:
+          "Search Feishu cloud documents and wiki by keyword. Returns matching docs (title, type, url, token). Use when the user asks to find/search feishu docs or wiki content.",
+        parameters: FeishuSearchSchema,
+        async execute(_toolCallId, params) {
+          const p = params as { query: string; limit?: number; accountId?: string };
+          try {
+            const client = createFeishuToolClient({
+              api,
+              executeParams: p,
+              defaultAccountId,
+              requiredTool: { family: "search", label: "Search" },
+            });
+            return jsonResult(await searchDocs(client, p.query, p.limit ?? 10));
+          } catch (err) {
+            return toolExecutionErrorResult(err);
+          }
+        },
+      };
+    },
+    { name: "feishu_search" },
+  );
 }

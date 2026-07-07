@@ -1,5 +1,14 @@
+import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, it, expect, vi } from "vitest";
+import type { OpenClawPluginApi } from "../runtime-api.js";
 import { searchDocs, stripHighlight } from "./search.ts";
+
+const createFeishuToolClientMock = vi.hoisted(() => vi.fn());
+const resolveAnyEnabledFeishuToolsConfigMock = vi.hoisted(() => vi.fn());
+vi.mock("./tool-account.js", () => ({
+  createFeishuToolClient: createFeishuToolClientMock,
+  resolveAnyEnabledFeishuToolsConfig: resolveAnyEnabledFeishuToolsConfigMock,
+}));
 
 function fakeClient(searchImpl: (payload: unknown) => Promise<unknown>) {
   return {
@@ -84,5 +93,55 @@ describe("searchDocs", () => {
     expect(search).toHaveBeenCalledWith({ data: { query: "x", page_size: 50 } });
     await searchDocs(client, "x", 0);
     expect(search).toHaveBeenCalledWith({ data: { query: "x", page_size: 1 } });
+  });
+});
+
+describe("feishu_search tool execute", () => {
+  it("registers and returns mapped results in result.details", async () => {
+    const { registerFeishuSearchTools } = await import("./search.ts");
+    resolveAnyEnabledFeishuToolsConfigMock.mockReturnValue({ search: true });
+    const search = vi.fn(async () => ({
+      code: 0,
+      data: {
+        total: 1,
+        res_units: [
+          {
+            title_highlighted: "标题",
+            entity_type: "DOC",
+            result_meta: { doc_types: "DOCX", url: "u", token: "t" },
+          },
+        ],
+      },
+    }));
+    createFeishuToolClientMock.mockReturnValue({ search: { docWiki: { search } } });
+    const registerTool = vi.fn();
+    const api: OpenClawPluginApi = createTestPluginApi({
+      id: "feishu-test",
+      name: "Feishu Test",
+      source: "local",
+      config: {
+        channels: {
+          feishu: {
+            enabled: true,
+            appId: "app_id",
+            appSecret: "app_secret", // pragma: allowlist secret
+            tools: { search: true },
+          },
+        },
+      },
+      runtime: {} as never,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      registerTool,
+    });
+    registerFeishuSearchTools(api);
+    const factory = registerTool.mock.calls[0]?.[0];
+    const tool = factory({ agentAccountId: undefined });
+    expect(tool.name).toBe("feishu_search");
+    const result: any = await tool.execute("call-1", { query: "标题", limit: 10 });
+    expect(result.details).toMatchObject({
+      query: "标题",
+      total: 1,
+      results: [{ type: "DOCX", title: "标题", url: "u", token: "t" }],
+    });
   });
 });
