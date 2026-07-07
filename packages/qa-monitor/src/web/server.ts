@@ -11,7 +11,9 @@ import { createSession, getSession } from "./session-store.ts";
 import { isAllowed } from "./whitelist.ts";
 
 const COOKIE = "dcadmin_sid";
+const STATE_COOKIE = "qa_oauth_state";
 const TTL = 24 * 60 * 60 * 1000;
+const STATE_TTL_SECONDS = 600;
 
 function setCookie(cfg: QaConfig, sid: string): string {
   const parts = [
@@ -25,6 +27,22 @@ function setCookie(cfg: QaConfig, sid: string): string {
     parts.push("Secure");
   }
   return parts.join("; ");
+}
+function setStateCookie(cfg: QaConfig, state: string): string {
+  const parts = [
+    `${STATE_COOKIE}=${state}`,
+    "Path=/qa-admin",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${STATE_TTL_SECONDS}`,
+  ];
+  if (cfg.cookieSecure) {
+    parts.push("Secure");
+  }
+  return parts.join("; ");
+}
+function clearStateCookie(): string {
+  return `${STATE_COOKIE}=; Path=/qa-admin; Max-Age=0`;
 }
 function filtersFromUrl(u: URL): QaFilters {
   const num = (k: string) => (u.searchParams.get(k) ? Number(u.searchParams.get(k)) : undefined);
@@ -56,7 +74,11 @@ async function handleRequest(
       res.end();
       return;
     }
-    res.writeHead(302, { location: buildAuthorizeUrl(cfg, randomBytes(8).toString("hex")) });
+    const state = randomBytes(16).toString("hex");
+    res.writeHead(302, {
+      "set-cookie": setStateCookie(cfg, state),
+      location: buildAuthorizeUrl(cfg, state),
+    });
     res.end();
     return;
   }
@@ -68,15 +90,28 @@ async function handleRequest(
       res.end("missing code");
       return;
     }
+    const state = u.searchParams.get("state");
+    const cookieState = cookies[STATE_COOKIE];
+    if (!state || !cookieState || state !== cookieState) {
+      res.writeHead(400);
+      res.end("invalid oauth state");
+      return;
+    }
     try {
       const { openId, name } = await exchangeCodeForOpenId(cfg, code);
       if (!isAllowed(cfg.adminAllowedUsers, openId)) {
-        res.writeHead(403, { "content-type": "text/html; charset=utf-8" });
+        res.writeHead(403, {
+          "content-type": "text/html; charset=utf-8",
+          "set-cookie": clearStateCookie(),
+        });
         res.end("<h1>403 无权限</h1>");
         return;
       }
       const sid = createSession(db, openId, name, now, TTL);
-      res.writeHead(302, { "set-cookie": setCookie(cfg, sid), location: "/qa-admin/dashboard" });
+      res.writeHead(302, {
+        "set-cookie": [setCookie(cfg, sid), clearStateCookie()],
+        location: "/qa-admin/dashboard",
+      });
       res.end();
       return;
     } catch {

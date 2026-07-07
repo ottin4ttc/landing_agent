@@ -53,9 +53,10 @@ describe("routes auth gating", () => {
   it("dev backdoor rejected when devToken wrong", async () => {
     const url = await base(cfg);
     const login = await fetch(`${url}/qa-admin/login?dev=wrong`, { redirect: "manual" });
-    expect(login.headers.get("set-cookie")).toBeNull();
+    const setCookies = login.headers.get("set-cookie") ?? "";
+    expect(setCookies).not.toContain("dcadmin_sid=");
   });
-  it("oauth callback with non-whitelisted open_id -> 403, no cookie", async () => {
+  it("oauth callback with non-whitelisted open_id -> 403, no session cookie", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: any, init?: any) => {
       const url = String(input);
@@ -81,11 +82,29 @@ describe("routes auth gating", () => {
     }) as typeof fetch;
     try {
       const url = await base(cfg);
-      const r = await fetch(`${url}/qa-admin/auth/callback?code=abc`, { redirect: "manual" });
+      const login = await fetch(`${url}/qa-admin/login`, { redirect: "manual" });
+      const location = login.headers.get("location")!;
+      const state = new URL(location).searchParams.get("state") ?? "";
+      const stateCookie = login.headers.get("set-cookie")!.split(";")[0];
+      const r = await fetch(`${url}/qa-admin/auth/callback?code=abc&state=${state}`, {
+        redirect: "manual",
+        headers: { cookie: stateCookie },
+      });
       expect(r.status).toBe(403);
-      expect(r.headers.get("set-cookie")).toBeNull();
+      const setCookies = r.headers.get("set-cookie") ?? "";
+      expect(setCookies).not.toContain("dcadmin_sid=");
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+  it("oauth callback with missing/mismatched state -> 400, no login", async () => {
+    const url = await base(cfg);
+    const r = await fetch(`${url}/qa-admin/auth/callback?code=abc&state=wrong`, {
+      redirect: "manual",
+    });
+    expect(r.status).toBe(400);
+    expect(r.headers.get("set-cookie")).toBeNull();
+    const dash = await fetch(`${url}/qa-admin/api/dashboard`);
+    expect(dash.status).toBe(401);
   });
 });
