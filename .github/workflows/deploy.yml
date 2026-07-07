@@ -48,13 +48,20 @@ jobs:
             -t landing-agent:main \
             -f Dockerfile .
 
-      - name: Start gateway on BCC
+      - name: Build qa-monitor image
+        working-directory: src
+        run: |
+          docker build \
+            -t qa-monitor:main \
+            -f packages/qa-monitor/Dockerfile .
+
+      - name: Start gateway + qa-monitor on BCC
         working-directory: src
         run: |
           install -d /opt/landing-agent
-          cp docker-compose.yml /opt/landing-agent/
+          cp docker-compose.yml docker-compose.qa.yml /opt/landing-agent/
           cd /opt/landing-agent
           grep -q '^OPENCLAW_IMAGE=' .env 2>/dev/null || echo 'OPENCLAW_IMAGE=landing-agent:main' >> .env
-          docker compose up -d openclaw-gateway
-          sleep 5
-          docker compose ps
+          docker compose -f docker-compose.yml -f docker-compose.qa.yml up -d
+          sleep 6
+          docker compose -f docker-compose.yml -f docker-compose.qa.yml ps

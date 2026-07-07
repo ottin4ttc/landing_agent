@@ -1,0 +1,29 @@
+# landingAgent-specific (not upstream openclaw): adds the qa-monitor service
+# to the same compose project/network as openclaw-gateway. Use together:
+#   docker compose -f docker-compose.yml -f docker-compose.qa.yml up -d
+# qa-monitor reaches the gateway by service name over the shared network and
+# authenticates with the gateway token.
+services:
+  qa-monitor:
+    image: qa-monitor:main
+    restart: unless-stopped
+    depends_on:
+      - openclaw-gateway
+    environment:
+      QA_GATEWAY_URL: ws://openclaw-gateway:18789
+      QA_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      QA_FEISHU_APP_ID: ${QA_FEISHU_APP_ID:-}
+      QA_FEISHU_APP_SECRET: ${QA_FEISHU_APP_SECRET:-}
+      QA_FEISHU_REDIRECT_URL: ${QA_FEISHU_REDIRECT_URL:-}
+      QA_ADMIN_ALLOWED_USERS: ${QA_ADMIN_ALLOWED_USERS:-}
+      QA_PORT: "19010"
+      QA_DB_PATH: /data/qa.db
+      QA_POLL_INTERVAL_MS: "180000"
+      QA_COOKIE_SECURE: "false"
+    volumes:
+      - qa-data:/data
+    ports:
+      - "19010:19010"
+
+volumes:
+  qa-data:
