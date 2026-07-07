@@ -29,14 +29,16 @@ jobs:
           git clone --depth 1 --branch main \
             https://gh-proxy.com/https://github.com/ottin4ttc/landing_agent src
 
-      - name: Inject CN npm mirror (ephemeral, not committed)
+      - name: Inject CN build mirrors + network tuning (ephemeral, not committed)
         working-directory: src
         run: |
-          {
-            echo "registry=https://registry.npmmirror.com/"
-            echo "fetch-timeout=1200000"
-            echo "fetch-retries=6"
-          } >> .npmrc
+          # registry override lives in .npmrc
+          echo "registry=https://registry.npmmirror.com/" >> .npmrc
+          # pnpm v11 reads network settings from pnpm-workspace.yaml, NOT .npmrc.
+          # Throttle parallel fetches so the big native tarballs (codex/copilot/
+          # node-llama-cpp/claude-agent-sdk, ~30MB each) get full bandwidth on the
+          # ~1MB/s cross-border link and don't hit the per-request timeout.
+          printf '\nnetworkConcurrency: 2\nfetchTimeout: 1800000\nfetchRetries: 6\n' >> pnpm-workspace.yaml
 
       - name: Build gateway image (feishu only)
         working-directory: src
