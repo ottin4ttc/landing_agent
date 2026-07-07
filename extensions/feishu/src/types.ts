@@ -102,6 +102,7 @@ export type FeishuToolsConfig = {
   bitable?: boolean;
   /** @deprecated Use bitable. */
   base?: boolean;
+  search?: boolean;
 };
 
 export type DynamicAgentCreationConfig = {
