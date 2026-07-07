@@ -1,6 +1,7 @@
-# landingAgent-specific: build the fork image in CI (good network) and deploy
-# it to the Baidu Cloud BCC over SSH by shipping a docker image tarball
-# (no external registry needed). Gateway first; qa-monitor added later.
+# landingAgent-specific: build + run on a self-hosted runner ON the Baidu BCC,
+# so the image never crosses the border. Build uses CN mirrors (npmmirror for
+# deps; docker daemon registry-mirror for base images). Only the feishu
+# extension is bundled (avoids matrix's GitHub-release native download).
 name: deploy
 
 on:
@@ -17,48 +18,33 @@ concurrency:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: [self-hosted, bcc]
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build gateway image
+      - name: Inject CN npm mirror (ephemeral, not committed)
         run: |
-          docker build -t landing-agent:main -f Dockerfile .
+          {
+            echo "registry=https://registry.npmmirror.com/"
+            echo "fetch-timeout=1200000"
+            echo "fetch-retries=6"
+          } >> .npmrc
 
-      - name: Save image to tarball
+      - name: Build gateway image (feishu only)
         run: |
-          docker save landing-agent:main | gzip > /tmp/landing-agent.tar.gz
-          ls -lh /tmp/landing-agent.tar.gz
+          docker build \
+            --build-arg OPENCLAW_EXTENSIONS=feishu \
+            -t landing-agent:main \
+            -f Dockerfile .
 
-      - name: Prepare SSH
+      - name: Start gateway on BCC
         run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Copy image + compose to BCC
-        run: |
-          SSH="ssh -i ~/.ssh/id_deploy ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          SCP="scp -i ~/.ssh/id_deploy"
-          $SSH 'mkdir -p /opt/landing-agent'
-          $SCP /tmp/landing-agent.tar.gz "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/landing-agent/"
-          $SCP docker-compose.yml "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/landing-agent/"
-
-      - name: Load image + restart gateway on BCC
-        run: |
-          ssh -i ~/.ssh/id_deploy ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} 'bash -s' <<'REMOTE'
-          set -e
+          install -d /opt/landing-agent
+          cp docker-compose.yml /opt/landing-agent/
           cd /opt/landing-agent
-          gunzip -c landing-agent.tar.gz | docker load
-          # .env pins the image tag the compose file uses; created once on the host.
           grep -q '^OPENCLAW_IMAGE=' .env 2>/dev/null || echo 'OPENCLAW_IMAGE=landing-agent:main' >> .env
           docker compose up -d openclaw-gateway
+          sleep 5
           docker compose ps
-          rm -f landing-agent.tar.gz
-          REMOTE
