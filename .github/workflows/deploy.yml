@@ -1,7 +1,9 @@
 # landingAgent-specific: build + run on a self-hosted runner ON the Baidu BCC,
-# so the image never crosses the border. Build uses CN mirrors (npmmirror for
-# deps; docker daemon registry-mirror for base images). Only the feishu
-# extension is bundled (avoids matrix's GitHub-release native download).
+# so the image never crosses the border. Source is cloned through a CN GitHub
+# proxy (gh-proxy) because direct github.com checkout is throttled cross-border.
+# Build uses CN mirrors (npmmirror for deps; docker daemon registry-mirror for
+# base images). Only the feishu extension is bundled (skips matrix's
+# GitHub-release native download).
 name: deploy
 
 on:
@@ -21,10 +23,14 @@ jobs:
     runs-on: [self-hosted, bcc]
     timeout-minutes: 120
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout via gh-proxy (fast in CN, public repo)
+        run: |
+          rm -rf src
+          git clone --depth 1 --branch main \
+            https://gh-proxy.com/https://github.com/ottin4ttc/landing_agent src
 
       - name: Inject CN npm mirror (ephemeral, not committed)
+        working-directory: src
         run: |
           {
             echo "registry=https://registry.npmmirror.com/"
@@ -33,6 +39,7 @@ jobs:
           } >> .npmrc
 
       - name: Build gateway image (feishu only)
+        working-directory: src
         run: |
           docker build \
             --build-arg OPENCLAW_EXTENSIONS=feishu \
@@ -40,6 +47,7 @@ jobs:
             -f Dockerfile .
 
       - name: Start gateway on BCC
+        working-directory: src
         run: |
           install -d /opt/landing-agent
           cp docker-compose.yml /opt/landing-agent/
