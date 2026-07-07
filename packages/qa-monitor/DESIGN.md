@@ -30,7 +30,7 @@
 三个 deep-leaf 组件，各自单一职责、窄接口：
 
 1. **Collector（采集器）** — 定时（`QA_POLL_INTERVAL`，默认 2–5 分钟）以 operator 客户端连 openclaw 网关（dev：`ws://127.0.0.1:19001`，auth=none），调 `sessions.usage`（+ `usage.cost`，`agentScope:"all"`）拿**每会话行**与聚合，幂等 upsert 进 SQLite。
-2. **Store（存储）** — 本地 SQLite（`better-sqlite3`），`qa_sessions` 快照表 + `qa_admin_sessions` 登录会话表；聚合查询 `aggregate(filters)`。
+2. **Store（存储）** — 本地 SQLite（node 内置 `node:sqlite` / `DatabaseSync`，无需装原生模块），`qa_sessions` 快照表 + `qa_admin_sessions` 登录会话表；聚合查询 `aggregate(filters)`。
 3. **Web（dashboard + 鉴权）** — 飞书 SSO OAuth + 白名单 → 服务端单页 HTML dashboard + JSON API。
 
 数据流：

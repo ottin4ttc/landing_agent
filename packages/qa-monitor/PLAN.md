@@ -6,7 +6,7 @@
 
 **Architecture:** 三层 deep-leaf —— Collector（用 `@openclaw/gateway-client` 连网关拉用量 → 映射成行 → 幂等 upsert）、Store（SQLite：`qa_sessions` 快照 + `qa_admin_sessions` 登录会话 + `aggregate()` 聚合）、Web（飞书 OAuth + 白名单 fail-closed + 服务端渲染看板）。openclaw 核心零改动。
 
-**Tech Stack:** TypeScript(ESM)、node:http、`better-sqlite3`、`@openclaw/gateway-client`（复用，自动完成 connect 握手）、vitest、oxlint/oxfmt。
+**Tech Stack:** TypeScript(ESM)、node:http、**`node:sqlite` 内置 `DatabaseSync`**（node 24 自带，无需装/编译原生模块，实测支持命名参数 `@x`、`ON CONFLICT` upsert、`date(...,'+8 hours')`）、`@openclaw/gateway-client`（复用，自动完成 connect 握手）、vitest、oxlint/oxfmt。
 
 ## Global Constraints
 
@@ -14,6 +14,7 @@
 - 包名 `@openclaw/qa-monitor`，**private**，不发布；所有源文件头部加注释 `// landingAgent-specific (not upstream openclaw)`。
 - **不改 openclaw 核心 `src/`**；只新增 `packages/qa-monitor/`。
 - 传输复用 `@openclaw/gateway-client` 的 `GatewayClient`（workspace 依赖）。调 `sessions.usage` 必须在连接的 `role:"operator"` + `scopes:["operator.read"]` 下。
+- **DB 用 `node:sqlite` 内置**：`import { DatabaseSync } from "node:sqlite"`；类型标注一律用 node:sqlite 的 `DatabaseSync`（不要 better-sqlite3 的旧类型）。node:sqlite 运行会打 `ExperimentalWarning`，无害；命名参数键可裸写（`{k:v}` 配 SQL `@k`）。`.get()/.all()` 返回 null-prototype 对象，属性访问正常。无 `.pragma()` 方法，用 `db.exec("PRAGMA journal_mode = WAL")`。
 - **响应结果在 `payload`**（不是 `result`）；协议版本固定 4；`sessions.usage` 前必须完成 connect 握手（GatewayClient 自动处理）。
 - **时区铁律**：所有按天/窗口用北京日历日，SQL 用 `date(ts/1000,'unixepoch','+8 hours')`。
 - **鉴权 fail-closed**：白名单为空 = 拒绝所有；不在名单 → 403；未登录 API→401、页面→302。
@@ -51,22 +52,22 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@openclaw/gateway-client": "workspace:*",
-    "better-sqlite3": "^11.8.1"
+    "@openclaw/gateway-client": "workspace:*"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
-    "vitest": "catalog:"
+    "vitest": "4.1.9"
   }
 }
 ```
 
+（DB 用内置 `node:sqlite`，无第三方 DB 依赖。vitest 固定 `4.1.9` 对齐根版本；根无 catalog。）
+
 - [ ] **Step 2: tsconfig.json + vitest.config.ts**
 
-`tsconfig.json`:
+`tsconfig.json`（根无 `tsconfig.base.json`，extends 根 `tsconfig.json`）:
 
 ```json
-{ "extends": "../../tsconfig.base.json", "include": ["src", "test"] }
+{ "extends": "../../tsconfig.json", "include": ["src", "test"] }
 ```
 
 `vitest.config.ts`:
@@ -75,8 +76,6 @@
 import { defineConfig } from "vitest/config";
 export default defineConfig({ test: { include: ["test/**/*.test.ts"] } });
 ```
-
-（若 `tsconfig.base.json` 不存在，改 extends 为 `../../tsconfig.json`；跑 `pnpm tsgo` 前确认根 tsconfig 路径。）
 
 - [ ] **Step 3: Write the failing test** — `test/config.test.ts`
 
@@ -173,7 +172,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): QaConfig {
 **Interfaces:**
 
 - Produces: `export type QaSessionRow` (字段见下)
-- Produces: `export function openDb(path: string): Database` （`better-sqlite3` 实例，建表 + WAL）
+- Produces: `export function openDb(path: string): DatabaseSync` （`node:sqlite` 实例，建表 + WAL）
 - Consumes (later tasks): `qa_sessions`、`qa_admin_sessions` 两表
 
 - [ ] **Step 1: Write the failing test** — `test/schema.test.ts`
@@ -267,11 +266,11 @@ export const QA_SESSION_COLUMNS: (keyof QaSessionRow)[] = [
 
 ```ts
 // landingAgent-specific (not upstream openclaw)
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 
-export function openDb(path: string): Database.Database {
-  const db = new Database(path);
-  db.pragma("journal_mode = WAL");
+export function openDb(path: string): DatabaseSync {
+  const db = new DatabaseSync(path);
+  db.exec("PRAGMA journal_mode = WAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS qa_sessions (
       session_key TEXT PRIMARY KEY,
@@ -318,7 +317,7 @@ export function openDb(path: string): Database.Database {
 **Interfaces:**
 
 - Consumes: `openDb`, `QaSessionRow`, `QA_SESSION_COLUMNS`
-- Produces: `export function upsertSessions(db: Database.Database, rows: QaSessionRow[]): number` （返回写入行数；同 session_key 覆盖，不双计）
+- Produces: `export function upsertSessions(db: DatabaseSync, rows: QaSessionRow[]): number` （返回写入行数；同 session_key 覆盖，不双计）
 
 - [ ] **Step 1: Write the failing test** — `test/upsert.test.ts`
 
@@ -375,10 +374,10 @@ describe("upsertSessions", () => {
 
 ```ts
 // landingAgent-specific (not upstream openclaw)
-import type Database from "better-sqlite3";
+import type { DatabaseSync } from "node:sqlite";
 import { QA_SESSION_COLUMNS, type QaSessionRow } from "./rows.ts";
 
-export function upsertSessions(db: Database.Database, rows: QaSessionRow[]): number {
+export function upsertSessions(db: DatabaseSync, rows: QaSessionRow[]): number {
   if (rows.length === 0) return 0;
   const cols = QA_SESSION_COLUMNS;
   const placeholders = cols.map((c) => `@${c}`).join(", ");
@@ -579,7 +578,7 @@ export type DashboardData = {
   byChatType: Array<{ chat_type: string; sessions: number; tokens: number }>;
   daily: Array<{ date: string; sessions: number; tokens: number }>;
 };
-export function aggregate(db: Database.Database, filters: QaFilters): DashboardData;
+export function aggregate(db: DatabaseSync, filters: QaFilters): DashboardData;
 ```
 
 口径：活跃/DAU/WAU 用 `last_interaction_at`，北京日 `date(last_interaction_at/1000,'unixepoch','+8 hours')`；DAU=窗口末日 distinct user_id；WAU=末日北京零点往前 7 个日历日 distinct user_id。
@@ -671,7 +670,7 @@ describe("aggregate", () => {
 
 ```ts
 // landingAgent-specific (not upstream openclaw)
-import type Database from "better-sqlite3";
+import type { DatabaseSync } from "node:sqlite";
 
 export type QaFilters = {
   from?: number;
@@ -732,7 +731,7 @@ function whereClause(f: QaFilters): { sql: string; params: Record<string, unknow
 }
 const BJ = "date(last_interaction_at/1000,'unixepoch','+8 hours')";
 
-export function aggregate(db: Database.Database, filters: QaFilters): DashboardData {
+export function aggregate(db: DatabaseSync, filters: QaFilters): DashboardData {
   const { sql: where, params } = whereClause(filters);
   const totals = db
     .prepare(
@@ -828,8 +827,8 @@ export function aggregate(db: Database.Database, filters: QaFilters): DashboardD
 - Consumes: `GatewayClient`（`@openclaw/gateway-client`）, `mapUsageResultToRows`, `upsertSessions`, `QaConfig`
 - Produces: `export type UsageFetcher = (cfg: QaConfig) => Promise<SessionsUsageResult>`
 - Produces: `export function fetchUsageViaGateway(cfg: QaConfig): Promise<SessionsUsageResult>`
-- Produces: `export async function collectOnce(db: Database.Database, cfg: QaConfig, fetch?: UsageFetcher): Promise<number>`
-- Produces: `export function startCollector(db: Database.Database, cfg: QaConfig): () => void` （定时器，返回 stop）
+- Produces: `export async function collectOnce(db: DatabaseSync, cfg: QaConfig, fetch?: UsageFetcher): Promise<number>`
+- Produces: `export function startCollector(db: DatabaseSync, cfg: QaConfig): () => void` （定时器，返回 stop）
 
 采集逻辑用**可注入的 fetcher**，测试注入假 fetcher（不连真网关），真实现走 `GatewayClient`。
 
@@ -930,7 +929,7 @@ export function fetchUsageViaGateway(cfg: QaConfig): Promise<SessionsUsageResult
 
 ```ts
 // landingAgent-specific (not upstream openclaw)
-import type Database from "better-sqlite3";
+import type { DatabaseSync } from "node:sqlite";
 import type { SessionsUsageResult } from "../../../../src/shared/usage-types.ts";
 import type { QaConfig } from "../config.ts";
 import { mapUsageResultToRows } from "./map.ts";
@@ -940,7 +939,7 @@ import { fetchUsageViaGateway } from "./source.ts";
 export type UsageFetcher = (cfg: QaConfig) => Promise<SessionsUsageResult>;
 
 export async function collectOnce(
-  db: Database.Database,
+  db: DatabaseSync,
   cfg: QaConfig,
   fetch: UsageFetcher = fetchUsageViaGateway,
 ): Promise<number> {
@@ -949,7 +948,7 @@ export async function collectOnce(
   return upsertSessions(db, rows);
 }
 
-export function startCollector(db: Database.Database, cfg: QaConfig): () => void {
+export function startCollector(db: DatabaseSync, cfg: QaConfig): () => void {
   let stopped = false;
   const tick = async () => {
     if (stopped) return;
@@ -1039,10 +1038,10 @@ export function isAllowed(allowed: string[], openId: string | null | undefined):
 ```ts
 // landingAgent-specific (not upstream openclaw)
 import { randomBytes } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { DatabaseSync } from "node:sqlite";
 
 export function createSession(
-  db: Database.Database,
+  db: DatabaseSync,
   openId: string,
   name: string | null,
   now: number,
@@ -1056,7 +1055,7 @@ export function createSession(
 }
 
 export function getSession(
-  db: Database.Database,
+  db: DatabaseSync,
   sid: string | undefined,
   now: number,
 ): { open_id: string; name: string | null } | null {
@@ -1273,7 +1272,7 @@ export function parseCookies(header: string | undefined): Record<string, string>
 // landingAgent-specific (not upstream openclaw)
 import http from "node:http";
 import { randomBytes } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { DatabaseSync } from "node:sqlite";
 import type { QaConfig } from "../config.ts";
 import { aggregate, type QaFilters } from "../store/aggregate.ts";
 import { isAllowed } from "./whitelist.ts";
@@ -1307,7 +1306,7 @@ function filtersFromUrl(u: URL): QaFilters {
   };
 }
 
-export function createServer(db: Database.Database, cfg: QaConfig): http.Server {
+export function createServer(db: DatabaseSync, cfg: QaConfig): http.Server {
   return http.createServer(async (req, res) => {
     const u = new URL(req.url ?? "/", "http://localhost");
     const now = Date.now();
