@@ -21,6 +21,8 @@ export function fetchUsageViaGateway(cfg: QaConfig): Promise<SessionsUsageResult
   return new Promise((resolve, reject) => {
     const client = new GatewayClient({
       url: cfg.gatewayUrl,
+      // Production gateway uses token auth; dev (auth=none) leaves this undefined.
+      token: cfg.gatewayToken ?? undefined,
       clientName: "gateway-client",
       clientVersion: "1.0.0",
       mode: "backend",
