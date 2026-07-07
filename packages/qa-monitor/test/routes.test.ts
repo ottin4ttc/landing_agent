@@ -55,4 +55,37 @@ describe("routes auth gating", () => {
     const login = await fetch(`${url}/qa-admin/login?dev=wrong`, { redirect: "manual" });
     expect(login.headers.get("set-cookie")).toBeNull();
   });
+  it("oauth callback with non-whitelisted open_id -> 403, no cookie", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: any, init?: any) => {
+      const url = String(input);
+      if (url.includes("open.feishu.cn")) {
+        if (url.includes("app_access_token")) {
+          return new Response(JSON.stringify({ app_access_token: "app-tok" }), { status: 200 });
+        }
+        if (url.includes("oidc/access_token")) {
+          return new Response(JSON.stringify({ data: { access_token: "user-tok" } }), {
+            status: 200,
+          });
+        }
+        if (url.includes("user_info")) {
+          return new Response(
+            JSON.stringify({ data: { open_id: "ou_stranger", name: "陌生人" } }),
+            {
+              status: 200,
+            },
+          );
+        }
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      const url = await base(cfg);
+      const r = await fetch(`${url}/qa-admin/auth/callback?code=abc`, { redirect: "manual" });
+      expect(r.status).toBe(403);
+      expect(r.headers.get("set-cookie")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
