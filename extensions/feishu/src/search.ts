@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import type { OpenClawPluginApi } from "../runtime-api.js";
-import { listEnabledFeishuAccounts } from "./accounts.js";
+import { listEnabledFeishuAccounts, resolveFeishuSecretLike } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { createFileRefreshTokenStore } from "./file-refresh-store.js";
 import { FeishuSearchSchema } from "./search-schema.js";
@@ -112,7 +112,7 @@ type WikiSearchNode = {
 type WikiSearchResponse = {
   code?: number;
   msg?: string;
-  data?: { items?: WikiSearchNode[] };
+  data?: { items?: WikiSearchNode[]; total?: number };
 };
 
 /**
@@ -154,7 +154,7 @@ export async function searchWikiNodes(
     if (n.obj_type) item.objType = n.obj_type;
     return item;
   });
-  return { query, total: results.length, results };
+  return { query, total: json.data?.total ?? results.length, results };
 }
 
 type OnboardingSearchAccountLike = {
@@ -162,7 +162,7 @@ type OnboardingSearchAccountLike = {
   appSecret?: string;
   config?: {
     onboardingSearch?: {
-      seedRefreshToken?: string;
+      seedRefreshToken?: unknown;
       refreshTokenStorePath?: string;
       spaceId?: string;
     };
@@ -173,21 +173,31 @@ type OnboardingSearchAccountLike = {
  * landingAgent-specific: resolve the user-token onboarding search path for
  * an account. Only enabled when `onboardingSearch.seedRefreshToken` is
  * configured; otherwise callers must fall back to the tenant-token search.
+ *
+ * `seedRefreshToken` is a secret-input value (plaintext or `{secretRef}`),
+ * so it's resolved through the same helper used for appSecret/appId
+ * (`resolveFeishuSecretLike`) — never forwarded raw.
  */
 export function resolveOnboardingSearch(
   account: OnboardingSearchAccountLike,
 ): { provider: FeishuUserTokenProvider; spaceId?: string } | null {
   const cfg = account.config?.onboardingSearch;
-  if (!cfg?.seedRefreshToken || !account.appId || !account.appSecret) return null;
+  const seedRefreshToken = resolveFeishuSecretLike({
+    value: cfg?.seedRefreshToken,
+    path: "channels.feishu.onboardingSearch.seedRefreshToken",
+    mode: "inspect",
+    allowEnvSecretRefRead: true,
+  });
+  if (!seedRefreshToken || !account.appId || !account.appSecret) return null;
   const storePath =
-    cfg.refreshTokenStorePath ?? join(homedir(), ".openclaw", "feishu-user-token.json");
+    cfg?.refreshTokenStorePath ?? join(homedir(), ".openclaw", "feishu-user-token.json");
   const provider = createFeishuUserTokenProvider({
     appId: account.appId,
     appSecret: account.appSecret,
-    seedRefreshToken: cfg.seedRefreshToken,
+    seedRefreshToken,
     store: createFileRefreshTokenStore(storePath),
   });
-  return cfg.spaceId ? { provider, spaceId: cfg.spaceId } : { provider };
+  return cfg?.spaceId ? { provider, spaceId: cfg.spaceId } : { provider };
 }
 
 export function registerFeishuSearchTools(api: OpenClawPluginApi): void {

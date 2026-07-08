@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { readWikiDocContent } from "./onboarding-doc-read.js";
+import { readWikiDocContent, resolveWikiNodeObject } from "./onboarding-doc-read.js";
+import { FeishuUserTokenError } from "./user-token.js";
 
 function fetchFor(map: Record<string, unknown>) {
   return (async (url: string) => {
@@ -52,6 +53,34 @@ describe("readWikiDocContent", () => {
     });
     await expect(
       readWikiDocContent({ getUserAccessToken: async () => "t", fetchImpl }, "x", "docx"),
+    ).rejects.toThrow(/permission denied|131006/);
+  });
+});
+
+describe("resolveWikiNodeObject", () => {
+  it("get_node 成功 → 返回 obj_token/obj_type", async () => {
+    const fetchImpl = fetchFor({
+      "/wiki/v2/spaces/get_node": {
+        code: 0,
+        data: { node: { obj_token: "docxYYY", obj_type: "docx" } },
+      },
+    });
+    const out = await resolveWikiNodeObject(
+      { getUserAccessToken: async () => "t", fetchImpl },
+      "wikcnAAA",
+    );
+    expect(out).toEqual({ objToken: "docxYYY", objType: "docx" });
+  });
+
+  it("飞书非 0 抛错，含 code/msg", async () => {
+    const fetchImpl = fetchFor({
+      "/wiki/v2/spaces/get_node": { code: 131006, msg: "permission denied" },
+    });
+    await expect(
+      resolveWikiNodeObject({ getUserAccessToken: async () => "t", fetchImpl }, "wikcnAAA"),
+    ).rejects.toBeInstanceOf(FeishuUserTokenError);
+    await expect(
+      resolveWikiNodeObject({ getUserAccessToken: async () => "t", fetchImpl }, "wikcnAAA"),
     ).rejects.toThrow(/permission denied|131006/);
   });
 });

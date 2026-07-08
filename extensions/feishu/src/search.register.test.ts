@@ -24,4 +24,33 @@ describe("resolveOnboardingSearch", () => {
     expect(r!.spaceId).toBe("7065");
     expect(typeof r!.provider.getUserAccessToken).toBe("function");
   });
+
+  it("seedRefreshToken 为 secretRef({source:'env',...}) 且环境变量存在 → 正常解析出 provider", () => {
+    process.env.FEISHU_TEST_SEED_REFRESH_TOKEN = "env-seed-value";
+    try {
+      const account: any = {
+        appId: "a",
+        appSecret: "s",
+        config: {
+          onboardingSearch: {
+            seedRefreshToken: {
+              source: "env",
+              provider: "default",
+              id: "FEISHU_TEST_SEED_REFRESH_TOKEN",
+            },
+          },
+        },
+      };
+      const r = resolveOnboardingSearch(account);
+      expect(r).not.toBeNull();
+      expect(typeof r!.provider.getUserAccessToken).toBe("function");
+    } finally {
+      delete process.env.FEISHU_TEST_SEED_REFRESH_TOKEN;
+    }
+  });
+
+  it("seed 缺失（未配置）→ 仍返回 null", () => {
+    const account: any = { appId: "a", appSecret: "s", config: {} };
+    expect(resolveOnboardingSearch(account)).toBeNull();
+  });
 });

@@ -65,6 +65,23 @@ describe("searchWikiNodes", () => {
     expect(r.results).toHaveLength(1);
   });
 
+  it("total 取 API 返回的 data.total，而不是本页 results.length", async () => {
+    const respWithTotal = {
+      code: 0,
+      data: {
+        total: 42,
+        items: wikiResp.data.items.slice(0, 1),
+      },
+    };
+    const r = await searchWikiNodes(
+      { getUserAccessToken: async () => "user-tok", fetchImpl: fakeFetch(respWithTotal) },
+      "billing",
+      10,
+    );
+    expect(r.results).toHaveLength(1);
+    expect(r.total).toBe(42);
+  });
+
   it("飞书非 0 抛错", async () => {
     await expect(
       searchWikiNodes(

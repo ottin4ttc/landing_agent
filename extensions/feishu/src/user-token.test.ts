@@ -111,6 +111,31 @@ describe("createFeishuUserTokenProvider", () => {
     await expect(p.getUserAccessToken()).rejects.toThrow(/重新.*授权|re-authorize/i);
   });
 
+  it("store.write 落盘失败不影响本次刷新结果，且未过期窗口内不再触发刷新", async () => {
+    const store: RefreshTokenStore = {
+      read: () => null,
+      write: () => {
+        throw new Error("disk full");
+      },
+    };
+    const { fetchImpl, calls } = makeFetch([appTok, refreshed(1)]);
+    let t = 1000;
+    const p = createFeishuUserTokenProvider({
+      appId: "a",
+      appSecret: "s",
+      seedRefreshToken: "seed",
+      store,
+      now: () => t,
+      fetchImpl,
+      refreshSkewMs: 300_000,
+    });
+    await expect(p.getUserAccessToken()).resolves.toBe("acc-1");
+    const before = calls.length;
+    t = 1000 + 3_600_000; // 仍在有效窗口内
+    expect(await p.getUserAccessToken()).toBe("acc-1");
+    expect(calls.length).toBe(before);
+  });
+
   it("并发调用只刷新一次", async () => {
     const store = memStore(null);
     const { fetchImpl, calls } = makeFetch([appTok, refreshed(1)]);

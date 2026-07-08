@@ -206,6 +206,61 @@ describe("feishu_doc image fetch hardening", () => {
     return (await tool.execute("tool-call", params)) as ToolResultWithDetails;
   }
 
+  it("action read: when onboarding search is configured, routes through user-token wiki read instead of tenant readDoc", async () => {
+    resolveFeishuToolAccountMock.mockReturnValue({
+      appId: "app_id",
+      appSecret: "app_secret",
+      config: {
+        mediaMaxMb: 30,
+        onboardingSearch: {
+          seedRefreshToken: "seed-refresh-token",
+          spaceId: "7065",
+        },
+      },
+    });
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("app_access_token")) {
+        return { ok: true, json: async () => ({ code: 0, app_access_token: "app-tok" }) };
+      }
+      if (url.includes("oidc/refresh_access_token")) {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 0,
+            data: { access_token: "user-tok", refresh_token: "new-refresh", expires_in: 7200 },
+          }),
+        };
+      }
+      if (url.includes("wiki/v2/spaces/get_node")) {
+        return {
+          ok: true,
+          json: async () => ({
+            code: 0,
+            data: { node: { obj_token: "docxYYY", obj_type: "docx" } },
+          }),
+        };
+      }
+      if (url.includes("docx/v1/documents/docxYYY/raw_content")) {
+        return { ok: true, json: async () => ({ code: 0, data: { content: "wiki 正文" } }) };
+      }
+      throw new Error(`unexpected fetch url: ${url}`);
+    }) as unknown as typeof fetch;
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const feishuDocTool = resolveFeishuDocTool();
+      const result = await executeFeishuDocTool(feishuDocTool, {
+        action: "read",
+        doc_token: "wikcnAAA",
+      });
+      expect(result.details).toEqual({ content: "wiki 正文" });
+      expect(fetchMock).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("inserts blocks sequentially to preserve document order", async () => {
     const blocks = [
       { block_type: 3, block_id: "h1" },

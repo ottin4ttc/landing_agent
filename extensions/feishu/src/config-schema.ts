@@ -202,7 +202,7 @@ const FeishuSharedConfigShape = {
   tools: FeishuToolsConfigSchema,
   onboardingSearch: z
     .object({
-      seedRefreshToken: z.string().optional(),
+      seedRefreshToken: buildSecretInputSchema().optional(),
       refreshTokenStorePath: z.string().optional(),
       spaceId: z.string().optional(),
     })
