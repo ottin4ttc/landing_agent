@@ -82,6 +82,73 @@ describe("searchWikiNodes", () => {
     expect(r.total).toBe(42);
   });
 
+  it("spaceIds 多空间：逐个搜索、合并去重、limit 截断", async () => {
+    const bodies: any[] = [];
+    const bySpace: Record<string, unknown> = {
+      A: {
+        code: 0,
+        data: {
+          total: 2,
+          items: [
+            { node_id: "n1", obj_token: "o1", obj_type: "doc", title: "t1", url: "u1" },
+            { node_id: "dup", obj_token: "od", obj_type: "docx", title: "td", url: "ud" },
+          ],
+        },
+      },
+      B: {
+        code: 0,
+        data: {
+          total: 2,
+          items: [
+            { node_id: "dup", obj_token: "od", obj_type: "docx", title: "td", url: "ud" },
+            { node_id: "n3", obj_token: "o3", obj_type: "doc", title: "t3", url: "u3" },
+          ],
+        },
+      },
+    };
+    const fetchImpl = (async (_url: string, init?: { body?: string }) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      bodies.push(body);
+      return { ok: true, json: async () => bySpace[body.space_id] } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const r = await searchWikiNodes(
+      { getUserAccessToken: async () => "user-tok", fetchImpl, spaceIds: ["A", "B"] },
+      "q",
+      10,
+    );
+    // 一个 space 一个请求，各带自己的 space_id
+    expect(bodies.map((b) => b.space_id)).toEqual(["A", "B"]);
+    // 合并去重：n1, dup, n3（dup 只一次）
+    expect(r.results.map((x) => x.token)).toEqual(["n1", "dup", "n3"]);
+  });
+
+  it("spaceIds 达到 limit 后停止跨空间搜索", async () => {
+    const bodies: any[] = [];
+    const fetchImpl = (async (_url: string, init?: { body?: string }) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      bodies.push(body);
+      return {
+        ok: true,
+        json: async () => ({
+          code: 0,
+          data: {
+            items: [{ node_id: `${body.space_id}-n`, obj_type: "doc", title: "t", url: "u" }],
+          },
+        }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const r = await searchWikiNodes(
+      { getUserAccessToken: async () => "t", fetchImpl, spaceIds: ["A", "B", "C"] },
+      "q",
+      1,
+    );
+    expect(r.results).toHaveLength(1);
+    // 第一个 space 就满足 limit=1，不再请求后续 space
+    expect(bodies).toHaveLength(1);
+  });
+
   it("飞书非 0 抛错", async () => {
     await expect(
       searchWikiNodes(

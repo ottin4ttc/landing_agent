@@ -21,8 +21,25 @@ describe("resolveOnboardingSearch", () => {
     };
     const r = resolveOnboardingSearch(account);
     expect(r).not.toBeNull();
-    expect(r!.spaceId).toBe("7065");
+    // 向后兼容：单个 spaceId 归一化为 spaceIds 列表
+    expect(r!.spaceIds).toEqual(["7065"]);
     expect(typeof r!.provider.getUserAccessToken).toBe("function");
+  });
+
+  it("配了 spaceIds 列表 → 原样返回多空间", () => {
+    const account: any = {
+      appId: "a",
+      appSecret: "s",
+      config: {
+        onboardingSearch: {
+          seedRefreshToken: "seed",
+          spaceIds: ["7065", "7659"],
+        },
+      },
+    };
+    const r = resolveOnboardingSearch(account);
+    expect(r).not.toBeNull();
+    expect(r!.spaceIds).toEqual(["7065", "7659"]);
   });
 
   it("seedRefreshToken 为 secretRef({source:'env',...}) 且环境变量存在 → 正常解析出 provider", () => {
