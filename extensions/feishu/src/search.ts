@@ -124,37 +124,60 @@ export async function searchWikiNodes(
   deps: {
     getUserAccessToken: () => Promise<string>;
     fetchImpl?: typeof fetch;
+    /** Single space (back-compat). Ignored when `spaceIds` is non-empty. */
     spaceId?: string;
+    /** Search across these knowledge-base spaces, merging + de-duping results. */
+    spaceIds?: string[];
   },
   query: string,
   limit: number,
 ): Promise<FeishuSearchResult> {
   const doFetch = deps.fetchImpl ?? fetch;
   const token = await deps.getUserAccessToken();
-  const body: Record<string, unknown> = { query };
-  if (deps.spaceId) body.space_id = deps.spaceId;
-  const res = await doFetch(`${FEISHU_BASE}/open-apis/wiki/v1/nodes/search`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-  });
-  const json = (await res.json()) as WikiSearchResponse;
-  if (json.code !== 0) {
-    throw new Error(`feishu wiki search failed (${json.code}): ${json.msg ?? ""}`);
+  const cap = clampLimit(limit);
+  // Which spaces to query: explicit list wins; else single space; else
+  // whole-tenant (a single request with no space_id).
+  const spaces: (string | undefined)[] =
+    deps.spaceIds && deps.spaceIds.length > 0
+      ? deps.spaceIds
+      : deps.spaceId
+        ? [deps.spaceId]
+        : [undefined];
+
+  const seen = new Set<string>();
+  const results: FeishuSearchResultItem[] = [];
+  let total = 0;
+  for (const space of spaces) {
+    if (results.length >= cap) break;
+    const body: Record<string, unknown> = { query };
+    if (space) body.space_id = space;
+    const res = await doFetch(`${FEISHU_BASE}/open-apis/wiki/v1/nodes/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as WikiSearchResponse;
+    if (json.code !== 0) {
+      throw new Error(`feishu wiki search failed (${json.code}): ${json.msg ?? ""}`);
+    }
+    total += json.data?.total ?? 0;
+    for (const n of json.data?.items ?? []) {
+      if (results.length >= cap) break;
+      const key = n.node_token ?? n.node_id ?? "";
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      const item: FeishuSearchResultItem = {
+        type: n.obj_type ?? "",
+        title: stripHighlight(n.title),
+        url: n.url ?? "",
+        token: key,
+      };
+      if (n.obj_token) item.objToken = n.obj_token;
+      if (n.obj_type) item.objType = n.obj_type;
+      results.push(item);
+    }
   }
-  const items = json.data?.items ?? [];
-  const results: FeishuSearchResultItem[] = items.slice(0, clampLimit(limit)).map((n) => {
-    const item: FeishuSearchResultItem = {
-      type: n.obj_type ?? "",
-      title: stripHighlight(n.title),
-      url: n.url ?? "",
-      token: n.node_token ?? n.node_id ?? "",
-    };
-    if (n.obj_token) item.objToken = n.obj_token;
-    if (n.obj_type) item.objType = n.obj_type;
-    return item;
-  });
-  return { query, total: json.data?.total ?? results.length, results };
+  return { query, total: total || results.length, results };
 }
 
 type OnboardingSearchAccountLike = {
@@ -165,6 +188,7 @@ type OnboardingSearchAccountLike = {
       seedRefreshToken?: unknown;
       refreshTokenStorePath?: string;
       spaceId?: string;
+      spaceIds?: string[];
     };
   };
 };
@@ -180,7 +204,7 @@ type OnboardingSearchAccountLike = {
  */
 export function resolveOnboardingSearch(
   account: OnboardingSearchAccountLike,
-): { provider: FeishuUserTokenProvider; spaceId?: string } | null {
+): { provider: FeishuUserTokenProvider; spaceIds?: string[] } | null {
   const cfg = account.config?.onboardingSearch;
   const seedRefreshToken = resolveFeishuSecretLike({
     value: cfg?.seedRefreshToken,
@@ -197,7 +221,15 @@ export function resolveOnboardingSearch(
     seedRefreshToken,
     store: createFileRefreshTokenStore(storePath),
   });
-  return cfg?.spaceId ? { provider, spaceId: cfg.spaceId } : { provider };
+  // Normalize to a spaceIds list: explicit list wins; else a single spaceId
+  // becomes a one-element list (back-compat); else undefined (whole-tenant).
+  const spaceIds =
+    cfg?.spaceIds && cfg.spaceIds.length > 0
+      ? cfg.spaceIds
+      : cfg?.spaceId
+        ? [cfg.spaceId]
+        : undefined;
+  return spaceIds ? { provider, spaceIds } : { provider };
 }
 
 export function registerFeishuSearchTools(api: OpenClawPluginApi): void {
@@ -231,7 +263,7 @@ export function registerFeishuSearchTools(api: OpenClawPluginApi): void {
                 await searchWikiNodes(
                   {
                     getUserAccessToken: () => onboarding.provider.getUserAccessToken(),
-                    spaceId: onboarding.spaceId,
+                    spaceIds: onboarding.spaceIds,
                   },
                   p.query,
                   p.limit ?? 10,

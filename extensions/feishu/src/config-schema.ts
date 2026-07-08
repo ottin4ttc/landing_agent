@@ -205,6 +205,7 @@ const FeishuSharedConfigShape = {
       seedRefreshToken: buildSecretInputSchema().optional(),
       refreshTokenStorePath: z.string().optional(),
       spaceId: z.string().optional(),
+      spaceIds: z.array(z.string()).optional(),
     })
     .optional(),
   actions: ChannelActionsSchema,
