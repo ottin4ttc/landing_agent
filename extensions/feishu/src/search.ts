@@ -1,11 +1,16 @@
 // Feishu plugin module implements content search behavior (doc_wiki/search).
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import type { OpenClawPluginApi } from "../runtime-api.js";
 import { listEnabledFeishuAccounts } from "./accounts.js";
+import { createFeishuClient } from "./client.js";
+import { createFileRefreshTokenStore } from "./file-refresh-store.js";
 import { FeishuSearchSchema } from "./search-schema.js";
-import { createFeishuToolClient, resolveAnyEnabledFeishuToolsConfig } from "./tool-account.js";
+import { resolveAnyEnabledFeishuToolsConfig, resolveFeishuToolAccount } from "./tool-account.js";
 import { toolExecutionErrorResult } from "./tool-result.js";
+import { createFeishuUserTokenProvider, type FeishuUserTokenProvider } from "./user-token.js";
 
 export type FeishuSearchResultItem = {
   type: string;
@@ -152,6 +157,39 @@ export async function searchWikiNodes(
   return { query, total: results.length, results };
 }
 
+type OnboardingSearchAccountLike = {
+  appId?: string;
+  appSecret?: string;
+  config?: {
+    onboardingSearch?: {
+      seedRefreshToken?: string;
+      refreshTokenStorePath?: string;
+      spaceId?: string;
+    };
+  };
+};
+
+/**
+ * landingAgent-specific: resolve the user-token onboarding search path for
+ * an account. Only enabled when `onboardingSearch.seedRefreshToken` is
+ * configured; otherwise callers must fall back to the tenant-token search.
+ */
+export function resolveOnboardingSearch(
+  account: OnboardingSearchAccountLike,
+): { provider: FeishuUserTokenProvider; spaceId?: string } | null {
+  const cfg = account.config?.onboardingSearch;
+  if (!cfg?.seedRefreshToken || !account.appId || !account.appSecret) return null;
+  const storePath =
+    cfg.refreshTokenStorePath ?? join(homedir(), ".openclaw", "feishu-user-token.json");
+  const provider = createFeishuUserTokenProvider({
+    appId: account.appId,
+    appSecret: account.appSecret,
+    seedRefreshToken: cfg.seedRefreshToken,
+    store: createFileRefreshTokenStore(storePath),
+  });
+  return cfg.spaceId ? { provider, spaceId: cfg.spaceId } : { provider };
+}
+
 export function registerFeishuSearchTools(api: OpenClawPluginApi): void {
   if (!api.config) return;
   const accounts = listEnabledFeishuAccounts(api.config);
@@ -171,12 +209,26 @@ export function registerFeishuSearchTools(api: OpenClawPluginApi): void {
         async execute(_toolCallId, params) {
           const p = params as { query: string; limit?: number; accountId?: string };
           try {
-            const client = createFeishuToolClient({
+            const account = resolveFeishuToolAccount({
               api,
               executeParams: p,
               defaultAccountId,
               requiredTool: { family: "search", label: "Search" },
             });
+            const onboarding = resolveOnboardingSearch(account as OnboardingSearchAccountLike);
+            if (onboarding) {
+              return jsonResult(
+                await searchWikiNodes(
+                  {
+                    getUserAccessToken: () => onboarding.provider.getUserAccessToken(),
+                    spaceId: onboarding.spaceId,
+                  },
+                  p.query,
+                  p.limit ?? 10,
+                ),
+              );
+            }
+            const client = createFeishuClient(account);
             return jsonResult(await searchDocs(client, p.query, p.limit ?? 10));
           } catch (err) {
             return toolExecutionErrorResult(err);

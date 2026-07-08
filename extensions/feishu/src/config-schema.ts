@@ -200,6 +200,13 @@ const FeishuSharedConfigShape = {
   renderMode: RenderModeSchema,
   streaming: StreamingModeSchema,
   tools: FeishuToolsConfigSchema,
+  onboardingSearch: z
+    .object({
+      seedRefreshToken: z.string().optional(),
+      refreshTokenStorePath: z.string().optional(),
+      spaceId: z.string().optional(),
+    })
+    .optional(),
   actions: ChannelActionsSchema,
   replyInThread: ReplyInThreadSchema,
   reactionNotifications: ReactionNotificationModeSchema,
