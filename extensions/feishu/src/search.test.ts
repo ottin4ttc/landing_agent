@@ -3,11 +3,15 @@ import { describe, it, expect, vi } from "vitest";
 import type { OpenClawPluginApi } from "../runtime-api.js";
 import { searchDocs, stripHighlight } from "./search.ts";
 
-const createFeishuToolClientMock = vi.hoisted(() => vi.fn());
+const resolveFeishuToolAccountMock = vi.hoisted(() => vi.fn());
 const resolveAnyEnabledFeishuToolsConfigMock = vi.hoisted(() => vi.fn());
+const createFeishuClientMock = vi.hoisted(() => vi.fn());
 vi.mock("./tool-account.js", () => ({
-  createFeishuToolClient: createFeishuToolClientMock,
+  resolveFeishuToolAccount: resolveFeishuToolAccountMock,
   resolveAnyEnabledFeishuToolsConfig: resolveAnyEnabledFeishuToolsConfigMock,
+}));
+vi.mock("./client.js", () => ({
+  createFeishuClient: createFeishuClientMock,
 }));
 
 function fakeClient(searchImpl: (payload: unknown) => Promise<unknown>) {
@@ -113,7 +117,12 @@ describe("feishu_search tool execute", () => {
         ],
       },
     }));
-    createFeishuToolClientMock.mockReturnValue({ search: { docWiki: { search } } });
+    resolveFeishuToolAccountMock.mockReturnValue({
+      appId: "app_id",
+      appSecret: "app_secret",
+      config: {},
+    });
+    createFeishuClientMock.mockReturnValue({ search: { docWiki: { search } } });
     const registerTool = vi.fn();
     const api: OpenClawPluginApi = createTestPluginApi({
       id: "feishu-test",

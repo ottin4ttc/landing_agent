@@ -1,11 +1,16 @@
 // Feishu plugin module implements content search behavior (doc_wiki/search).
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import type { OpenClawPluginApi } from "../runtime-api.js";
-import { listEnabledFeishuAccounts } from "./accounts.js";
+import { listEnabledFeishuAccounts, resolveFeishuSecretLike } from "./accounts.js";
+import { createFeishuClient } from "./client.js";
+import { createFileRefreshTokenStore } from "./file-refresh-store.js";
 import { FeishuSearchSchema } from "./search-schema.js";
-import { createFeishuToolClient, resolveAnyEnabledFeishuToolsConfig } from "./tool-account.js";
+import { resolveAnyEnabledFeishuToolsConfig, resolveFeishuToolAccount } from "./tool-account.js";
 import { toolExecutionErrorResult } from "./tool-result.js";
+import { createFeishuUserTokenProvider, type FeishuUserTokenProvider } from "./user-token.js";
 
 export type FeishuSearchResultItem = {
   type: string;
@@ -15,6 +20,8 @@ export type FeishuSearchResultItem = {
   summary?: string;
   ownerName?: string;
   updateTime?: number;
+  objToken?: string;
+  objType?: string;
 };
 
 export type FeishuSearchResult = {
@@ -91,6 +98,108 @@ export async function searchDocs(
   return { query, total: res.data?.total ?? results.length, results };
 }
 
+const FEISHU_BASE = "https://open.feishu.cn";
+
+type WikiSearchNode = {
+  node_id?: string;
+  node_token?: string;
+  space_id?: string;
+  obj_token?: string;
+  obj_type?: string;
+  title?: string;
+  url?: string;
+};
+type WikiSearchResponse = {
+  code?: number;
+  msg?: string;
+  data?: { items?: WikiSearchNode[]; total?: number };
+};
+
+/**
+ * landingAgent-specific: search wiki knowledge-base nodes with a
+ * user_access_token (wiki/v1/nodes/search). tenant token cannot reach
+ * enterprise-public wiki content; only a user identity can.
+ */
+export async function searchWikiNodes(
+  deps: {
+    getUserAccessToken: () => Promise<string>;
+    fetchImpl?: typeof fetch;
+    spaceId?: string;
+  },
+  query: string,
+  limit: number,
+): Promise<FeishuSearchResult> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  const token = await deps.getUserAccessToken();
+  const body: Record<string, unknown> = { query };
+  if (deps.spaceId) body.space_id = deps.spaceId;
+  const res = await doFetch(`${FEISHU_BASE}/open-apis/wiki/v1/nodes/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json()) as WikiSearchResponse;
+  if (json.code !== 0) {
+    throw new Error(`feishu wiki search failed (${json.code}): ${json.msg ?? ""}`);
+  }
+  const items = json.data?.items ?? [];
+  const results: FeishuSearchResultItem[] = items.slice(0, clampLimit(limit)).map((n) => {
+    const item: FeishuSearchResultItem = {
+      type: n.obj_type ?? "",
+      title: stripHighlight(n.title),
+      url: n.url ?? "",
+      token: n.node_token ?? n.node_id ?? "",
+    };
+    if (n.obj_token) item.objToken = n.obj_token;
+    if (n.obj_type) item.objType = n.obj_type;
+    return item;
+  });
+  return { query, total: json.data?.total ?? results.length, results };
+}
+
+type OnboardingSearchAccountLike = {
+  appId?: string;
+  appSecret?: string;
+  config?: {
+    onboardingSearch?: {
+      seedRefreshToken?: unknown;
+      refreshTokenStorePath?: string;
+      spaceId?: string;
+    };
+  };
+};
+
+/**
+ * landingAgent-specific: resolve the user-token onboarding search path for
+ * an account. Only enabled when `onboardingSearch.seedRefreshToken` is
+ * configured; otherwise callers must fall back to the tenant-token search.
+ *
+ * `seedRefreshToken` is a secret-input value (plaintext or `{secretRef}`),
+ * so it's resolved through the same helper used for appSecret/appId
+ * (`resolveFeishuSecretLike`) — never forwarded raw.
+ */
+export function resolveOnboardingSearch(
+  account: OnboardingSearchAccountLike,
+): { provider: FeishuUserTokenProvider; spaceId?: string } | null {
+  const cfg = account.config?.onboardingSearch;
+  const seedRefreshToken = resolveFeishuSecretLike({
+    value: cfg?.seedRefreshToken,
+    path: "channels.feishu.onboardingSearch.seedRefreshToken",
+    mode: "inspect",
+    allowEnvSecretRefRead: true,
+  });
+  if (!seedRefreshToken || !account.appId || !account.appSecret) return null;
+  const storePath =
+    cfg?.refreshTokenStorePath ?? join(homedir(), ".openclaw", "feishu-user-token.json");
+  const provider = createFeishuUserTokenProvider({
+    appId: account.appId,
+    appSecret: account.appSecret,
+    seedRefreshToken,
+    store: createFileRefreshTokenStore(storePath),
+  });
+  return cfg?.spaceId ? { provider, spaceId: cfg.spaceId } : { provider };
+}
+
 export function registerFeishuSearchTools(api: OpenClawPluginApi): void {
   if (!api.config) return;
   const accounts = listEnabledFeishuAccounts(api.config);
@@ -110,12 +219,26 @@ export function registerFeishuSearchTools(api: OpenClawPluginApi): void {
         async execute(_toolCallId, params) {
           const p = params as { query: string; limit?: number; accountId?: string };
           try {
-            const client = createFeishuToolClient({
+            const account = resolveFeishuToolAccount({
               api,
               executeParams: p,
               defaultAccountId,
               requiredTool: { family: "search", label: "Search" },
             });
+            const onboarding = resolveOnboardingSearch(account as OnboardingSearchAccountLike);
+            if (onboarding) {
+              return jsonResult(
+                await searchWikiNodes(
+                  {
+                    getUserAccessToken: () => onboarding.provider.getUserAccessToken(),
+                    spaceId: onboarding.spaceId,
+                  },
+                  p.query,
+                  p.limit ?? 10,
+                ),
+              );
+            }
+            const client = createFeishuClient(account);
             return jsonResult(await searchDocs(client, p.query, p.limit ?? 10));
           } catch (err) {
             return toolExecutionErrorResult(err);

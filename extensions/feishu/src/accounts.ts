@@ -53,7 +53,7 @@ export class FeishuSecretRefUnavailableError extends Error {
   }
 }
 
-function resolveFeishuSecretLike(params: {
+export function resolveFeishuSecretLike(params: {
   value: unknown;
   path: string;
   mode: FeishuCredentialResolutionMode;

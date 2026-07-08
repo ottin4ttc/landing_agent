@@ -23,7 +23,9 @@ import {
   mergeTableCells,
 } from "./docx-table-ops.js";
 import type { FeishuDocxBlock, FeishuDocxBlockChild } from "./docx-types.js";
+import { resolveWikiNodeObject, readWikiDocContent } from "./onboarding-doc-read.js";
 import { getFeishuRuntime } from "./runtime.js";
+import { resolveOnboardingSearch } from "./search.js";
 import {
   createFeishuToolClient,
   resolveAnyEnabledFeishuToolsConfig,
@@ -1417,8 +1419,28 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
             try {
               const client = getClient(p, defaultAccountId);
               switch (p.action) {
-                case "read":
+                case "read": {
+                  const account = resolveFeishuToolAccount({
+                    api,
+                    executeParams: p,
+                    defaultAccountId,
+                    requiredTool: { family: "doc", label: "Doc" },
+                  });
+                  const onboarding = resolveOnboardingSearch(account);
+                  if (onboarding) {
+                    const { objToken, objType } = await resolveWikiNodeObject(
+                      { getUserAccessToken: () => onboarding.provider.getUserAccessToken() },
+                      p.doc_token,
+                    );
+                    const content = await readWikiDocContent(
+                      { getUserAccessToken: () => onboarding.provider.getUserAccessToken() },
+                      objToken,
+                      objType,
+                    );
+                    return json({ content });
+                  }
                   return json(await readDoc(client, p.doc_token));
+                }
                 case "write":
                   return json(
                     await writeDoc(
