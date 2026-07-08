@@ -15,6 +15,8 @@ export type FeishuSearchResultItem = {
   summary?: string;
   ownerName?: string;
   updateTime?: number;
+  objToken?: string;
+  objType?: string;
 };
 
 export type FeishuSearchResult = {
@@ -89,6 +91,65 @@ export async function searchDocs(
   });
 
   return { query, total: res.data?.total ?? results.length, results };
+}
+
+const FEISHU_BASE = "https://open.feishu.cn";
+
+type WikiSearchNode = {
+  node_id?: string;
+  node_token?: string;
+  space_id?: string;
+  obj_token?: string;
+  obj_type?: string;
+  title?: string;
+  url?: string;
+};
+type WikiSearchResponse = {
+  code?: number;
+  msg?: string;
+  data?: { items?: WikiSearchNode[] };
+};
+
+/**
+ * landingAgent-specific: search wiki knowledge-base nodes with a
+ * user_access_token (wiki/v1/nodes/search). tenant token cannot reach
+ * enterprise-public wiki content; only a user identity can.
+ */
+export async function searchWikiNodes(
+  deps: {
+    getUserAccessToken: () => Promise<string>;
+    fetchImpl?: typeof fetch;
+    spaceId?: string;
+  },
+  query: string,
+  limit: number,
+): Promise<FeishuSearchResult> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  const token = await deps.getUserAccessToken();
+  const body: Record<string, unknown> = { query };
+  if (deps.spaceId) body.space_id = deps.spaceId;
+  const res = await doFetch(`${FEISHU_BASE}/open-apis/wiki/v1/nodes/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json()) as WikiSearchResponse;
+  if (json.code !== 0) {
+    throw new Error(`feishu wiki search failed (${json.code}): ${json.msg ?? ""}`);
+  }
+  const items = json.data?.items ?? [];
+  const results: FeishuSearchResultItem[] = items.slice(0, clampLimit(limit)).map((n) => {
+    const item: FeishuSearchResultItem = {
+      type: n.obj_type ?? "",
+      title: stripHighlight(n.title),
+      url: n.url ?? "",
+      token: n.node_token ?? n.node_id ?? "",
+    };
+    if (n.obj_token) item.objToken = n.obj_token;
+    if (n.obj_type) item.objType = n.obj_type;
+    return item;
+  });
+  return { query, total: results.length, results };
 }
 
 export function registerFeishuSearchTools(api: OpenClawPluginApi): void {
