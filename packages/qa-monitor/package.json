@@ -8,9 +8,6 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "dependencies": {
-    "@openclaw/gateway-client": "workspace:*"
-  },
   "devDependencies": {
     "vitest": "4.1.9"
   }

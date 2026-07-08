@@ -1,20 +1,20 @@
 // landingAgent-specific (not upstream openclaw)
 import type { DatabaseSync } from "node:sqlite";
-import type { SessionsUsageResult } from "../../../../src/shared/usage-types.ts";
 import type { QaConfig } from "../config.ts";
+import type { QaSessionRow } from "../store/rows.ts";
 import { upsertSessions } from "../store/upsert.ts";
-import { mapUsageResultToRows } from "./map.ts";
-import { fetchUsageViaGateway } from "./source.ts";
+import { readSessionsFromDir } from "./file-source.ts";
 
-export type UsageFetcher = (cfg: QaConfig) => Promise<SessionsUsageResult>;
+export type RowsReader = (cfg: QaConfig) => QaSessionRow[];
 
-export async function collectOnce(
+const defaultReader: RowsReader = (cfg) => readSessionsFromDir(cfg.agentsDir);
+
+export function collectOnce(
   db: DatabaseSync,
   cfg: QaConfig,
-  fetch: UsageFetcher = fetchUsageViaGateway,
-): Promise<number> {
-  const result = await fetch(cfg);
-  const rows = mapUsageResultToRows(result);
+  read: RowsReader = defaultReader,
+): number {
+  const rows = read(cfg);
   return upsertSessions(db, rows);
 }
 

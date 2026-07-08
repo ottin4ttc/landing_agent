@@ -1937,10 +1937,6 @@ importers:
   packages/plugin-sdk: {}
 
   packages/qa-monitor:
-    dependencies:
-      '@openclaw/gateway-client':
-        specifier: workspace:*
-        version: link:../gateway-client
     devDependencies:
       vitest:
         specifier: 4.1.9

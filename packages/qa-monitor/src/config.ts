@@ -2,6 +2,7 @@
 export type QaConfig = {
   gatewayUrl: string;
   gatewayToken: string | null;
+  agentsDir: string;
   port: number;
   dbPath: string;
   pollIntervalMs: number;
@@ -21,6 +22,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): QaConfig {
   return {
     gatewayUrl: env.QA_GATEWAY_URL ?? "ws://127.0.0.1:19001",
     gatewayToken: env.QA_GATEWAY_TOKEN ? env.QA_GATEWAY_TOKEN : null,
+    agentsDir: env.QA_AGENTS_DIR ?? "/gateway-state/agents",
     port: Number(env.QA_PORT ?? 19010),
     dbPath: env.QA_DB_PATH ?? "./qa.db",
     pollIntervalMs: Number(env.QA_POLL_INTERVAL_MS ?? 180000),
