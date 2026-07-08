@@ -4,6 +4,13 @@
 # qa-monitor reads the gateway's session files from the same host config dir
 # (mounted read-only) — no gateway RPC/auth needed.
 services:
+  # Forward the gateway's secrets from .env so openclaw.json can reference them
+  # via secretRef (source:env) instead of storing plaintext keys in the config.
+  openclaw-gateway:
+    environment:
+      ZENMUX_API_KEY: ${ZENMUX_API_KEY:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+
   qa-monitor:
     image: qa-monitor:main
     restart: unless-stopped
